@@ -1,13 +1,13 @@
 //! Play mode for the translated skater (`p8-skater`), driven by the player's
 //! own Project 8 scripts.
 //!
-//! Only the retail ground update is translated so far. Until ground
-//! snapping and collision are translated, the skater rides a flat test floor:
-//! the height is held at 0 and the ground normal stays straight up. The
-//! camera is a simple placeholder, not the retail camera.
+//! Translated so far: riding, the ollie, flying and landing. The level is a
+//! flat floor; until the retail ground snapping is translated the height is
+//! held at 0 while on the ground. The camera is a simple placeholder, not
+//! the retail camera.
 use bevy::prelude::*;
-use p8_skater::core_physics::{Event, Turn};
-use p8_skater::{CorePhysics, InputState, Scripts};
+use p8_skater::core_physics::{Event, State, Turn};
+use p8_skater::{CorePhysics, FlatFloor, InputState, Scripts};
 
 const TICK_HZ: f64 = 60.0;
 
@@ -137,10 +137,10 @@ fn setup(
 
     commands.spawn((
         Text::new(
-            "Translated Project 8 ground physics (flat test floor; no ollies, tricks or ramps yet)\n\
-             Controller: hold A to crouch (and push), left stick steer, pull stick back to brake,\n\
+            "Translated Project 8 physics (flat test floor; no spins, tricks or ramps yet)\n\
+             Controller: hold A to crouch (and push), release A to ollie, left stick steer, pull back to brake,\n\
              D-pad left/right steer, D-pad down brake, Back reset\n\
-             Keyboard: hold Space to crouch, A/D steer, S brake, R reset",
+             Keyboard: hold Space to crouch, release to ollie, A/D steer, S brake, R reset",
         ),
         TextFont { font_size: 15.0, ..default() },
         Node { position_type: PositionType::Absolute, left: px(12.0), bottom: px(12.0), ..default() },
@@ -207,14 +207,11 @@ fn step(
     skater.previous = skater.current;
     let p = &mut skater.physics;
     p.dt = dt;
-    // Crouching lasts while the button is held: releasing it is where retail
-    // ollies, which is not translated yet, so for now it just stands up.
-    if !input.crouch {
-        p.crouched = false;
-    }
-    let events = p.ground_update(&skater.scripts, &input);
+    let events = p.step(&skater.scripts, &input, &FlatFloor::default());
     // Flat floor stand-in for ground snapping (not yet translated).
-    p.body.position.y = 0.0;
+    if p.state == State::Ground {
+        p.body.position.y = 0.0;
+    }
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);
     }
@@ -261,8 +258,10 @@ fn hud(skater: Res<Skater>, mut text: Query<&mut Text, With<StatusText>>) {
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]",
         p.body.velocity.length(),
+        p.body.position.y,
+        p.state,
         if p.crouched { "CROUCHED" } else { "standing" },
         if p.braking { "  BRAKING" } else { "" },
         skater.last_event,

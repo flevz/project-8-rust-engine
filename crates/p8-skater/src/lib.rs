@@ -9,15 +9,18 @@
 //!   literal constants embedded in the translated code, each cited.
 //! - Retail structure offsets are kept in field docs (e.g. `+1540`) so every
 //!   field can be checked against the original.
+pub mod air;
 pub mod body;
 pub mod core_physics;
 pub mod input;
 pub mod pad;
 pub mod script;
 pub mod stats;
+pub mod world;
 
 pub use body::Body;
 pub use core_physics::CorePhysics;
 pub use input::InputState;
 pub use script::Scripts;
 pub use stats::StatLevels;
+pub use world::{FlatFloor, World};

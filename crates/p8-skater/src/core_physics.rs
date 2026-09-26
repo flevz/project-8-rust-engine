@@ -17,6 +17,23 @@ pub enum Event {
     Stopped,
     /// Retail event "SteepGround" (bailing on steep ground).
     SteepGround,
+    /// Retail event "Ollied": crouch released on the ground (`820D7AB0`).
+    /// The skater's `ollie` script handles it by calling `Jump`.
+    Ollied,
+    /// Retail broadcast "SkaterJump" (end of `Jump`).
+    SkaterJump,
+    /// Retail event "Landed" (air update landing).
+    Landed,
+}
+
+/// SkaterState `+24` (set by `SetState`, `820D71B0`). Only the states with
+/// translated updates are listed; retail has ten (0..9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// 0: ground update `820F6978`.
+    Ground,
+    /// 1: air update `820F2310`.
+    Air,
 }
 
 /// Which way the last ground turn went (`+1940`: checksum "Left"/"Right").
@@ -93,6 +110,22 @@ pub struct CorePhysics {
     pub terrain: &'static str,
     /// SkaterState `+32` (via `+2848`): crouched.
     pub crouched: bool,
+    /// SkaterState `+36`: game time (ms) when crouched last changed.
+    pub crouch_changed_ms: i64,
+    /// `+2168`: how long the crouch was held when the ollie fired (ms).
+    pub crouch_duration_ms: i64,
+    /// SkaterState `+24`.
+    pub state: State,
+    /// Game time in milliseconds (retail `8222A6C0`), advanced by `dt`.
+    pub time_ms: i64,
+    /// Fractional milliseconds not yet added to `time_ms`.
+    pub time_frac_ms: f32,
+    /// `+2000`: where the last jump started.
+    pub jump_start: Vec3,
+    /// The input of the current frame (retail reads the Input component).
+    pub last_input: InputState,
+    /// `+2724`: air gravity multiplier (`AdjustGravity`); 0 = unused.
+    pub gravity_multiplier: f32,
     /// SkaterState `+128`: in a bail (`IsInBail`).
     pub in_bail: bool,
     pub stats: StatLevels,
@@ -107,7 +140,7 @@ fn retail_cos(x: f64) -> f32 {
 
 /// Retail `821EDB50`: project `v` onto the plane of `n`, keeping its length.
 /// If the projection vanishes, `(-n.z, n.x, -n.y)` is used as the direction.
-fn project_keep_length(v: Vec3, n: Vec3) -> Vec3 {
+pub(crate) fn project_keep_length(v: Vec3, n: Vec3) -> Vec3 {
     let length = v.length();
     let mut p = v - n * v.dot(n);
     if p.length() == 0.0 {
@@ -163,6 +196,14 @@ impl CorePhysics {
             last_turn: None,
             terrain: "terrain_default",
             crouched: false,
+            crouch_changed_ms: 0,
+            crouch_duration_ms: 0,
+            state: State::Ground,
+            time_ms: 0,
+            time_frac_ms: 0.0,
+            jump_start: Vec3::ZERO,
+            gravity_multiplier: 0.0,
+            last_input: InputState::default(),
             in_bail: false,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
@@ -186,9 +227,27 @@ impl CorePhysics {
     pub fn update_crouch(&mut self, input: &InputState) {
         if !self.crouched && input.crouch {
             self.crouched = true;
-            // Retail also records a timestamp at SkaterState +36.
+            self.crouch_changed_ms = self.time_ms;
             self.flag_2637 = false;
         }
+    }
+
+    /// Clear SkaterState "crouched", stamping `+36` (retail inline pattern).
+    pub(crate) fn uncrouch(&mut self) {
+        if self.crouched {
+            self.crouched = false;
+            self.crouch_changed_ms = self.time_ms;
+        }
+    }
+
+    /// Retail `820D7AB0`: releasing the crouch on the ground fires "Ollied".
+    pub fn ollie_trigger(&mut self, input: &InputState) -> bool {
+        if !self.crouched || input.crouch {
+            return false;
+        }
+        self.crouch_duration_ms = self.time_ms - self.crouch_changed_ms;
+        self.uncrouch();
+        true
     }
 
     /// Retail `820D74B0` (skater path; bike path not translated).
@@ -514,10 +573,6 @@ impl CorePhysics {
     /// until ground snapping is translated.
     pub fn ground_update(&mut self, s: &Scripts, input: &InputState) -> Vec<Event> {
         let mut events = Vec::new();
-        // Crouch update `820D7C08` is called by the component update before
-        // this function (LIKELY order).
-        self.update_crouch(input);
-
         self.kick_flag = false;
         let speed = self.speed();
         if speed - self.last_speed >= s.physics_float("Physics_kick_accel_threshold", self.on_bike) {
@@ -591,6 +646,10 @@ impl CorePhysics {
         if !self.lock_velocity_direction {
             self.velocity_along_board();
         }
+        // `820D7AB0` runs later in the ground update (after `820DBAA8`).
+        if self.ollie_trigger(input) {
+            events.push(Event::Ollied);
+        }
         events
     }
 }
@@ -625,6 +684,9 @@ mod tests {
             (k("physics_turn_ramp_time"), Value::Int(150)),
             f("physics_kick_accel_threshold", 0.25),
             f("physics_kick_uphill_threshold", 0.15),
+            f("physics_air_gravity", -21.6),
+            (k("physics_jump_speed_stat"), stat(7.6, 7.6, "STATS_AIR")),
+            (k("physics_jump_speed_min_stat"), stat(7.0, 7.6, "STATS_AIR")),
         ]);
         let terrain = Value::Struct(vec![(
             k("physicsactions"),
@@ -634,6 +696,10 @@ mod tests {
             [
                 (k("skater_physics"), physics),
                 (k("STATS_SPEED"), Value::Int(3)),
+                (k("STATS_AIR"), Value::Int(0)),
+                f("physics_air_hang_stat", 0.9),
+                (k("skater_max_tense_time"), Value::Int(200)),
+                f("landing_velocity_factor", 0.35),
                 f("Skater_Default_Stats", 5.0),
                 f("skater_max_sloped_turn_cosine", 0.5),
                 f("default_friction", 0.025),
@@ -648,7 +714,7 @@ mod tests {
     fn run(p: &mut CorePhysics, s: &Scripts, input: InputState, seconds: f32) -> Vec<Event> {
         let mut events = Vec::new();
         for _ in 0..(seconds / p.dt).round() as usize {
-            events.extend(p.ground_update(s, &input));
+            events.extend(p.step(s, &input, &crate::world::FlatFloor::default()));
         }
         events
     }
@@ -773,5 +839,70 @@ mod tests {
             p.drive(&s, &CROUCH);
         }
         assert_eq!(p.body.velocity, Vec3::ZERO);
+    }
+
+    /// Crouch for `hold` seconds, release, and fly until landing.
+    fn ollie(p: &mut CorePhysics, s: &Scripts, hold: f32) -> (f32, f32, Vec<Event>) {
+        run(p, s, CROUCH, hold);
+        let mut events = Vec::new();
+        let (mut apex, mut air_time) = (0.0f32, 0.0);
+        for _ in 0..300 {
+            events.extend(p.step(s, &InputState::default(), &crate::world::FlatFloor::default()));
+            if p.state == State::Air {
+                air_time += p.dt;
+            }
+            apex = apex.max(p.body.position.y);
+            if events.contains(&Event::Landed) {
+                break;
+            }
+        }
+        (apex, air_time, events)
+    }
+
+    #[test]
+    fn a_quick_ollie_uses_the_min_jump_speed_and_lands() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.no_kick = true;
+        let (apex, air_time, events) = ollie(&mut p, &s, 1.0 / 60.0);
+        assert!(events.contains(&Event::Ollied) && events.contains(&Event::Landed));
+        // Stat level 5 of min (7.0, 7.6): 7.3 m/s up; tense 17 ms of 200.
+        let v = 7.3 + 17.0 / 200.0 * 0.3;
+        let g = 21.6 / 0.9;
+        assert!((apex - v * v / (2.0 * g)).abs() < 0.03, "apex {apex}");
+        assert!((air_time - 2.0 * v / g).abs() < 0.04, "air {air_time}");
+        assert_eq!(p.state, State::Ground);
+        assert!(p.body.position.y.abs() < 0.01);
+        // Straight down onto flat ground: the keep-length projection has no
+        // direction, so retail 821EDB50 falls back to (-n.z, n.x, -n.y) =
+        // -Z, keeping 0.35 of the landing speed there (to be compared with
+        // the original game).
+        let landing = v; // symmetric flight
+        assert!((p.body.velocity.z + 0.35 * landing).abs() < 0.1, "vel {}", p.body.velocity);
+    }
+
+    #[test]
+    fn holding_the_crouch_200ms_gives_the_full_jump() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.no_kick = true;
+        let (apex, _, _) = ollie(&mut p, &s, 0.5);
+        let g = 21.6 / 0.9;
+        assert!((apex - 7.6 * 7.6 / (2.0 * g)).abs() < 0.03, "apex {apex}");
+    }
+
+    #[test]
+    fn landing_turns_part_of_the_fall_into_forward_speed() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.no_kick = true;
+        p.body.velocity = Vec3::new(0.0, 0.0, 5.0);
+        p.last_speed = 5.0;
+        let (_, _, events) = ollie(&mut p, &s, 0.5);
+        assert!(events.contains(&Event::Landed));
+        let speed = p.body.velocity.length();
+        // Friction takes the 5 m/s down to about 4.25 while crouching; the
+        // landing then adds part of the 7.6 m/s fall.
+        assert!(speed > 5.0 && p.body.velocity.y.abs() < 1e-4, "speed {speed}");
     }
 }
