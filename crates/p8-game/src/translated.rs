@@ -174,7 +174,7 @@ fn read_input(
         stick += pad.left_stick();
         // A holds the crouch (CONFIRMED by play and code, see p8-skater).
         input.crouch |= pad.pressed(GamepadButton::South);
-        // D-pad records: LIKELY (the pad-to-record link is not yet traced).
+        // D-pad records "Left"/"Right"/"Down" (named by retail 822D6270).
         input.left |= pad.pressed(GamepadButton::DPadLeft);
         input.right |= pad.pressed(GamepadButton::DPadRight);
         input.brake_digital |= pad.pressed(GamepadButton::DPadDown);

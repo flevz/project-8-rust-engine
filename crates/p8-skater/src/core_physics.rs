@@ -614,9 +614,10 @@ impl CorePhysics {
             self.body.velocity += g * self.dt;
         }
 
-        // `820D7C88`: kick flag while crouched gently uphill (its first test,
-        // Input `+32`, reads a button not yet identified).
-        if self.crouched {
+        // `820D7C88`: kick flag while "Up" is held, or crouched gently uphill.
+        if input.up {
+            self.kick_flag = true;
+        } else if self.crouched {
             let dir_y = self.body.velocity.normalize_or_zero().y;
             // 0.55 is the constant at 820029A4.
             if dir_y > s.physics_float("Physics_kick_uphill_threshold", self.on_bike) && dir_y < 0.55 {
@@ -722,6 +723,7 @@ mod tests {
     const CROUCH: InputState = InputState {
         crouch: true,
         kick: false,
+        up: false,
         brake_digital: false,
         left: false,
         right: false,
