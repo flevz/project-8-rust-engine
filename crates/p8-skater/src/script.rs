@@ -49,6 +49,45 @@ impl Scripts {
             .unwrap_or_else(|| self.global_float(name))
     }
 
+    /// A struct global, following global names that point at other globals
+    /// (e.g. `terrain_default` = `standard_terrain_default`).
+    fn struct_global(&self, key: u32) -> Option<&Value> {
+        let mut v = self.globals.get(&key)?;
+        for _ in 0..8 {
+            match v {
+                Value::Checksum(k) => v = self.globals.get(k)?,
+                Value::Struct(_) => return Some(v),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// A number, or a checksum naming a number global.
+    fn number(&self, v: &Value) -> Option<f32> {
+        match v {
+            Value::Checksum(k) => self.globals.get(k).and_then(Value::as_f32),
+            v => v.as_f32(),
+        }
+    }
+
+    /// Retail `8228E620`: a terrain's `PhysicsActions` value (e.g.
+    /// `SKATE_ROLL_FRICTION`), falling back to `TERRAIN_DEFAULT`, else 0.
+    ///
+    /// LIKELY: that a checksum value (`skate_roll_friction = default_friction`)
+    /// resolves to the global of that name, and that the terrain index at
+    /// physics `+298` maps to these `terrain_*` globals (`8228E460` is not
+    /// translated; callers pass the terrain name directly).
+    pub fn terrain_float(&self, terrain: &str, name: &str) -> f32 {
+        let lookup = |t: &str| {
+            self.struct_global(qb_key(t))?
+                .get_named("PhysicsActions")?
+                .get_named(name)
+                .and_then(|v| self.number(v))
+        };
+        lookup(terrain).or_else(|| lookup("TERRAIN_DEFAULT")).unwrap_or(0.0)
+    }
+
     /// Retail `82199D00` + `82199A28`: a stat-scaled value.
     pub fn stat(&self, name: &str, on_bike: bool, stats: &StatLevels, ctx: StatContext) -> f32 {
         let found = self.physics_struct(on_bike).and_then(|s| s.get_named(name)).or_else(|| self.global(name));
@@ -121,10 +160,7 @@ impl Scripts {
 
     /// A struct member that may be a number directly or name a number global.
     fn float_member(&self, def: &Value, name: &str) -> Option<f32> {
-        match def.get_named(name)? {
-            Value::Checksum(k) => self.globals.get(k).and_then(Value::as_f32),
-            v => v.as_f32(),
-        }
+        self.number(def.get_named(name)?)
     }
 }
 
