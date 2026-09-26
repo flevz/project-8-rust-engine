@@ -1,0 +1,7 @@
+/target/
+*.xen
+*.xex
+*.iso
+/p8-inspect-report.txt
+/tuning.json
+/game-data/

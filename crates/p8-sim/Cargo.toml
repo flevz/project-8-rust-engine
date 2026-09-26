@@ -1,0 +1,12 @@
+[package]
+name = "p8-sim"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Engine-independent Project 8 skater simulation. No Bevy dependency: the game
+# crate adapts input, time and world geometry to the interfaces here.
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

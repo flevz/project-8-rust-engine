@@ -1,0 +1,13 @@
+[package]
+name = "p8-formats"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Readers for Tony Hawk's Project 8 (Xbox 360) data files. The files come
+# from the player's own disc; nothing from the game is stored in this repo.
+[dependencies]
+
+[[bin]]
+name = "p8-inspect"
+path = "src/bin/p8-inspect.rs"

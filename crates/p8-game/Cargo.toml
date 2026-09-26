@@ -1,0 +1,13 @@
+[package]
+name = "p8-game"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "project8"
+path = "src/main.rs"
+
+[dependencies]
+bevy.workspace = true
+p8-sim.workspace = true
