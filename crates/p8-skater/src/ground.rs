@@ -263,6 +263,8 @@ mod tests {
             f("ground_stick_angle", 30.0),
             f("ground_stick_angle_forward", 30.0),
             f("physics_air_gravity", -21.6),
+            f("physics_air_snap_up", 0.38),
+            f("skater_min_distance_to_wall", 0.2),
         ]);
         Scripts::new(
             [
@@ -371,5 +373,56 @@ mod tests {
         assert!(events.contains(&Event::WallPush));
         assert!((p.body.velocity - Vec3::new(0.0, 0.0, -(9.0 - 5.08))).length() < 1e-4);
         assert!(p.body.at().z < -0.99);
+    }
+
+    /// A level that is one box (from `min` to `max`), no flags.
+    fn block(min: Vec3, max: Vec3) -> crate::world::Level {
+        use p8_formats::havok::{LevelCollision, Solid, Transform};
+        let c = (min + max) * 0.5;
+        let half = ((max - min) * 0.5).to_array();
+        let solid = Solid::Box { transform: Transform { t: c.to_array(), ..Transform::IDENTITY }, half, material: 0 };
+        crate::world::Level::new(&LevelCollision { solids: vec![solid], unknown: Default::default() })
+    }
+
+    fn flying(s: &Scripts, pos: Vec3, v: Vec3) -> CorePhysics {
+        let mut p = CorePhysics::new(s);
+        p.body.position = pos;
+        p.body.velocity = v;
+        p.state = State::Air;
+        p
+    }
+
+    #[test]
+    fn flying_into_a_wall_slides_along_it_instead_of_through() {
+        let s = scripts();
+        // A tall wall from z = 1 to 2; flying at it on a slant.
+        let w = block(Vec3::new(-10.0, 0.0, 1.0), Vec3::new(10.0, 3.0, 2.0));
+        let mut p = flying(&s, Vec3::new(0.0, 1.0, 0.8), Vec3::new(3.0, 0.0, 6.0));
+        for _ in 0..20 {
+            p.step(&s, &InputState::default(), &w);
+            assert!(p.body.position.z < 1.0, "{}", p.body.position);
+        }
+        // The part into the wall is gone (pushed off by a tenth of the
+        // sliding speed); the part along it is kept.
+        assert!(p.body.velocity.z <= 0.0, "{}", p.body.velocity);
+        assert!((p.body.velocity.x - 3.0).abs() < 1e-3, "{}", p.body.velocity);
+    }
+
+    #[test]
+    fn rising_into_a_ledge_steps_up_onto_it() {
+        let s = scripts();
+        // A ledge 1 m high starting at z = 1.
+        let w = block(Vec3::new(-10.0, 0.0, 1.0), Vec3::new(10.0, 1.0, 5.0));
+        let mut p = flying(&s, Vec3::new(0.0, 0.7, 0.8), Vec3::new(0.0, 2.0, 6.0));
+        p.step(&s, &InputState::default(), &w);
+        // Put on top of it (0.025 + 0.00254 above), past the edge.
+        assert!((p.body.position.y - 1.02754).abs() < 1e-4, "{}", p.body.position);
+        assert!(p.body.position.z > 1.0);
+        let mut events = Vec::new();
+        for _ in 0..30 {
+            events.extend(p.step(&s, &InputState::default(), &w));
+        }
+        assert!(events.contains(&Event::Landed), "{events:?}");
+        assert!(p.body.position.y > 1.0);
     }
 }

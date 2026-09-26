@@ -203,8 +203,8 @@ impl CorePhysics {
     /// Skipped as retail skips it: in a spine transfer (SkaterState `+136`,
     /// read by `IsInSpineTransfer`; not translated, so never), when the
     /// ground normal is upside down (`+116` < -0.1), and when moving up
-    /// while on a movable object (`+2852`->`+24`, LIKELY movable contact;
-    /// the level has none). Not translated: its vert-state bookkeeping
+    /// while on a movable object (SkaterPhysicsControl `+2852`->`+24`,
+    /// the pointer `HasMovableContact` tests; the level has none). Not translated: its vert-state bookkeeping
     /// (clears SkaterState `+56` and `+1380`, sets `+144`).
     pub fn air_recover(&mut self, s: &Scripts, world: &dyn World) {
         // -0.1 is the constant at 820029A0.
@@ -289,9 +289,9 @@ impl CorePhysics {
     /// Retail air update `820F2310`, for a plain ollie: gravity, the move,
     /// and landing on a skatable surface.
     ///
-    /// Not translated (absent): the other calls near the start of the air
-    /// update whose purpose is not yet read (`820EA0D0`, `820EEB38`), vert air and lip
-    /// checks, wall collision (`820EF410`), bails on landing, moving
+    /// Not translated (absent): `820EA0D0` (runs only in a spine transfer or
+    /// with SkaterState `+152`, a state the bike commands set), `820EEB38`
+    /// (bikes only), vert air and lip checks, bails on landing, moving
     /// platforms, and the nose/tail landing feelers (`820E5250`, which only
     /// record contact).
     pub fn air_update(&mut self, s: &Scripts, world: &dyn World) -> Vec<Event> {
@@ -314,14 +314,31 @@ impl CorePhysics {
         let dt = self.dt;
         self.body.position += self.body.velocity * dt + g * (dt * dt * 0.5);
         self.body.velocity += g * dt;
+        // 820F305C: outside vert, the second matrix copy follows the matrix.
+        self.matrix_32 = self.body.matrix;
+
+        // `820EF410`: walls ahead. When it handled the frame, retail skips
+        // the landing (820F369C).
+        let handled = self.air_forward_collision(s, old, world);
+        // The pitch-bail check (820F31E4, `Pitch_Bail_Feeler_Length` and
+        // script `Pitch_Bail_Check`) leads into bails: not translated.
 
         // Landing: feeler from last position to this one, ignoring surfaces
         // with flag 0x10 (`820E5048(16, 0)` at 820F365C).
         let Some(hit) = world.feeler(old, self.body.position, 0x10, 0) else {
             return events;
         };
-        // Retail skips this hit when the air snap-up check `820E4DB8` finds a
-        // ledge to step onto (not translated yet).
+        if handled {
+            return events;
+        }
+        // 820F36B4: a ledge to step onto instead (`820E4DB8`) wins when
+        // rising faster than 0.25 (82000BEC) or the hit is steep (normal.y
+        // below 0.1), and 500 ms have passed since SkaterPhysicsControl
+        // `+116` (UNKNOWN; nothing translated sets it, so always).
+        let steep = hit.normal.y < 0.1;
+        if self.air_snap_up(s, old, world) && (self.body.velocity.y > 0.25 || steep) {
+            return events;
+        }
         let skatable = surface_skatable(s, &hit);
         if skatable && hit.normal.y < -0.01 {
             // Hitting a ceiling (-0.01 at 82001BA8): back off and fall.
@@ -338,6 +355,113 @@ impl CorePhysics {
         self.terrain = hit.terrain;
         self.land(s, hit.normal, &mut events);
         events
+    }
+
+    /// Retail `820E4DB8`: step up onto a ledge top the skater has just
+    /// clipped. `from` is where the skater was (object `+128`). A feeler
+    /// straight down at the skater's position, from `Physics_Air_Snap_Up`
+    /// above the higher of the two heights to the lower one, must find a
+    /// surface with normal.y above 0.5 (82000BE8); then the line at
+    /// snap-up height from `from` to that point (lifted 0.025 off it,
+    /// 820027D4) must be clear. The skater is put there, 0.00254 higher
+    /// (82002A64). Returns whether it stepped up.
+    pub fn air_snap_up(&mut self, s: &Scripts, from: Vec3, world: &dyn World) -> bool {
+        if self.in_bail {
+            return false;
+        }
+        let snap = s.physics_float("Physics_Air_Snap_Up", self.on_bike);
+        let pos = self.body.position;
+        let top = Vec3::new(pos.x, pos.y.max(from.y) + snap, pos.z);
+        let bottom = Vec3::new(pos.x, pos.y.min(from.y), pos.z);
+        let Some(hit) = world.feeler(top, bottom, 0x10, 0) else {
+            return false;
+        };
+        if hit.normal.y <= 0.5 {
+            return false;
+        }
+        let q = hit.point + hit.normal * 0.025;
+        let lift = Vec3::Y * snap;
+        if world.feeler(from + lift, q + lift, 0x10, 0).is_some() {
+            return false;
+        }
+        self.body.position = q + Vec3::Y * 0.00254;
+        true
+    }
+
+    /// Retail `820EF410`: in the air, a feeler ahead of the move at
+    /// `Skater_First_Forward_Collision_Height`, reaching
+    /// `..._Length` past it. Returns true when it dealt with the frame
+    /// (stepped up onto a ledge), which skips the landing.
+    ///
+    /// Not translated: vert (the `+56` branch), wallrides and wallplants
+    /// (`820EDAA8`, `820E8618`, which may take over first), trigger 512
+    /// scripts, the bonk sound, SkaterState `+200` bookkeeping, the wall
+    /// normal kept for `GetWallNormal` (`+2592`) and moving objects.
+    pub fn air_forward_collision(&mut self, s: &Scripts, from: Vec3, world: &dyn World) -> bool {
+        let pos = self.body.position;
+        let dir = (pos - from).normalize_or_zero();
+        let h = s.physics_float("Skater_First_Forward_Collision_Height", self.on_bike);
+        let l = s.physics_float("Skater_First_Forward_Collision_Length", self.on_bike);
+        let up = self.body.up();
+        let start = from + up * h;
+        let end = pos + up * h + dir * l;
+        let Some(hit) = world.feeler(start, end, 0x10, 0) else {
+            return false;
+        };
+        let n = hit.normal;
+        // Skatable and ground-like (0.8 at 82002964, 0.5 at 82000BE8): the
+        // landing deals with it.
+        if surface_skatable(s, &hit) && (n.dot(self.ground_normal) >= 0.8 || n.y >= 0.5) {
+            return false;
+        }
+        // 0.1 is the constant at 82000BF4.
+        let steep = n.y < 0.1;
+        self.body.position = pos + dir * l;
+        // 0.254 is the constant at 82002AC0.
+        if self.air_snap_up(s, from, world) && (self.body.velocity.y > 0.254 || steep) {
+            return true;
+        }
+        self.body.position = pos;
+
+        // Rising, upright, into a wall (0.5, 0.01 at 82000D7C): look for
+        // the lowest clear height over it, `Physics_Air_Snap_Up` down in
+        // steps of 0.05 (82054BE8) to 0.1, and lift the skater by it.
+        if self.body.up().y > 0.5 && self.body.velocity.y > 0.0 && n.y < 0.01 {
+            let mut lift = s.physics_float("Physics_Air_Snap_Up", self.on_bike);
+            let clear = |d: f32| world.feeler(start + Vec3::Y * d, end + Vec3::Y * d, 0x10, 0).is_none();
+            if clear(lift) {
+                while lift > 0.1 {
+                    if !clear(lift - 0.05) {
+                        break;
+                    }
+                    lift -= 0.05;
+                }
+                self.body.position.y += lift;
+                return true;
+            }
+        }
+
+        // Slide along the wall: drop the velocity into the wall, keeping
+        // the vertical part unless the wall faces down (-0.1 at 820029A0),
+        // then push off it by a tenth of the speed (0.1 at 82000BF4).
+        let v = &mut self.body.velocity;
+        let mut vertical = 0.0;
+        if n.y > -0.1 {
+            vertical = v.y;
+            v.y = 0.0;
+        }
+        *v -= n * v.dot(n);
+        let speed = v.length();
+        *v += n * speed * 0.1;
+        if n.y > -0.1 {
+            v.y = vertical;
+        }
+        // Turn a little away from the wall (0.05 at 82054BE8), keeping at.
+        let m = &mut self.body.matrix;
+        m.z_axis = (m.z_axis + n * 0.05).normalize_or_zero();
+        m.x_axis = m.y_axis.cross(m.z_axis).normalize_or_zero();
+        m.y_axis = m.z_axis.cross(m.x_axis).normalize_or_zero();
+        false
     }
 
     /// `820F3EF8`: the air feeler hit a surface that can't be skated.
