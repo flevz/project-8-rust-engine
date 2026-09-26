@@ -1,0 +1,1347 @@
+//! The script interpreter: one running script (retail `CScript`) with its
+//! call stack, loops, waits and event handlers. Each part names the retail
+//! function it follows; parts not read from the game say so.
+use crate::code::{self, *};
+use crate::params::Params;
+use p8_formats::qb::Value;
+use p8_formats::qb_key;
+use std::sync::Arc;
+
+/// Checksum of the unnamed `TRUE` a script returns to answer an `if`.
+pub const TRUE: u32 = 0x0203_B372;
+/// `null_script`: handlers with it only take the event.
+const NULL_SCRIPT: u32 = 0xC377_C572;
+/// Handler group used when none is given (`DEFAULT`).
+const DEFAULT_GROUP: u32 = 0x1CA1_FF20;
+
+/// What the script's game object provides: its globals, the commands the
+/// VM does not run itself, random numbers and the game clock.
+pub trait Host {
+    /// A global by name (scripts are [`Value::Script`]).
+    fn global(&self, key: u32) -> Option<Value>;
+    /// Run a command. `None` means the command is not translated yet.
+    fn command(&mut self, script: &mut Script, name: u32, params: &Params) -> Option<bool>;
+    /// `object : command` (retail 82226718). `None` when not translated.
+    fn object_command(&mut self, _script: &mut Script, _object: u32, _name: u32, _params: &Params) -> Option<bool> {
+        None
+    }
+    /// Whether `name` is a command (retail: a CFunction in the symbol
+    /// table). Used for names inside expressions.
+    fn is_command(&self, _name: u32) -> bool {
+        false
+    }
+    /// A random number in `0..n` (retail 821E8508).
+    fn random(&mut self, n: u32) -> u32;
+    /// Game time in milliseconds (for timed waits).
+    fn now_ms(&self) -> f64;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Wait {
+    None,
+    /// Frames still to wait (retail wait type 1, `8221A270`).
+    Frames(u32),
+    /// Until this game time (retail time waits, `8221A1A8`/`8221A2C0`).
+    Until(f64),
+    /// `Block`: until something else moves the script on.
+    Forever,
+}
+
+#[derive(Clone, Debug)]
+struct Loop {
+    start: usize,
+    end: usize,
+    count: Option<i32>,
+    first: bool,
+}
+
+/// A pending `if` (retail flags 0x40/0x20 at `+189`, target at `+192`).
+#[derive(Clone, Copy, Debug)]
+struct Cond {
+    target: usize,
+    negate: bool,
+}
+
+/// One level of the call stack (retail 52-byte frames at `+164`).
+#[derive(Clone, Debug)]
+struct Frame {
+    name: u32,
+    code: Arc<[u8]>,
+    pc: usize,
+    locals: Params,
+    loops: Vec<Loop>,
+    cond: Option<Cond>,
+    on_exit: Option<(u32, Params)>,
+}
+
+/// An event handler (retail entries of the table at `+240`, 20 bytes).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Handler {
+    pub event: u32,
+    pub script: u32,
+    pub group: u32,
+    pub exception: bool,
+    pub params: Params,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// Waiting for a later frame.
+    Waiting,
+    /// Ran to the end.
+    Done,
+}
+
+/// Retail scripts with the stop-on-return flag stop the update when the
+/// flagged level returns (update result 5); spawned-and-run-now scripts use
+/// it. Not needed by what is translated so far.
+#[derive(Clone, Debug)]
+pub struct Script {
+    pub name: u32,
+    code: Arc<[u8]>,
+    pc: Option<usize>,
+    pub locals: Params,
+    frames: Vec<Frame>,
+    loops: Vec<Loop>,
+    cond: Option<Cond>,
+    wait: Wait,
+    pub handlers: Vec<Handler>,
+    on_exception_run: Option<u32>,
+    on_exit: Option<(u32, Params)>,
+    sites: code::Sites,
+    /// Commands met that are not translated (for reporting).
+    pub untranslated: Vec<u32>,
+    /// Guard against a script looping without waiting.
+    steps: u32,
+}
+
+fn script_code(host: &dyn Host, name: u32) -> Option<Arc<[u8]>> {
+    match host.global(name)? {
+        Value::Script(c) => Some(c),
+        _ => None,
+    }
+}
+
+/// Retail `822178C0`: are two values equal? A checksum naming a global is
+/// compared as that global's value.
+pub fn equal(host: &dyn Host, a: &Value, b: &Value) -> bool {
+    let resolve = |v: &Value| match v {
+        Value::Checksum(k) => match host.global(*k) {
+            Some(g @ (Value::Int(_) | Value::Float(_) | Value::String(_) | Value::Pair(..) | Value::Vector(_))) => g,
+            Some(Value::Struct(s)) => Value::Struct(s),
+            _ => v.clone(),
+        },
+        v => v.clone(),
+    };
+    let (a, b) = (resolve(a), resolve(b));
+    use Value::*;
+    match (&a, &b) {
+        (Int(x), Int(y)) => x == y,
+        (Int(x), Float(y)) | (Float(y), Int(x)) => *x as f32 == *y,
+        // 1e-7 is the constant at 8201144C.
+        (Float(x), Float(y)) => (x - y).abs() < 1e-7,
+        (String(x), String(y)) => x == y,
+        (Checksum(x), Checksum(y)) => x == y,
+        (Pair(a1, a2), Pair(b1, b2)) => a1 == b1 && a2 == b2,
+        (Vector(x), Vector(y)) => x == y,
+        (Script(x), Script(y)) => Arc::ptr_eq(x, y),
+        (Struct(x), Struct(y)) => {
+            let sub = |p: &Vec<(u32, Value)>, q: &Vec<(u32, Value)>| p.iter().all(|c| q.contains(c));
+            sub(x, y) && sub(y, x)
+        }
+        (Array(x), Array(y)) => x == y,
+        _ => false,
+    }
+}
+
+impl Script {
+    /// Start script `name` with `params` (retail spawn: the script's own
+    /// first-line parameters, then `params` over them).
+    pub fn new(host: &mut dyn Host, name: u32, params: &Params) -> Option<Self> {
+        let code = script_code(host, name)?;
+        let mut s = Script {
+            name,
+            code,
+            pc: Some(0),
+            locals: Params::new(),
+            frames: Vec::new(),
+            loops: Vec::new(),
+            cond: None,
+            wait: Wait::None,
+            handlers: Vec::new(),
+            on_exception_run: None,
+            on_exit: None,
+            sites: code::Sites::default(),
+            untranslated: Vec::new(),
+            steps: 0,
+        };
+        s.enter(host, params);
+        Some(s)
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.pc.is_none()
+    }
+
+    /// The first line of a script may give default parameters; the passed
+    /// ones merge over them (retail 8220EF50 / 8220EBC8).
+    fn enter(&mut self, host: &mut dyn Host, params: &Params) {
+        let (defaults, pc) = self.parse_params(host, 0, None);
+        self.locals = defaults;
+        self.locals.merge(params);
+        self.pc = Some(pc);
+    }
+
+    fn rng(host: &mut dyn Host) -> impl FnMut(u32) -> u32 + '_ {
+        move |n| host.random(n)
+    }
+
+    fn transparent(&mut self, host: &mut dyn Host, pc: usize) -> usize {
+        let code = self.code.clone();
+        code::transparent(&code, pc, &mut Self::rng(host), &mut self.sites)
+    }
+
+    /// Retail `8220F8F0`: run until the script waits or ends.
+    pub fn update(&mut self, host: &mut dyn Host) -> Status {
+        self.steps = 0;
+        loop {
+            let Some(pc) = self.pc else { return Status::Done };
+            // 8221A568: count down or finish a wait.
+            match self.wait {
+                Wait::None => {}
+                Wait::Frames(n) if n > 0 => {
+                    self.wait = Wait::Frames(n - 1);
+                    return Status::Waiting;
+                }
+                Wait::Frames(_) => self.wait = Wait::None,
+                Wait::Until(t) if host.now_ms() < t => return Status::Waiting,
+                Wait::Until(_) => self.wait = Wait::None,
+                Wait::Forever => return Status::Waiting,
+            }
+            self.steps += 1;
+            if self.steps > 100_000 {
+                // Retail would hang here; stop the script instead.
+                self.pc = None;
+                return Status::Done;
+            }
+            self.statement(host, pc);
+            if self.wait != Wait::None && self.pc.is_some() {
+                // Loop back to the wait check (retail does it at the top).
+                continue;
+            }
+        }
+    }
+
+    fn statement(&mut self, host: &mut dyn Host, pc: usize) {
+        let code = self.code.clone();
+        match byte(&code, pc) {
+            NEWLINE | ENDIF | ENDSWITCH => self.pc = Some(pc + 1),
+            LINE => self.pc = Some(pc + 5),
+            IF => {
+                // 8220C5E8.
+                let target = pc + 1 + u16_at(&code, pc + 1);
+                let mut p = pc + 3;
+                let negate = byte(&code, p) == NOT;
+                if negate {
+                    p += 1;
+                }
+                self.cond = Some(Cond { target, negate });
+                self.pc = Some(p);
+            }
+            ELSE => self.pc = Some(pc + 1 + u16_at(&code, pc + 1)),
+            SWITCH => self.switch(host, pc),
+            BEGIN => {
+                self.loops.push(Loop { start: pc + 1, end: 0, count: None, first: true });
+                self.pc = Some(pc + 1);
+            }
+            REPEAT => self.repeat(host, pc),
+            BREAK => self.break_loop(host, pc),
+            ENDSCRIPT => {
+                self.run_on_exit(host);
+                self.return_from(host, Params::new());
+            }
+            RETURN => {
+                let (ret, _) = self.parse_params(host, pc + 1, Some(&self.locals.clone()));
+                self.run_on_exit(host);
+                self.return_from(host, ret);
+            }
+            LONG_JUMP | RANDOM | RANDOM_B | RANDOM_NO_REPEAT | RANDOM_PERMUTE | SHORT_JUMP => {
+                let p = self.transparent(host, pc);
+                self.pc = Some(p);
+            }
+            END => self.return_from(host, Params::new()),
+            _ => {
+                let result = self.line(host, pc);
+                if let (Some(r), Some(c)) = (result, self.cond.take())
+                    && r == c.negate
+                {
+                    self.pc = Some(c.target);
+                }
+            }
+        }
+    }
+
+    /// Retail `8220F210`: one command line. Returns its value, or `None`
+    /// when it called a script (the answer comes with its return).
+    fn line(&mut self, host: &mut dyn Host, pc: usize) -> Option<bool> {
+        let code = self.code.clone();
+        if byte(&code, pc) == OPEN_PAREN {
+            let (v, end) = self.expression(host, pc);
+            self.pc = Some(end);
+            return Some(truth(&v) != 0);
+        }
+        let (name, mut p) = self.read_name(&code, pc);
+        p = self.transparent(host, p);
+        match byte(&code, p) {
+            COLON => {
+                // `object : command params`.
+                let p2 = self.transparent(host, p + 1);
+                let (cmd, p3) = self.read_name(&code, p2);
+                let (params, end) = self.parse_params(host, p3, Some(&self.locals.clone()));
+                self.pc = Some(end);
+                return Some(match host.object_command(self, name, cmd, &params) {
+                    Some(r) => r,
+                    None => {
+                        self.note_untranslated(cmd);
+                        false
+                    }
+                });
+            }
+            EQUALS => {
+                // Retail takes the target from the four bytes before `=`
+                // (the name operand), so `<x> = v` sets `x` (8220F5EC).
+                let name = u32_at(&code, p - 4);
+                let p2 = self.transparent(host, p + 1);
+                let mut tmp = Params::new();
+                let end = if byte(&code, p2) == OPEN_PAREN {
+                    let (v, end) = self.expression(host, p2);
+                    tmp.add(name, v);
+                    end
+                } else {
+                    let locals = self.locals.clone();
+                    self.value(host, p2, name, &mut tmp, Some(&locals))
+                };
+                self.locals.merge(&tmp);
+                self.pc = Some(end);
+                return Some(true);
+            }
+            _ => {}
+        }
+        let (params, end) = self.parse_params(host, p, Some(&self.locals.clone()));
+        self.pc = Some(end);
+        self.call(host, name, &params)
+    }
+
+    /// Run `name` with `params` as a line would: a VM command, a script
+    /// (pushed as a call), or a host command.
+    fn call(&mut self, host: &mut dyn Host, name: u32, params: &Params) -> Option<bool> {
+        if let Some(r) = self.vm_command(host, name, params) {
+            return Some(r);
+        }
+        if let Some(code) = script_code(host, name) {
+            self.push_call(host, name, code, params);
+            return None;
+        }
+        match host.command(self, name, params) {
+            Some(r) => Some(r),
+            None => {
+                self.note_untranslated(name);
+                Some(false)
+            }
+        }
+    }
+
+    fn note_untranslated(&mut self, name: u32) {
+        if !self.untranslated.contains(&name) {
+            self.untranslated.push(name);
+        }
+    }
+
+    /// Retail `8220EF50`: call a script as a subroutine.
+    fn push_call(&mut self, host: &mut dyn Host, name: u32, code: Arc<[u8]>, params: &Params) {
+        let frame = Frame {
+            name: self.name,
+            code: self.code.clone(),
+            pc: self.pc.unwrap_or(0),
+            locals: std::mem::take(&mut self.locals),
+            loops: std::mem::take(&mut self.loops),
+            cond: self.cond.take(),
+            on_exit: self.on_exit.take(),
+        };
+        self.frames.push(frame);
+        self.name = name;
+        self.code = code;
+        self.enter(host, params);
+    }
+
+    /// Retail `8220E258`: return to the caller, merging `ret` into its
+    /// locals; a pending `if` on the call is true iff `ret` has `TRUE`.
+    fn return_from(&mut self, _host: &mut dyn Host, ret: Params) {
+        let Some(f) = self.frames.pop() else {
+            self.pc = None;
+            return;
+        };
+        self.name = f.name;
+        self.code = f.code;
+        self.pc = Some(f.pc);
+        self.locals = f.locals;
+        self.loops = f.loops;
+        self.on_exit = f.on_exit;
+        if let Some(c) = f.cond
+            && ret.flag(TRUE) == c.negate
+        {
+            self.pc = Some(c.target);
+        }
+        self.locals.merge(&ret);
+    }
+
+    /// Retail `822108B8`: run this level's `OnExitRun` script, if any.
+    fn run_on_exit(&mut self, host: &mut dyn Host) {
+        if let Some((name, params)) = self.on_exit.take() {
+            run_now(host, name, &params);
+        }
+    }
+
+    /// Retail `8220EBC8` (via `8220EE00`): replace the running script, as
+    /// `goto` and exceptions do. Pending `OnExitRun` scripts run first,
+    /// innermost first (`8220DAD8`).
+    pub fn goto(&mut self, host: &mut dyn Host, name: u32, params: &Params) {
+        let params = params.clone();
+        self.run_on_exit(host);
+        while let Some(f) = self.frames.pop() {
+            if let Some((n, p)) = f.on_exit {
+                run_now(host, n, &p);
+            }
+        }
+        self.loops.clear();
+        self.cond = None;
+        self.wait = Wait::None;
+        match script_code(host, name) {
+            Some(code) => {
+                self.name = name;
+                self.code = code;
+                self.enter(host, &params);
+            }
+            None => self.pc = None,
+        }
+    }
+
+    /// `repeat` (retail `8220C830`).
+    fn repeat(&mut self, host: &mut dyn Host, pc: usize) {
+        if self.loops.last().is_some_and(|l| l.first) {
+            let (params, end) = self.parse_params(host, pc + 1, Some(&self.locals.clone()));
+            let l = self.loops.last_mut().unwrap();
+            l.end = end;
+            l.count = params.unnamed_int();
+            l.first = false;
+        }
+        let Some(l) = self.loops.last_mut() else {
+            self.pc = Some(pc + 1);
+            return;
+        };
+        if let Some(c) = &mut l.count {
+            *c -= 1;
+            if *c == 0 {
+                let end = l.end;
+                self.loops.pop();
+                self.pc = Some(end);
+                return;
+            }
+        }
+        self.pc = Some(l.start);
+    }
+
+    /// `break` (retail `8220C928`): on past the matching `repeat` and its
+    /// parameters.
+    fn break_loop(&mut self, host: &mut dyn Host, pc: usize) {
+        let code = self.code.clone();
+        let mut p = pc;
+        let mut depth = 0;
+        loop {
+            let t = byte(&code, p);
+            p = skip(&code, p);
+            if t == BEGIN {
+                depth += 1;
+            } else if t == REPEAT {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            } else if t == END || p >= code.len() {
+                break;
+            }
+        }
+        let (_, end) = self.parse_params(host, p, None);
+        self.loops.pop();
+        self.pc = Some(end);
+    }
+
+    /// `switch` (retail `8220D4E0`).
+    fn switch(&mut self, host: &mut dyn Host, pc: usize) {
+        let code = self.code.clone();
+        let locals = self.locals.clone();
+        let (params, mut p) = self.parse_params(host, pc + 1, Some(&locals));
+        let value = params.first().cloned();
+        loop {
+            match byte(&code, p) {
+                SWITCH => p = skip_switch(&code, p + 1),
+                CASE => {
+                    let target = p + 2 + u16_at(&code, p + 2);
+                    let (case, after) = self.parse_params(host, p + 4, Some(&locals));
+                    let hit = match (&value, case.first()) {
+                        (Some(a), Some(b)) => equal(host, a, b),
+                        _ => false,
+                    };
+                    if !hit {
+                        p = target;
+                        continue;
+                    }
+                    // Skip further labels sharing this body.
+                    let mut q = skip_newlines(&code, after);
+                    while byte(&code, q) == SHORT_JUMP {
+                        match byte(&code, q + 3) {
+                            CASE => q = self.parse_params(host, q + 4, None).1,
+                            DEFAULT => q += 4,
+                            _ => break,
+                        }
+                        q = skip_newlines(&code, q);
+                    }
+                    self.pc = Some(q);
+                    return;
+                }
+                DEFAULT => {
+                    self.pc = Some(p + 4);
+                    return;
+                }
+                ENDSWITCH => {
+                    self.pc = Some(p + 1);
+                    return;
+                }
+                END | ENDSCRIPT => {
+                    self.pc = Some(p);
+                    return;
+                }
+                _ => p = skip(&code, p),
+            }
+        }
+    }
+
+    /// Retail `8220C500`: the name at the start of a line: `name`, the
+    /// checksum held by `<name>`, or for `<...>` the first unnamed checksum.
+    fn read_name(&self, code: &[u8], pc: usize) -> (u32, usize) {
+        match byte(code, pc) {
+            NAME => (u32_at(code, pc + 1), pc + 5),
+            ALL_ARGS => (self.locals.unnamed_checksum().unwrap_or(0), pc + 1),
+            ARG if byte(code, pc + 1) == NAME => {
+                let key = u32_at(code, pc + 2);
+                let v = match self.locals.get(key) {
+                    Some(Value::Checksum(c)) => *c,
+                    _ => 0,
+                };
+                (v, pc + 6)
+            }
+            _ => (0, skip(code, pc)),
+        }
+    }
+
+    /// Retail `8220A228`: the parameters from `pc` to the end of the line
+    /// (or a closing parenthesis). `caller` is used by `<...>` and `<name>`.
+    fn parse_params(&mut self, host: &mut dyn Host, pc: usize, caller: Option<&Params>) -> (Params, usize) {
+        let code = self.code.clone();
+        let mut out = Params::new();
+        if byte(&code, pc) == PACKED_STRUCT {
+            let (start, end) = packed_struct_range(&code, pc);
+            let block = code.get(start..end).unwrap_or(&[]);
+            return (Params::from_struct(&p8_formats::qb::embedded_struct(block)), end);
+        }
+        let mut p = pc;
+        for _ in 0..10_000 {
+            p = self.transparent(host, p);
+            match byte(&code, p) {
+                END | NEWLINE | LINE | CLOSE_PAREN => break,
+                NAME => {
+                    let key = u32_at(&code, p + 1);
+                    let after = self.transparent(host, p + 5);
+                    if byte(&code, after) == EQUALS {
+                        let v_at = self.transparent(host, after + 1);
+                        if byte(&code, v_at) == OPEN_PAREN {
+                            let (v, end) = self.expression(host, v_at);
+                            out.add(key, v);
+                            p = end;
+                        } else {
+                            p = self.value(host, v_at, key, &mut out, caller);
+                        }
+                    } else {
+                        p = self.value(host, p, 0, &mut out, caller);
+                    }
+                }
+                ALL_ARGS => {
+                    if let Some(c) = caller {
+                        out.merge(c);
+                    }
+                    p += 1;
+                }
+                STRUCT_OPEN => {
+                    // 82209EF8 into the list itself.
+                    let (s, end) = self.text_struct(host, p, caller);
+                    out.merge(&s);
+                    p = end;
+                }
+                COMMA => p += 1,
+                OPEN_PAREN => {
+                    let (v, end) = self.expression(host, p);
+                    match &v {
+                        Value::Struct(_) => out.merge(&Params::from_struct(&v)),
+                        _ => out.add(0, v),
+                    }
+                    p = end;
+                }
+                _ => p = self.value(host, p, 0, &mut out, caller),
+            }
+        }
+        (out, p)
+    }
+
+    /// Retail `82208CE8`: one value at `pc`, added to `out` as `key`.
+    fn value(&mut self, host: &mut dyn Host, pc: usize, key: u32, out: &mut Params, caller: Option<&Params>) -> usize {
+        let code = self.code.clone();
+        let p = pc + 1;
+        match byte(&code, pc) {
+            NAME => {
+                out.add(key, Value::Checksum(u32_at(&code, p)));
+                p + 4
+            }
+            INT => {
+                out.add(key, Value::Int(u32_at(&code, p) as i32));
+                p + 4
+            }
+            FLOAT => {
+                out.add(key, Value::Float(f32_at(&code, p)));
+                p + 4
+            }
+            VECTOR => {
+                out.add(key, Value::Vector([f32_at(&code, p), f32_at(&code, p + 4), f32_at(&code, p + 8)]));
+                p + 12
+            }
+            PAIR => {
+                out.add(key, Value::Pair(f32_at(&code, p), f32_at(&code, p + 4)));
+                p + 8
+            }
+            STRING => {
+                let n = u32_at(&code, p) as usize;
+                let s = code.get(p + 4..p + 4 + n).unwrap_or(&[]);
+                let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+                out.add(key, Value::String(String::from_utf8_lossy(&s[..end]).into_owned()));
+                p + 4 + n
+            }
+            WIDE_STRING => {
+                let n = u32_at(&code, p) as usize;
+                let s = code.get(p + 4..p + 4 + n).unwrap_or(&[]);
+                let units: Vec<u16> =
+                    s.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
+                out.add(key, Value::String(String::from_utf16_lossy(&units)));
+                p + 4 + n
+            }
+            STRUCT_OPEN => {
+                let (s, end) = self.text_struct(host, pc, caller);
+                out.add(key, s.to_struct());
+                end
+            }
+            ARRAY_OPEN => {
+                let (a, end) = self.text_array(host, pc, caller);
+                out.add(key, a);
+                end
+            }
+            PACKED_STRUCT => {
+                let (start, end) = packed_struct_range(&code, pc);
+                out.add(key, p8_formats::qb::embedded_struct(code.get(start..end).unwrap_or(&[])));
+                end
+            }
+            RANDOM_RANGE | RANDOM_RANGE_B => {
+                // 82208858 (not read): a number between the range's ends.
+                let mut tmp = Params::new();
+                let end = self.value(host, p, 0, &mut tmp, caller);
+                match tmp.first() {
+                    Some(Value::Pair(a, b)) => {
+                        let t = host.random(10_001) as f32 / 10_000.0;
+                        out.add(key, Value::Float(a + (b - a) * t));
+                    }
+                    Some(v) => out.add(key, v.clone()),
+                    None => {}
+                }
+                end
+            }
+            ARG => {
+                // `<name>`: missing adds nothing; an unnamed struct merges.
+                let name = u32_at(&code, p + 1);
+                if let Some(v) = caller.and_then(|c| c.get(name)).cloned() {
+                    match (&v, key) {
+                        (Value::Struct(_), 0) => out.merge(&Params::from_struct(&v)),
+                        _ => out.add(key, v),
+                    }
+                }
+                p + 5
+            }
+            ALL_ARGS => {
+                if let Some(c) = caller {
+                    if key == 0 {
+                        out.merge(c);
+                    } else {
+                        out.add(key, c.to_struct());
+                    }
+                }
+                p
+            }
+            GLOBAL => {
+                // `?name`, or `?<name>` naming the global through a local.
+                let (name, end) = if byte(&code, p) == ARG {
+                    let k = u32_at(&code, p + 2);
+                    let n = match caller.and_then(|c| c.get(k)) {
+                        Some(Value::Checksum(c)) => *c,
+                        _ => 0,
+                    };
+                    (n, p + 6)
+                } else {
+                    (u32_at(&code, p + 1), p + 5)
+                };
+                // Retail adds a link to the global (82214898); an unnamed
+                // struct link reads as its members.
+                match host.global(name) {
+                    Some(v @ Value::Struct(_)) if key == 0 => out.merge(&Params::from_struct(&v)),
+                    Some(v) => out.add(key, v),
+                    None => {}
+                }
+                end
+            }
+            // Retail returns the same position for other tokens; skip them
+            // here rather than stop.
+            _ => skip(&code, pc).max(pc + 1),
+        }
+    }
+
+    /// `{ ... }` written out in the bytecode (retail `82209EF8`).
+    fn text_struct(&mut self, host: &mut dyn Host, pc: usize, caller: Option<&Params>) -> (Params, usize) {
+        let code = self.code.clone();
+        let mut out = Params::new();
+        let mut p = pc + 1;
+        for _ in 0..10_000 {
+            p = self.transparent(host, p);
+            match byte(&code, p) {
+                STRUCT_CLOSE => return (out, p + 1),
+                END | ENDSCRIPT => return (out, p),
+                NEWLINE | COMMA => p += 1,
+                LINE => p += 5,
+                NAME => {
+                    let key = u32_at(&code, p + 1);
+                    let after = self.transparent(host, p + 5);
+                    if byte(&code, after) == EQUALS {
+                        let v_at = self.transparent(host, after + 1);
+                        if byte(&code, v_at) == OPEN_PAREN {
+                            let (v, end) = self.expression(host, v_at);
+                            out.add(key, v);
+                            p = end;
+                        } else {
+                            p = self.value(host, v_at, key, &mut out, caller);
+                        }
+                    } else {
+                        p = self.value(host, p, 0, &mut out, caller);
+                    }
+                }
+                _ => p = self.value(host, p, 0, &mut out, caller),
+            }
+        }
+        (out, p)
+    }
+
+    /// `[ ... ]` written out in the bytecode (retail `8220A5E8`, not read in
+    /// full: elements separated by commas and new lines).
+    fn text_array(&mut self, host: &mut dyn Host, pc: usize, caller: Option<&Params>) -> (Value, usize) {
+        let code = self.code.clone();
+        let mut items = Vec::new();
+        let mut p = pc + 1;
+        for _ in 0..10_000 {
+            p = self.transparent(host, p);
+            match byte(&code, p) {
+                ARRAY_CLOSE => return (Value::Array(items), p + 1),
+                END | ENDSCRIPT => break,
+                NEWLINE | COMMA => p += 1,
+                LINE => p += 5,
+                _ => {
+                    let mut tmp = Params::new();
+                    p = self.value(host, p, 0, &mut tmp, caller);
+                    items.extend(tmp.0.into_iter().map(|(_, v)| v));
+                }
+            }
+        }
+        (Value::Array(items), p)
+    }
+
+    /// Retail `8220B878`: an expression starting at `(`, to its matching
+    /// `)`. Operators apply by the precedence table at 826DE878.
+    fn expression(&mut self, host: &mut dyn Host, pc: usize) -> (Value, usize) {
+        let code = self.code.clone();
+        let locals = self.locals.clone();
+        let mut values: Vec<Value> = Vec::new();
+        // Operators; 0 marks an open parenthesis.
+        let mut ops: Vec<u8> = Vec::new();
+        let mut depth = 0;
+        let mut expect_operand = true;
+        let mut p = pc;
+        for _ in 0..10_000 {
+            p = self.transparent(host, p);
+            let t = byte(&code, p);
+            match t {
+                OPEN_PAREN => {
+                    ops.push(0);
+                    depth += 1;
+                    expect_operand = true;
+                    p += 1;
+                }
+                CLOSE_PAREN => {
+                    p += 1;
+                    while let Some(op) = ops.pop() {
+                        if op == 0 {
+                            break;
+                        }
+                        apply(host, op, &mut values);
+                    }
+                    depth -= 1;
+                    expect_operand = false;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                EQUALS | DOT | MINUS | PLUS | DIVIDE | MULTIPLY | LESS | 0x13 | GREATER | 0x15 | OR | 0x33 | 0x34
+                | 0x35 | 0x36 | ARRAY_OPEN
+                    if !expect_operand =>
+                {
+                    while let Some(&top) = ops.last() {
+                        if top == 0 || precedence(top) < precedence(t) {
+                            break;
+                        }
+                        ops.pop();
+                        apply(host, top, &mut values);
+                    }
+                    ops.push(t);
+                    expect_operand = true;
+                    p += 1;
+                }
+                ARRAY_CLOSE => p += 1,
+                NEWLINE | END | ENDSCRIPT => break,
+                NAME if expect_operand => {
+                    // A command is called with the rest as parameters and
+                    // gives its result; a global gives its value; else the
+                    // checksum itself (8220BBD0).
+                    let name = u32_at(&code, p + 1);
+                    let global = host.global(name);
+                    if is_vm_command(name) || host.is_command(name) || matches!(global, Some(Value::Script(_))) {
+                        let (params, end) = self.parse_params(host, p + 5, Some(&locals));
+                        let r = self.call(host, name, &params).unwrap_or(false);
+                        values.push(Value::Int(r as i32));
+                        p = end;
+                    } else {
+                        values.push(match global {
+                            Some(Value::Checksum(_)) | None => Value::Checksum(name),
+                            Some(v) => v,
+                        });
+                        p += 5;
+                    }
+                    expect_operand = false;
+                }
+                INT | FLOAT if !expect_operand => {
+                    // A negative literal right after a value is a
+                    // subtraction (8220BAD8).
+                    let mut tmp = Params::new();
+                    let end = self.value(host, p, 0, &mut tmp, Some(&locals));
+                    let neg = match tmp.first() {
+                        Some(Value::Int(i)) if *i < 0 => Some(Value::Int(-i)),
+                        Some(Value::Float(f)) if *f < 0.0 => Some(Value::Float(-f)),
+                        _ => None,
+                    };
+                    match neg {
+                        Some(v) => {
+                            while let Some(&top) = ops.last() {
+                                if top == 0 || precedence(top) < precedence(MINUS) {
+                                    break;
+                                }
+                                ops.pop();
+                                apply(host, top, &mut values);
+                            }
+                            ops.push(MINUS);
+                            values.push(v);
+                            p = end;
+                        }
+                        None => break,
+                    }
+                }
+                _ => {
+                    let mut tmp = Params::new();
+                    let end = self.value(host, p, 0, &mut tmp, Some(&locals));
+                    values.push(tmp.first().cloned().unwrap_or(Value::Int(0)));
+                    p = end.max(p + 1);
+                    expect_operand = false;
+                }
+            }
+        }
+        while let Some(op) = ops.pop() {
+            if op != 0 {
+                apply(host, op, &mut values);
+            }
+        }
+        (values.pop().unwrap_or(Value::Int(0)), p)
+    }
+
+    /// Commands the VM runs itself (retail CFunctions that act on the
+    /// script). `None` when `name` is not one of them.
+    fn vm_command(&mut self, host: &mut dyn Host, name: u32, params: &Params) -> Option<bool> {
+        let k = qb_key;
+        if name == k("Wait") {
+            // 822A6FB8.
+            let n = params.unnamed_float().unwrap_or(0.0);
+            let seconds = params.flag(k("seconds")) || params.flag(k("second"));
+            let frames = params.flag(k("GameFrame")) || params.flag(k("gameframes")) || params.flag(k("game"));
+            let frame_time = params.flag(k("Frame")) || params.flag(k("Frames"));
+            self.wait = if seconds {
+                Wait::Until(host.now_ms() + (n * 1000.0) as i64 as f64)
+            } else if frames {
+                Wait::Frames(n as u32)
+            } else if frame_time {
+                // 16.6667 ms per frame (constant at 8200346C).
+                Wait::Until(host.now_ms() + (n * 16.666_666) as i32 as f64)
+            } else if params.flag(k("None")) {
+                Wait::Frames(n as u32)
+            } else {
+                Wait::Until(host.now_ms() + n as i64 as f64)
+            };
+            return Some(true);
+        }
+        if name == k("Block") {
+            self.wait = Wait::Forever;
+            return Some(true);
+        }
+        if name == k("GotParam") {
+            let key = params.unnamed_checksum().unwrap_or(0);
+            return Some(self.locals.got(key));
+        }
+        if name == k("Goto") {
+            let target = params.unnamed_checksum().unwrap_or(0);
+            let p = params.params(k("Params")).unwrap_or_default();
+            self.goto(host, target, &p);
+            return Some(true);
+        }
+        if name == k("SetException") || name == k("SetExceptionHandler") || name == k("SetEventHandler") {
+            let exception = name != k("SetEventHandler") || params.flag(k("Exception"));
+            let h = Handler {
+                event: params.checksum(k("Ex")).unwrap_or(0),
+                script: params.checksum(k("Scr")).unwrap_or(0),
+                group: params.checksum(k("Group")).unwrap_or(DEFAULT_GROUP),
+                exception,
+                params: params.params(k("Params")).unwrap_or_default(),
+            };
+            self.add_handler(h);
+            return Some(true);
+        }
+        if name == k("ClearEventHandler") {
+            let ev = params.unnamed_checksum().unwrap_or(0);
+            self.handlers.retain(|h| h.event != ev);
+            return Some(true);
+        }
+        if name == k("ClearEventHandlerGroup") {
+            let g = params.unnamed_checksum().unwrap_or(DEFAULT_GROUP);
+            self.handlers.retain(|h| h.group != g);
+            return Some(true);
+        }
+        if name == k("ResetEventHandlersFromTable") {
+            // 822AA848 -> 8220D1F8: clear the group, then add the rows.
+            let table = params.unnamed_checksum().and_then(|t| host.global(t));
+            let group = params.checksum(k("Group")).unwrap_or(DEFAULT_GROUP);
+            self.handlers.retain(|h| h.group != group);
+            if let Some(Value::Array(rows)) = table {
+                for row in &rows {
+                    let r = Params::from_struct(row);
+                    self.add_handler(Handler {
+                        event: r.checksum(k("ex")).unwrap_or(0),
+                        script: r.checksum(k("scr")).unwrap_or(0),
+                        group,
+                        exception: r.first() == Some(&Value::Checksum(k("Exception"))),
+                        params: r.params(k("params")).unwrap_or_default(),
+                    });
+                }
+            }
+            return Some(true);
+        }
+        if name == k("OnExceptionRun") {
+            self.on_exception_run = params.unnamed_checksum();
+            return Some(true);
+        }
+        if name == k("OnExitRun") {
+            self.on_exit = params
+                .unnamed_checksum()
+                .map(|n| (n, params.params(k("Params")).unwrap_or_default()));
+            return Some(true);
+        }
+        if name == k("Printf") {
+            return Some(true);
+        }
+        if name == k("ClearException") {
+            // Its checksum is nowhere in the executable: an unknown symbol,
+            // which retail answers TRUE without doing anything.
+            return Some(true);
+        }
+        None
+    }
+
+    /// Retail `822241F8`: add a handler, replacing one for the same event
+    /// (LIKELY: the add function is not read in full).
+    fn add_handler(&mut self, h: Handler) {
+        self.handlers.retain(|o| o.event != h.event);
+        self.handlers.push(h);
+    }
+
+    /// Retail `82224D78`: an event arrives. Returns whether a handler took
+    /// it. Exceptions replace the running script and run it at once.
+    pub fn event(&mut self, host: &mut dyn Host, event: u32, data: &Params) -> bool {
+        let Some(h) = self.handlers.iter().find(|h| h.event == event).cloned() else {
+            return false;
+        };
+        if h.script == NULL_SCRIPT {
+            return true;
+        }
+        let mut params = h.params.clone();
+        params.merge(data);
+        if h.exception {
+            if let Some(n) = self.on_exception_run.take() {
+                let mut p = Params::new();
+                p.add(0, Value::Checksum(event));
+                run_now(host, n, &p);
+            }
+            self.goto(host, h.script, &params);
+            self.update(host);
+        } else {
+            run_now(host, h.script, &params);
+        }
+        true
+    }
+}
+
+fn is_vm_command(name: u32) -> bool {
+    [
+        "Wait",
+        "Block",
+        "GotParam",
+        "Goto",
+        "SetException",
+        "SetExceptionHandler",
+        "SetEventHandler",
+        "ClearEventHandler",
+        "ClearEventHandlerGroup",
+        "ResetEventHandlersFromTable",
+        "OnExceptionRun",
+        "OnExitRun",
+        "Printf",
+        "ClearException",
+    ]
+    .iter()
+    .any(|n| qb_key(n) == name)
+}
+
+/// Retail `82210460`: run a script straight away (not read in full; runs
+/// until it ends or first waits).
+fn run_now(host: &mut dyn Host, name: u32, params: &Params) {
+    if let Some(mut s) = Script::new(host, name, params) {
+        s.update(host);
+    }
+}
+
+/// Retail `82208290`: skip new lines and line numbers.
+fn skip_newlines(code: &[u8], mut p: usize) -> usize {
+    loop {
+        match byte(code, p) {
+            NEWLINE => p += 1,
+            LINE => p += 5,
+            _ => return p,
+        }
+    }
+}
+
+/// Retail `8220C670`: past a nested switch.
+fn skip_switch(code: &[u8], mut p: usize) -> usize {
+    while byte(code, p) != ENDSWITCH && p < code.len() {
+        if byte(code, p) == SWITCH {
+            p = skip_switch(code, p + 1);
+        } else {
+            p = skip(code, p);
+        }
+    }
+    p + 1
+}
+
+/// Operator precedence (table at 826DE878).
+fn precedence(op: u8) -> i32 {
+    match op {
+        ARRAY_OPEN | DOT => 100,
+        MULTIPLY | DIVIDE => 99,
+        MINUS | PLUS => 98,
+        0x35 => 90,
+        0x36 => 89,
+        LESS => 80,
+        0x13 => 79,
+        GREATER => 78,
+        0x15 => 77,
+        EQUALS => 76,
+        0x33 => 60,
+        0x34 => 59,
+        OR => 58,
+        _ => -1,
+    }
+}
+
+/// How `||` reads a value (82204838 case 45): an integer as itself, a float
+/// as 1 when not zero, anything else as 0.
+fn truth(v: &Value) -> i32 {
+    match v {
+        Value::Int(i) => *i,
+        Value::Float(f) => (*f != 0.0) as i32,
+        _ => 0,
+    }
+}
+
+fn num(v: &Value) -> Option<f32> {
+    v.as_f32()
+}
+
+/// Retail `82204838`: apply an operator to the top two values. Confirmed:
+/// `=` (822178C0), `||`, `+` on numbers and strings. Not read in full, so
+/// unconfirmed: `-`, `*`, `/` (numbers as `+` does), `<`/`>` (82217CA0,
+/// 82217F58, numbers only here), `.` (member of a struct), `[` (element).
+fn apply(host: &dyn Host, op: u8, values: &mut Vec<Value>) {
+    let b = values.pop().unwrap_or(Value::Int(0));
+    let a = values.pop().unwrap_or(Value::Int(0));
+    use Value::*;
+    let arith = |f: fn(f32, f32) -> f32, i: fn(i32, i32) -> i32| match (&a, &b) {
+        (Int(x), Int(y)) => Int(i(*x, *y)),
+        _ => match (num(&a), num(&b)) {
+            (Some(x), Some(y)) => Float(f(x, y)),
+            _ => Int(0),
+        },
+    };
+    let r = match op {
+        EQUALS => Int(equal(host, &a, &b) as i32),
+        OR => Int(truth(&a) | truth(&b)),
+        PLUS => match (&a, &b) {
+            (String(x), String(y)) => String(format!("{x}{y}")),
+            (Struct(x), Struct(y)) => {
+                let mut p = crate::params::Params(x.clone());
+                p.merge(&crate::params::Params(y.clone()));
+                p.to_struct()
+            }
+            _ => arith(|x, y| x + y, |x, y| x.wrapping_add(y)),
+        },
+        MINUS => arith(|x, y| x - y, |x, y| x.wrapping_sub(y)),
+        MULTIPLY => arith(|x, y| x * y, |x, y| x.wrapping_mul(y)),
+        DIVIDE => match (&a, &b) {
+            (Int(_), Int(0)) => Int(0),
+            _ => arith(|x, y| x / y, |x, y| x / y),
+        },
+        LESS => Int(matches!((num(&a), num(&b)), (Some(x), Some(y)) if x < y) as i32),
+        GREATER => Int(matches!((num(&a), num(&b)), (Some(x), Some(y)) if x > y) as i32),
+        DOT => match (&a, &b) {
+            (Struct(m), Checksum(k)) => m.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Int(0)),
+            _ => Int(0),
+        },
+        ARRAY_OPEN => match (&a, &b) {
+            (Array(items), Int(i)) => items.get(*i as usize).cloned().unwrap_or(Int(0)),
+            _ => Int(0),
+        },
+        // No handler in retail (an error) or not read.
+        _ => Int(0),
+    };
+    values.push(r);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Assembles bytecode from readable pieces.
+    #[derive(Default)]
+    struct Asm(Vec<u8>);
+    impl Asm {
+        fn t(mut self, b: u8) -> Self {
+            self.0.push(b);
+            self
+        }
+        fn name(mut self, n: &str) -> Self {
+            self.0.push(NAME);
+            self.0.extend(qb_key(n).to_le_bytes());
+            self
+        }
+        fn int(mut self, i: i32) -> Self {
+            self.0.push(INT);
+            self.0.extend(i.to_le_bytes());
+            self
+        }
+        fn arg(self, n: &str) -> Self {
+            self.t(ARG).name(n)
+        }
+        /// A jump token whose target is filled in later.
+        fn jump(mut self, tok: u8) -> (Self, usize) {
+            self.0.push(tok);
+            let at = self.0.len();
+            self.0.extend([0, 0]);
+            (self, at)
+        }
+        fn land(mut self, at: usize) -> Self {
+            let off = self.0.len() - at;
+            self.0[at] = off as u8;
+            self.0[at + 1] = (off >> 8) as u8;
+            self
+        }
+        fn nl(self) -> Self {
+            self.t(NEWLINE)
+        }
+    }
+
+    struct Test {
+        globals: BTreeMap<u32, Value>,
+        log: Vec<(String, Params)>,
+        answers: BTreeMap<u32, bool>,
+        time: f64,
+    }
+
+    impl Test {
+        fn new(scripts: &[(&str, Asm)]) -> Self {
+            let globals = scripts.iter().map(|(n, a)| (qb_key(n), Value::Script(a.0.clone().into()))).collect();
+            Test { globals, log: Vec::new(), answers: BTreeMap::new(), time: 0.0 }
+        }
+        fn called(&self) -> Vec<String> {
+            self.log.iter().map(|(n, _)| n.clone()).collect()
+        }
+    }
+
+    const NAMES: &[&str] = &["a", "b", "c", "check", "yes", "no", "ollied", "handler"];
+
+    impl Host for Test {
+        fn global(&self, key: u32) -> Option<Value> {
+            self.globals.get(&key).cloned()
+        }
+        fn command(&mut self, _s: &mut Script, name: u32, params: &Params) -> Option<bool> {
+            let n = NAMES.iter().find(|n| qb_key(n) == name)?;
+            self.log.push((n.to_string(), params.clone()));
+            Some(*self.answers.get(&name).unwrap_or(&true))
+        }
+        fn random(&mut self, _n: u32) -> u32 {
+            0
+        }
+        fn now_ms(&self) -> f64 {
+            self.time
+        }
+    }
+
+    fn run(t: &mut Test, name: &str) -> Script {
+        let mut s = Script::new(t, qb_key(name), &Params::new()).unwrap();
+        s.update(t);
+        s
+    }
+
+    #[test]
+    fn if_else_follows_the_command_result_and_not() {
+        // if check / a / else / b / endif / if not check / c / endif
+        let (s, j1) = Asm::default().nl().jump(IF);
+        let s = s.name("check").nl().name("a").nl();
+        let (s, j2) = s.jump(ELSE);
+        let s = s.land(j1).nl().name("b").nl().land(j2).t(ENDIF).nl();
+        let (s, j3) = s.jump(IF);
+        let s = s.t(NOT).name("check").nl().name("c").nl().land(j3).t(ENDIF).nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        run(&mut t, "main");
+        assert_eq!(t.called(), ["check", "a", "check"]);
+        t.log.clear();
+        t.answers.insert(qb_key("check"), false);
+        run(&mut t, "main");
+        assert_eq!(t.called(), ["check", "b", "check", "c"]);
+    }
+
+    #[test]
+    fn counted_loop_and_break() {
+        // begin / a / repeat 3 ; begin / b / break / repeat
+        let s = Asm::default().nl().t(BEGIN).nl().name("a").nl().t(REPEAT).int(3).nl();
+        let s = s.t(BEGIN).nl().name("b").nl().t(BREAK).nl().t(REPEAT).nl().name("c").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        run(&mut t, "main");
+        assert_eq!(t.called(), ["a", "a", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn wait_one_gameframe_resumes_next_frame() {
+        let s = Asm::default().nl().name("a").nl().name("Wait").int(1).name("gameframe").nl().name("b").nl();
+        let s = s.t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        let mut sc = run(&mut t, "main");
+        assert_eq!(t.called(), ["a"]);
+        assert_eq!(sc.update(&mut t), Status::Done);
+        assert_eq!(t.called(), ["a", "b"]);
+    }
+
+    #[test]
+    fn calling_a_script_answers_an_if_with_return_true_and_passes_values_back() {
+        // sub: <y> = 5 / return TRUE x = <y>   main: if sub / a <x> / endif
+        // (a called script's own locals stay private; only returned values
+        // reach the caller)
+        let sub = Asm::default().nl().arg("y").t(EQUALS).int(5).nl().t(RETURN).name("TRUE").name("x").t(EQUALS);
+        let sub = sub.arg("y").nl().t(ENDSCRIPT);
+        let (m, j) = Asm::default().nl().jump(IF);
+        let m = m.name("sub").nl().name("a").arg("x").nl().land(j).t(ENDIF).nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", m), ("sub", sub)]);
+        run(&mut t, "main");
+        assert_eq!(t.log.len(), 1);
+        assert_eq!(t.log[0].1.first(), Some(&Value::Int(5)));
+    }
+
+    #[test]
+    fn exception_replaces_the_script_and_runs_it_now() {
+        // main: SetException ex = ollied scr = handler / Block
+        let m = Asm::default().nl().name("SetException").name("ex").t(EQUALS).name("ollied");
+        let m = m.name("scr").t(EQUALS).name("handler").nl().name("Block").nl().t(ENDSCRIPT);
+        let h = Asm::default().nl().name("a").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", m), ("handler", h)]);
+        let mut s = run(&mut t, "main");
+        assert!(t.called().is_empty());
+        assert!(s.event(&mut t, qb_key("ollied"), &Params::new()));
+        assert_eq!(t.called(), ["a"]);
+        assert!(s.is_done());
+    }
+
+    #[test]
+    fn switch_picks_the_matching_case() {
+        // switch <v> / case b / a / (jump end) / case c / c / (jump end) / default / b / endswitch
+        let s = Asm::default().nl().arg("v").t(EQUALS).name("c").nl().t(SWITCH).arg("v").nl();
+        let (s, next1) = s.t(CASE).jump(SHORT_JUMP);
+        let s = s.name("b").nl().name("a").nl();
+        let (s, end1) = s.jump(SHORT_JUMP);
+        let s = s.land(next1);
+        let (s, next2) = s.t(CASE).jump(SHORT_JUMP);
+        let s = s.name("c").nl().name("c").nl();
+        let (s, end2) = s.jump(SHORT_JUMP);
+        let s = s.land(next2);
+        let (s, next3) = s.t(DEFAULT).jump(SHORT_JUMP);
+        let s = s.nl().name("b").nl();
+        let s = s.land(end1).land(end2).land(next3).t(ENDSWITCH).nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        run(&mut t, "main");
+        assert_eq!(t.called(), ["c"]);
+    }
+
+    #[test]
+    fn expressions_follow_precedence_and_compare() {
+        // <x> = ( 1 + 2 * 3 ) / if ( <x> = 7 ) / a / endif
+        let s = Asm::default().nl().arg("x").t(EQUALS).t(OPEN_PAREN).int(1).t(PLUS).int(2).t(MULTIPLY).int(3);
+        let (s, j) = s.t(CLOSE_PAREN).nl().jump(IF);
+        let s = s.t(OPEN_PAREN).arg("x").t(EQUALS).int(7).t(CLOSE_PAREN).nl().name("a").nl();
+        let s = s.land(j).t(ENDIF).nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        run(&mut t, "main");
+        assert_eq!(t.called(), ["a"]);
+    }
+}

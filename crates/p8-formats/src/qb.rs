@@ -19,7 +19,8 @@ pub enum Value {
     Checksum(u32),
     Struct(Vec<(u32, Value)>),
     Array(Vec<Value>),
-    Script,
+    /// A script's bytecode (decompressed), as the script VM reads it.
+    Script(std::sync::Arc<[u8]>),
     Unknown(u8, u32),
 }
 
@@ -74,6 +75,16 @@ fn value(d: &[u8], k: u8, v: u32, depth: u32) -> Value {
             let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
             Value::String(String::from_utf8_lossy(&s[..end]).into_owned())
         }
+        // Wide (UTF-16, big-endian) string, zero terminated.
+        4 => {
+            let s = d.get(at..).unwrap_or(&[]);
+            let units: Vec<u16> = s
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .take_while(|&u| u != 0)
+                .collect();
+            Value::String(String::from_utf16_lossy(&units))
+        }
         // Pairs and vectors may start with a 4-byte type word.
         5 => {
             let skip = if u32_at(d, at).is_some_and(|w| w >> 16 != 0) {
@@ -101,12 +112,61 @@ fn value(d: &[u8], k: u8, v: u32, depth: u32) -> Value {
                 _ => Value::Unknown(k, v),
             }
         }
-        7 => Value::Script,
+        7 => script(d, at).map(Value::Script).unwrap_or(Value::Unknown(k, v)),
         10 => structure(d, at, depth + 1),
         12 => array(d, at, depth + 1),
         13 | 26 => Value::Checksum(v),
         _ => Value::Unknown(k, v),
     }
+}
+
+/// A script item: big-endian checksum, uncompressed size, compressed size,
+/// then the bytecode, LZSS-compressed when the sizes differ.
+fn script(d: &[u8], at: usize) -> Option<std::sync::Arc<[u8]>> {
+    let (usz, csz) = (u32_at(d, at + 4)? as usize, u32_at(d, at + 8)? as usize);
+    let body = d.get(at + 12..at + 12 + csz.min(usz))?;
+    let bytes = if csz < usz { lzss(d.get(at + 12..at + 12 + csz)?, usz) } else { body.to_vec() };
+    Some(bytes.into())
+}
+
+/// LZSS as the scripts use it: 4096-byte ring starting at 4078, filled
+/// with spaces (a zero fill turns some `begin` tokens, 0x20, into 0x00),
+/// 1 flag bit per item, matches of 3..18 bytes.
+pub fn lzss(src: &[u8], out_len: usize) -> Vec<u8> {
+    const N: usize = 4096;
+    const F: usize = 18;
+    let mut ring = [b' '; N];
+    let mut r = N - F;
+    let mut out = Vec::with_capacity(out_len);
+    let mut i = 0;
+    let mut flags: u32 = 0;
+    while i < src.len() && out.len() < out_len {
+        flags >>= 1;
+        if flags & 0x100 == 0 {
+            flags = src[i] as u32 | 0xFF00;
+            i += 1;
+        }
+        if flags & 1 != 0 {
+            let Some(&c) = src.get(i) else { break };
+            i += 1;
+            out.push(c);
+            ring[r] = c;
+            r = (r + 1) & (N - 1);
+        } else {
+            let (Some(&a), Some(&b)) = (src.get(i), src.get(i + 1)) else { break };
+            i += 2;
+            let p = a as usize | ((b as usize & 0xF0) << 4);
+            let n = (b as usize & 0x0F) + 2;
+            for k in 0..=n {
+                let c = ring[(p + k) & (N - 1)];
+                out.push(c);
+                ring[r] = c;
+                r = (r + 1) & (N - 1);
+            }
+        }
+    }
+    out.truncate(out_len);
+    out
 }
 
 fn structure(d: &[u8], at: usize, depth: u32) -> Value {
@@ -146,6 +206,12 @@ fn array(d: &[u8], at: usize, depth: u32) -> Value {
         (0..n).filter_map(|i| u32_at(d, base + 4 * i)).collect()
     };
     Value::Array(words.into_iter().map(|w| value(d, k, w, depth)).collect())
+}
+
+/// A struct compiled into script bytecode (token 0x4A): the same layout as
+/// file structs, with offsets counted from the start of the block.
+pub fn embedded_struct(block: &[u8]) -> Value {
+    structure(block, 0, 0)
 }
 
 /// All top-level globals of one QB file, keyed by name checksum.

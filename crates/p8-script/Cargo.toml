@@ -1,0 +1,10 @@
+[package]
+name = "p8-script"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The Project 8 script VM, translated from the retail CScript code. Scripts
+# are read from the player's own qb.pak.xen at run time.
+[dependencies]
+p8-formats.workspace = true

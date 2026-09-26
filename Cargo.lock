@@ -3759,6 +3759,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "p8-script"
+version = "0.1.0"
+dependencies = [
+ "p8-formats",
+]
+
+[[package]]
 name = "p8-sim"
 version = "0.1.0"
 dependencies = [
