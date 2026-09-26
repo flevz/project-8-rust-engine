@@ -191,6 +191,50 @@ impl CorePhysics {
         }
     }
 
+    /// Retail `820E4AD0`: level the board out in the air when there is
+    /// ground below. Called every air frame outside vert air (`820F24B4`).
+    ///
+    /// A feeler looks 12.7 m straight down (82002A4C); if it finds a surface
+    /// without flag 0x8 whose normal.y is at least 0.2 (82000D34), and the
+    /// board's up.y is at most 0.975 (82002A60), the matrix turns about the
+    /// horizontal axis `h x Y` by `dt * Physics_recover_rate_stat`, `h` being
+    /// the flat direction up leans toward: up moves toward straight up.
+    ///
+    /// Skipped as retail skips it: in a spine transfer (SkaterState `+136`,
+    /// read by `IsInSpineTransfer`; not translated, so never), when the
+    /// ground normal is upside down (`+116` < -0.1), and when moving up
+    /// while on a movable object (`+2852`->`+24`, LIKELY movable contact;
+    /// the level has none). Not translated: its vert-state bookkeeping
+    /// (clears SkaterState `+56` and `+1380`, sets `+144`).
+    pub fn air_recover(&mut self, s: &Scripts, world: &dyn World) {
+        // -0.1 is the constant at 820029A0.
+        if self.ground_normal.y < -0.1 {
+            return;
+        }
+        let pos = self.body.position;
+        let Some(hit) = world.feeler(pos, pos - Vec3::Y * 12.7, 0x10, 0) else {
+            return;
+        };
+        if hit.flags & 0x8 != 0 || hit.normal.y < 0.2 {
+            return;
+        }
+        if self.body.up().y > 0.975 {
+            return;
+        }
+        let rate = s.stat("Physics_recover_rate_stat", self.on_bike, &self.stats, self.stat_context);
+        let up = self.body.up();
+        let h = Vec3::new(up.x, 0.0, up.z).normalize_or_zero();
+        let axis = Vec3::new(-h.z, 0.0, h.x);
+        // `820D7F00`: every matrix row rotated about the axis (`820A8A38`,
+        // right-handed), then copied to `+32`.
+        let r = glam::Quat::from_axis_angle(axis, self.dt * rate);
+        let m = &mut self.body.matrix;
+        m.x_axis = r * m.x_axis;
+        m.y_axis = r * m.y_axis;
+        m.z_axis = r * m.z_axis;
+        self.matrix_32 = self.body.matrix;
+    }
+
     /// Retail `820D76C0`: air gravity, `Physics_Air_Gravity / Physics_Air_hang_Stat`
     /// (the vert-air hang stat applies on vert, not translated), times the
     /// `AdjustGravity` multiplier when set. The moon cheat is not translated.
@@ -245,10 +289,8 @@ impl CorePhysics {
     /// Retail air update `820F2310`, for a plain ollie: gravity, the move,
     /// and landing on a skatable surface.
     ///
-    /// Not translated (absent): air rotation (`820E9620`, which reads the
-    /// spin and "lean" settings), the other calls near the start of the air
-    /// update whose purpose is not yet read (`820EA0D0`, `820E4AD0`, which
-    /// reads `Physics_recover_rate_stat`, and `820EEB38`), vert air and lip
+    /// Not translated (absent): the other calls near the start of the air
+    /// update whose purpose is not yet read (`820EA0D0`, `820EEB38`), vert air and lip
     /// checks, wall collision (`820EF410`), bails on landing, moving
     /// platforms, and the nose/tail landing feelers (`820E5250`, which only
     /// record contact).
@@ -266,6 +308,8 @@ impl CorePhysics {
         self.last_turn = None;
         let input = self.last_input;
         self.air_rotation(s, &input);
+        // `820EA0D0` runs here (not translated).
+        self.air_recover(s, world);
 
         let dt = self.dt;
         self.body.position += self.body.velocity * dt + g * (dt * dt * 0.5);

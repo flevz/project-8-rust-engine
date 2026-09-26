@@ -797,6 +797,7 @@ mod tests {
             (k("physics_jump_speed_stat"), stat(7.6, 7.6, "STATS_AIR")),
             (k("physics_jump_speed_min_stat"), stat(7.0, 7.6, "STATS_AIR")),
             (k("physics_air_rotation_stat"), stat(6.85, 7.75, "STATS_SPIN")),
+            (k("physics_recover_rate_stat"), stat(2.0, 2.0, "STATS_SPIN")),
             (k("physics_air_no_rotate_time"), Value::Int(150)),
             (k("physics_air_ramp_rotate_time"), Value::Int(50)),
             (k("physics_air_no_lean_time"), Value::Int(200)),
@@ -921,6 +922,28 @@ mod tests {
         p.body.velocity = Vec3::new(0.0, 0.0, 5.0);
         run(&mut p, &s, InputState { stick_x_raw: 0.39 * 128.0, ..Default::default() }, 0.5);
         assert_eq!(p.body.at(), Vec3::Z);
+    }
+
+    #[test]
+    fn a_tilted_board_levels_out_in_the_air_at_the_recover_rate() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        // Tipped 30 degrees nose-up off a kicker, 3 m up, flying forward.
+        p.body.matrix = Mat3::from_rotation_x(-30f32.to_radians());
+        p.body.position = Vec3::new(0.0, 3.0, 0.0);
+        p.body.velocity = Vec3::new(0.0, 4.0, 6.0);
+        p.state = State::Air;
+        let floor = crate::world::FlatFloor::default();
+        let tilt = |p: &CorePhysics| p.body.up().y.clamp(-1.0, 1.0).acos().to_degrees();
+        p.step(&s, &InputState::default(), &floor);
+        // One frame at 2 rad/s: 30 - 1.91 degrees.
+        assert!((tilt(&p) - (30.0 - 2f32.to_degrees() / 60.0)).abs() < 0.01, "{}", tilt(&p));
+        for _ in 0..20 {
+            p.step(&s, &InputState::default(), &floor);
+        }
+        // Stops once up.y > 0.975 (about 12.8 degrees), within one step.
+        assert!(tilt(&p) <= 12.84 && tilt(&p) > 12.84 - 2f32.to_degrees() / 60.0, "{}", tilt(&p));
+        assert_eq!(p.matrix_32, p.body.matrix);
     }
 
     /// An infinite plane through the origin, hit from its front side.
