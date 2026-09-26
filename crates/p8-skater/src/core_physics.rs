@@ -172,6 +172,12 @@ pub struct CorePhysics {
     pub state_216: bool,
     /// `+2532`: game time of the last wall push.
     pub last_wallpush_ms: i64,
+    /// `+2129`: `BailOn` / `BailOff` (820D5550 / 820D5568).
+    pub bail_on: bool,
+    /// The skater's scripts are running and handle the events (see
+    /// `skater.rs`); without them, [`CorePhysics::step`] stands in for the
+    /// ollie handlers as before.
+    pub scripted: bool,
     /// `+2176`: game time the skater last entered the air (`SetState`,
     /// 820D7430); air time is now minus this (`820D4CA8`).
     pub air_start_ms: i64,
@@ -273,6 +279,8 @@ impl CorePhysics {
             state_216: false,
             last_wallpush_ms: i64::MIN / 2,
             air_start_ms: 0,
+            bail_on: false,
+            scripted: false,
             late_ollie: false,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
@@ -859,6 +867,8 @@ mod tests {
         crouch: true,
         kick: false,
         triangle: false,
+        circle: false,
+        r2: false,
         up: false,
         brake_digital: false,
         down: false,

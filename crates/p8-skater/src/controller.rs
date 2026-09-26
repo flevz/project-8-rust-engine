@@ -219,6 +219,8 @@ impl Controller {
             crouch: self.cross.held,
             kick: self.square.held,
             triangle: self.triangle.held,
+            circle: self.circle.held,
+            r2: self.r2.held,
             up: self.up.held,
             down: self.down.held,
             brake_digital: self.down.held,

@@ -17,6 +17,7 @@ pub mod ground;
 pub mod input;
 pub mod pad;
 pub mod script;
+pub mod skater;
 pub mod stats;
 pub mod world;
 
@@ -25,5 +26,6 @@ pub use controller::{Controller, XboxPad};
 pub use core_physics::CorePhysics;
 pub use input::InputState;
 pub use script::Scripts;
+pub use skater::Skater;
 pub use stats::StatLevels;
 pub use world::{FlatFloor, World};

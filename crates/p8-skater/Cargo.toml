@@ -9,4 +9,5 @@ publish.workspace = true
 # come from the player's own scripts; nothing from the game is stored here.
 [dependencies]
 glam.workspace = true
+p8-script.workspace = true
 p8-formats.workspace = true

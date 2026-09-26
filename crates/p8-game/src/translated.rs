@@ -45,16 +45,16 @@ impl Plugin for TranslatedPlugin {
             }
             Err(why) => Ground { level: None, convex: Vec::new(), spawn: (Vec3::ZERO, Vec3::ZERO), note: format!("flat floor: {why}") },
         };
-        let physics = CorePhysics::at_restart(&self.scripts, ground.spawn.0, ground.spawn.1);
-        let frame = Frame::of(&physics);
-        let eye = physics.body.position - physics.body.at() * 4.5 + Vec3::Y * 2.0;
-        let cam_dir = physics.body.at();
+        let object = p8_skater::Skater::new(&self.scripts, ground.spawn.0, ground.spawn.1);
+        let frame = Frame::of(&object.physics);
+        let eye = object.physics.body.position - object.physics.body.at() * 4.5 + Vec3::Y * 2.0;
+        let cam_dir = object.physics.body.at();
         app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.9)))
             .insert_resource(Skater {
                 scripts: self.scripts.clone(),
                 source: self.source.clone(),
-                physics,
+                object,
                 previous: frame,
                 current: frame,
                 controller: Controller::default(),
@@ -73,7 +73,8 @@ impl Plugin for TranslatedPlugin {
 struct Skater {
     scripts: Scripts,
     source: String,
-    physics: CorePhysics,
+    /// The translated skater: physics plus the player's own scripts.
+    object: p8_skater::Skater,
     previous: Frame,
     current: Frame,
     /// The translated retail controller path (records and hold times).
@@ -335,20 +336,20 @@ fn step(
     let dt = time.delta_secs();
     let pad = read_pad(&keys, &gamepads);
     let was_held = skater.controller.select.held;
-    let input = skater.controller.update(&pad, skater.physics.time_ms);
+    let input = skater.controller.update(&pad, skater.object.physics.time_ms);
     if skater.controller.select.held && !was_held {
-        skater.physics = CorePhysics::at_restart(&skater.scripts, ground.spawn.0, ground.spawn.1);
-        skater.current = Frame::of(&skater.physics);
-        skater.cam_dir = skater.physics.body.at();
+        skater.object = p8_skater::Skater::new(&skater.scripts, ground.spawn.0, ground.spawn.1);
+        skater.current = Frame::of(&skater.object.physics);
+        skater.cam_dir = skater.object.physics.body.at();
     }
     skater.previous = skater.current;
-    let p = &mut skater.physics;
-    p.dt = dt;
-    let events = p.step(&skater.scripts, &input, ground.world());
+    let skater = &mut *skater;
+    skater.object.physics.dt = dt;
+    let events = skater.object.step(&skater.scripts, &input, ground.world());
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);
     }
-    skater.current = Frame::of(&skater.physics);
+    skater.current = Frame::of(&skater.object.physics);
 }
 
 #[allow(clippy::type_complexity)]
@@ -367,7 +368,7 @@ fn present(
         t.translation = position;
         t.rotation = rotation;
     }
-    let crouched = skater.physics.crouched;
+    let crouched = skater.object.physics.crouched;
     if let Ok(mut t) = rider.single_mut() {
         t.translation.y = if crouched { 0.62 } else { 0.8 };
         t.scale = Vec3::new(1.0, if crouched { 0.75 } else { 1.0 }, 1.0);
@@ -375,7 +376,7 @@ fn present(
     // Placeholder chase camera (not the retail camera): it stays behind the
     // direction of travel, so spins and riding backwards don't swing it
     // around. Below 1 m/s it keeps its last direction.
-    let v = skater.physics.body.velocity;
+    let v = skater.object.physics.body.velocity;
     let travel = Vec3::new(v.x, 0.0, v.z);
     if travel.length() > 1.0 {
         let ease = 1.0 - (-4.0 * real.delta_secs()).exp();
@@ -391,14 +392,14 @@ fn present(
 }
 
 fn hud(skater: Res<Skater>, ground: Res<Ground>, mut text: Query<&mut Text, With<StatusText>>) {
-    let p = &skater.physics;
+    let p = &skater.object.physics;
     let turn = match p.last_turn {
         Some(Turn::Left) => "left",
         Some(Turn::Right) => "right",
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]  [level: {}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]",
         p.body.velocity.length(),
         p.body.position.y,
         p.state,
@@ -407,6 +408,11 @@ fn hud(skater: Res<Skater>, ground: Res<Ground>, mut text: Query<&mut Text, With
         if p.braking { "  BRAKING" } else { "" },
         skater.last_event,
         skater.source,
+        if p.scripted {
+            format!(", running; {} commands not translated yet", skater.object.untranslated.len())
+        } else {
+            String::new()
+        },
         ground.note,
     );
     if let Ok(mut t) = text.single_mut()

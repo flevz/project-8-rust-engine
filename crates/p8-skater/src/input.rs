@@ -22,6 +22,9 @@ pub struct InputState {
     pub down: bool,
     /// `+416` = record "Triangle" (Xbox Y): wall push (`820DB418`).
     pub triangle: bool,
+    /// Records "Circle" (Xbox B) and "R2" (Xbox RT), read by scripts.
+    pub circle: bool,
+    pub r2: bool,
     /// Records "L1", "R1", "L2" (Xbox LB, RB, LT).
     pub l1: bool,
     pub r1: bool,

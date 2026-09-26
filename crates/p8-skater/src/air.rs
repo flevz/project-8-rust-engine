@@ -528,10 +528,11 @@ impl CorePhysics {
     /// One physics frame, as retail's component update `820FC990` runs it:
     /// the crouch update, then the update for the current state.
     ///
-    /// The scripts' event handlers are stood in for here, only as far as
-    /// they are read: on the ground "Ollied" runs `ollie`, which calls
-    /// `Jump`; in the air it does so only while [`CorePhysics::late_ollie`]
-    /// is set (see there).
+    /// Without the scripts (`scripted` false), their event handlers are
+    /// stood in for here, only as far as they are read: on the ground
+    /// "Ollied" runs `ollie`, which calls `Jump`; in the air it does so only
+    /// while [`CorePhysics::late_ollie`] is set (see there). With the
+    /// scripts, `skater.rs` delivers the events to them instead.
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
         self.time_frac_ms += self.dt * 1000.0;
         let whole = self.time_frac_ms.floor();
@@ -557,6 +558,9 @@ impl CorePhysics {
         // on every path that does not land.
         if was_air && !events.contains(&Event::Landed) && self.ollie_trigger(input) {
             events.push(Event::Ollied);
+        }
+        if self.scripted {
+            return events;
         }
         if events.contains(&Event::GroundGone) {
             // Script `groundgone`: `SetException ex = ollied scr = ollie`.

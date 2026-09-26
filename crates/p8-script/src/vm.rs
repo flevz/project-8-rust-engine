@@ -874,6 +874,14 @@ impl Script {
                         None => break,
                     }
                 }
+                GLOBAL if byte(&code, p + 1) == NAME => {
+                    // `?name` as an operand is the global's whole value (a
+                    // struct stays one value, for `.` to read).
+                    let v = host.global(u32_at(&code, p + 2)).unwrap_or(Value::Int(0));
+                    values.push(v);
+                    p += 6;
+                    expect_operand = false;
+                }
                 _ => {
                     let mut tmp = Params::new();
                     let end = self.value(host, p, 0, &mut tmp, Some(&locals));
@@ -1331,6 +1339,19 @@ mod tests {
         let mut t = Test::new(&[("main", s)]);
         run(&mut t, "main");
         assert_eq!(t.called(), ["c"]);
+    }
+
+    #[test]
+    fn a_global_struct_member_in_an_expression() {
+        // <x> = ( 2 * ?g . m ) / if ( <x> = 6 ) / a / endif
+        let s = Asm::default().nl().arg("x").t(EQUALS).t(OPEN_PAREN).int(2).t(MULTIPLY).t(GLOBAL).name("g");
+        let (s, j) = s.t(DOT).name("m").t(CLOSE_PAREN).nl().jump(IF);
+        let s = s.t(OPEN_PAREN).arg("x").t(EQUALS).int(6).t(CLOSE_PAREN).nl().name("a").nl();
+        let s = s.land(j).t(ENDIF).nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        t.globals.insert(qb_key("g"), Value::Struct(vec![(qb_key("z"), Value::Int(1)), (qb_key("m"), Value::Int(3))]));
+        run(&mut t, "main");
+        assert_eq!(t.called(), ["a"]);
     }
 
     #[test]

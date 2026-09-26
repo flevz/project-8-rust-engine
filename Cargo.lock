@@ -3780,6 +3780,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "p8-formats",
+ "p8-script",
 ]
 
 [[package]]
