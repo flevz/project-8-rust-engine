@@ -3754,6 +3754,7 @@ dependencies = [
  "bevy",
  "p8-formats",
  "p8-sim",
+ "p8-skater",
  "serde_json",
 ]
 

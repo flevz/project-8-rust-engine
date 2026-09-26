@@ -177,6 +177,24 @@ pub fn globals(d: &[u8]) -> BTreeMap<u32, Value> {
     out
 }
 
+/// Every global of every `.qb` file in the player's `qb.pak.xen` (with its
+/// `qb.pab.xen` next to it, if present). Returns (files read, globals).
+pub fn load_pak_globals(pak_path: &std::path::Path) -> Result<(usize, BTreeMap<u32, Value>), String> {
+    let headers = std::fs::read(pak_path).map_err(|e| format!("{}: {e}", pak_path.display()))?;
+    let pab = std::fs::read(pak_path.with_file_name("qb.pab.xen")).ok();
+    let (archive, data) = crate::pak::parse_file(&headers, pab.as_deref())
+        .map_err(|e| format!("{} was not recognised: {e:?}", pak_path.display()))?;
+    let mut out = BTreeMap::new();
+    let mut files = 0;
+    for entry in archive.entries.iter().filter(|e| e.type_key == crate::qb_key(".qb")) {
+        if let Some(bytes) = data.get(entry.offset..entry.offset + entry.size) {
+            files += 1;
+            out.extend(globals(bytes));
+        }
+    }
+    Ok((files, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

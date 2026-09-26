@@ -1,11 +1,13 @@
-//! Project 8 Rust Engine: playable prototype.
+//! Project 8 Rust Engine.
 //!
-//! Stage 1 of `docs/ROADMAP.md`: the `p8-sim` skater in an original test park
-//! with placeholder visuals. Project 8 levels, models and animations arrive in
-//! later stages through converters that read the player's own installation.
+//! If `SETUP.bat` has recorded where the player's `qb.pak.xen` is, the game
+//! runs the translated skater (`p8-skater`, see `translated.rs`) with the
+//! original scripts. Otherwise it falls back to the earlier `p8-sim`
+//! prototype in an original test park.
 #[cfg(test)]
 mod original;
 mod park;
+mod translated;
 
 use bevy::prelude::*;
 use p8_sim::{Input, Pose, Simulation, State, Tuning, World};
@@ -13,23 +15,49 @@ use std::sync::Arc;
 
 const TICK_HZ: f64 = 60.0;
 
-fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Project 8 Rust Engine (prototype)".into(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
-        .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.9)))
-        .add_systems(Startup, setup)
-        .add_systems(FixedUpdate, step)
-        .add_systems(Update, (present, hud))
-        .run();
+/// Written by `p8-setup`: the path of the player's `qb.pak.xen`.
+const SCRIPTS_LOCATION: &str = "scripts-location.txt";
+
+/// The player's scripts, or why they could not be loaded.
+fn load_scripts() -> Result<(p8_skater::Scripts, String), String> {
+    let path = std::fs::read_to_string(SCRIPTS_LOCATION)
+        .map_err(|_| "run SETUP.bat to use the original Project 8 physics".to_string())?;
+    let path = std::path::PathBuf::from(path.trim());
+    let (files, globals) = p8_formats::qb::load_pak_globals(&path)?;
+    let note = format!("{files} scripts from {}", path.display());
+    Ok((p8_skater::Scripts::new(globals), note))
 }
+
+fn main() {
+    let scripts = load_scripts();
+    let title = match scripts {
+        Ok(_) => "Project 8 Rust Engine (translated physics)",
+        Err(_) => "Project 8 Rust Engine (prototype)",
+    };
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window { title: title.into(), resolution: (1280, 720).into(), ..default() }),
+        ..default()
+    }));
+    match scripts {
+        Ok((scripts, source)) => {
+            app.add_plugins(translated::TranslatedPlugin { scripts, source });
+        }
+        Err(why) => {
+            app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
+                .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.9)))
+                .insert_resource(ScriptsNote(why))
+                .add_systems(Startup, setup)
+                .add_systems(FixedUpdate, step)
+                .add_systems(Update, (present, hud));
+        }
+    }
+    app.run();
+}
+
+/// Why the translated physics is not running (shown in the prototype HUD).
+#[derive(Resource)]
+struct ScriptsNote(String);
 
 #[derive(Resource)]
 struct Game {
@@ -284,9 +312,9 @@ fn present(
     }
 }
 
-fn hud(game: Res<Game>, mut text: Query<&mut Text, With<StatusText>>) {
+fn hud(game: Res<Game>, note: Res<ScriptsNote>, mut text: Query<&mut Text, With<StatusText>>) {
     if let Ok(mut t) = text.single_mut() {
-        let line = format!("{}\n[{}]", game.sim.output().hud, game.tuning_note);
+        let line = format!("{}\n[{}; {}]", game.sim.output().hud, game.tuning_note, note.0);
         if **t != line {
             **t = line;
         }

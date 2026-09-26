@@ -5,10 +5,12 @@
 #[path = "../original.rs"]
 mod original;
 
-use p8_formats::{pak, qb, qb_key};
-use std::collections::BTreeMap;
+use p8_formats::qb;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+/// Where the game finds the player's `qb.pak.xen`.
+const SCRIPTS_LOCATION: &str = "scripts-location.txt";
 
 fn find(dir: &Path, name: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -38,27 +40,17 @@ fn main() {
         eprintln!("Could not find qb.pak.xen under {}", root.display());
         std::process::exit(1);
     };
-    let headers = std::fs::read(pak_path).expect("read qb.pak.xen");
-    let pab = std::fs::read(pak_path.with_file_name("qb.pab.xen")).ok();
-    let (archive, data) = match pak::parse_file(&headers, pab.as_deref()) {
+    let (files, globals) = match qb::load_pak_globals(pak_path) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("qb.pak.xen was not recognised: {e:?}");
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
-    let mut globals: BTreeMap<u32, qb::Value> = BTreeMap::new();
-    let mut files = 0;
-    for entry in archive
-        .entries
-        .iter()
-        .filter(|e| e.type_key == qb_key(".qb"))
-    {
-        if let Some(bytes) = data.get(entry.offset..entry.offset + entry.size) {
-            files += 1;
-            globals.extend(qb::globals(bytes));
-        }
-    }
+    // The game reads the scripts from here at start-up (nothing is copied).
+    let location = std::fs::canonicalize(pak_path).unwrap_or_else(|_| pak_path.clone());
+    std::fs::write(SCRIPTS_LOCATION, location.to_string_lossy().as_bytes())
+        .expect("write scripts-location.txt");
     let mapped = match original::map(&globals) {
         Ok(m) => m,
         Err(e) => {

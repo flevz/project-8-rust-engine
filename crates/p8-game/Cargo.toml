@@ -16,4 +16,5 @@ path = "src/bin/p8-setup.rs"
 bevy.workspace = true
 p8-sim.workspace = true
 p8-formats.workspace = true
+p8-skater.workspace = true
 serde_json.workspace = true
