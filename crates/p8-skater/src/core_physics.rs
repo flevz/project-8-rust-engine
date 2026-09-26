@@ -172,6 +172,16 @@ pub struct CorePhysics {
     pub state_216: bool,
     /// `+2532`: game time of the last wall push.
     pub last_wallpush_ms: i64,
+    /// `+2176`: game time the skater last entered the air (`SetState`,
+    /// 820D7430); air time is now minus this (`820D4CA8`).
+    pub air_start_ms: i64,
+    /// Script state: the "Ollied" exception runs `ollie` while in the air.
+    /// Script `groundgone` sets it after rolling off an edge and
+    /// `WaitAnimWhilstCheckingLateOllie` clears it once
+    /// `AirTimeGreaterThan skater_late_jump_slop` (333 ms); the `ollie`
+    /// script's `InAirExceptions` also clears it (the air table has no
+    /// "Ollied").
+    pub late_ollie: bool,
     pub stats: StatLevels,
     pub stat_context: StatContext,
 }
@@ -262,6 +272,8 @@ impl CorePhysics {
             state_40: false,
             state_216: false,
             last_wallpush_ms: i64::MIN / 2,
+            air_start_ms: 0,
+            late_ollie: false,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
         }

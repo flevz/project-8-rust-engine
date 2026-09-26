@@ -278,6 +278,7 @@ mod tests {
                 f("physics_wallpush_speed_loss", 5.08),
                 f("physics_wallpush_min_exit_speed", 2.54),
                 f("Skater_Default_Stats", 5.0),
+                f("skater_late_jump_slop", 333.0),
             ]
             .into_iter()
             .collect(),
@@ -424,5 +425,56 @@ mod tests {
         }
         assert!(events.contains(&Event::Landed), "{events:?}");
         assert!(p.body.position.y > 1.0);
+    }
+
+    /// Roll off an edge holding the crouch, then let go after `release`
+    /// seconds in the air. Returns every event.
+    fn off_edge_release(release: f32) -> Vec<Event> {
+        let s = scripts();
+        let mut p = rolling(&s, Vec3::new(6.0, 0.0, 0.0));
+        p.body.matrix.z_axis = Vec3::X;
+        p.body.matrix.x_axis = -Vec3::Z;
+        // A ledge at x = 0.5, a lower floor at y = -10 past it.
+        let w = block(Vec3::new(-50.0, -1.0, -50.0), Vec3::new(0.5, 0.0, 50.0));
+        struct Drop(crate::world::Level);
+        impl World for Drop {
+            fn feeler(&self, a: Vec3, b: Vec3, i1: u16, i0: u16) -> Option<Hit> {
+                self.0.feeler(a, b, i1, i0).or_else(|| FlatFloor { height: -10.0 }.feeler(a, b, i1, i0))
+            }
+        }
+        let w = Drop(w);
+        let hold = InputState { crouch: true, ..Default::default() };
+        let mut events = Vec::new();
+        while p.state == State::Ground {
+            events.extend(p.step(&s, &hold, &w));
+        }
+        let left = p.time_ms;
+        while ((p.time_ms - left) as f32) < release * 1000.0 {
+            events.extend(p.step(&s, &hold, &w));
+        }
+        // Let go, fall and land on the lower floor, then keep rolling.
+        for _ in 0..120 {
+            events.extend(p.step(&s, &InputState::default(), &w));
+        }
+        events
+    }
+
+    #[test]
+    fn letting_go_just_after_rolling_off_an_edge_is_a_late_ollie() {
+        let events = off_edge_release(0.2);
+        let jump = events.iter().position(|e| *e == Event::SkaterJump).expect("late ollie");
+        let land = events.iter().position(|e| *e == Event::Landed).expect("lands");
+        assert!(jump < land);
+        assert_eq!(events.iter().filter(|e| **e == Event::SkaterJump).count(), 1);
+    }
+
+    #[test]
+    fn letting_go_late_in_the_air_only_uncrouches_and_landing_does_not_ollie() {
+        let events = off_edge_release(0.5);
+        assert!(events.contains(&Event::Landed), "{events:?}");
+        assert!(!events.contains(&Event::SkaterJump), "{events:?}");
+        // The release is used up in the air: no ollie after landing either.
+        let land = events.iter().position(|e| *e == Event::Landed).unwrap();
+        assert!(!events[land..].contains(&Event::Ollied), "{events:?}");
     }
 }

@@ -59,6 +59,8 @@ impl CorePhysics {
         // Entering the air clears the trick component's spin count (820D7438).
         if state == State::Air && self.state != State::Air {
             self.spin_degrees = 0.0;
+            // 820D7430: the time the skater left the ground (+2176).
+            self.air_start_ms = self.time_ms;
         }
         self.state = state;
     }
@@ -250,7 +252,11 @@ impl CorePhysics {
     /// (the `ollie` script calls it plainly unless it passes `speed`).
     /// `speed` is the script's `jump speed = ...` override.
     pub fn jump(&mut self, s: &Scripts, speed: Option<f32>) -> Vec<Event> {
-        self.jump_start = self.body.position;
+        // Only the ground path (820F0900) records where the jump started;
+        // the air path (820F0850, a late ollie) only plays a sound.
+        if self.state == State::Ground {
+            self.jump_start = self.body.position;
+        }
         // `820DA3D0` (vert push-out and quick-exit checks) is not translated.
         let max_tense = s.global_float("Skater_max_tense_time") as i64;
         self.crouch_duration_ms = self.crouch_duration_ms.min(max_tense);
@@ -514,9 +520,18 @@ impl CorePhysics {
         events.push(Event::Landed);
     }
 
+    /// Air time in milliseconds (retail `820D4CA8` while in the air).
+    pub fn air_time_ms(&self) -> i64 {
+        self.time_ms - self.air_start_ms
+    }
+
     /// One physics frame, as retail's component update `820FC990` runs it:
-    /// the crouch update, then the update for the current state. The
-    /// "Ollied" event is handled the way the `ollie` script does: `Jump`.
+    /// the crouch update, then the update for the current state.
+    ///
+    /// The scripts' event handlers are stood in for here, only as far as
+    /// they are read: on the ground "Ollied" runs `ollie`, which calls
+    /// `Jump`; in the air it does so only while [`CorePhysics::late_ollie`]
+    /// is set (see there).
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
         self.time_frac_ms += self.dt * 1000.0;
         let whole = self.time_frac_ms.floor();
@@ -524,13 +539,36 @@ impl CorePhysics {
         self.time_frac_ms -= whole;
         self.last_input = *input;
         self.old_position = self.body.position;
+        // `WaitAnimWhilstCheckingLateOllie` (one check per game frame; its
+        // order against the physics in a frame is LIKELY, not read).
+        if self.late_ollie
+            && self.state == State::Air
+            && self.air_time_ms() as f32 > s.global_float("skater_late_jump_slop")
+        {
+            self.late_ollie = false;
+        }
         self.update_crouch(input);
+        let was_air = self.state == State::Air;
         let mut events = match self.state {
             State::Ground => self.ground_update(s, input, world),
             State::Air => self.air_update(s, world),
         };
-        if events.contains(&Event::Ollied) {
+        // 820F4050: the air update ends with the ollie trigger `820D7AB0`
+        // on every path that does not land.
+        if was_air && !events.contains(&Event::Landed) && self.ollie_trigger(input) {
+            events.push(Event::Ollied);
+        }
+        if events.contains(&Event::GroundGone) {
+            // Script `groundgone`: `SetException ex = ollied scr = ollie`.
+            self.late_ollie = true;
+        }
+        if events.contains(&Event::Landed) {
+            self.late_ollie = false;
+        }
+        if events.contains(&Event::Ollied) && (!was_air || self.late_ollie) {
             events.extend(self.jump(s, None));
+            // `ollie` runs `InAirExceptions`, which drops the handler.
+            self.late_ollie = false;
         }
         events
     }
