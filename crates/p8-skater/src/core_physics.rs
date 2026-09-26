@@ -639,8 +639,6 @@ impl CorePhysics {
         self.rotate(angle);
     }
 
-    /// Retail `820DB318`: point the velocity exactly along the board,
-    /// forwards or backwards, keeping the speed.
     /// Retail `820DBAA8`: rolling backwards along the board faster than
     /// `Skater_Flip_Speed` turns the skater around (board forward and
     /// sideways rows negated) and toggles SkaterState `+48`. Retail then
@@ -671,6 +669,8 @@ impl CorePhysics {
         true
     }
 
+    /// Retail `820DB318`: point the velocity exactly along the board,
+    /// forwards or backwards, keeping the speed.
     fn velocity_along_board(&mut self) {
         let speed = self.speed();
         // 1e-6 is the constant at 8200297C.
