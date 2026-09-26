@@ -31,6 +31,7 @@ impl Plugin for TranslatedPlugin {
                 controller: Controller::default(),
                 last_event: None,
                 eye: Vec3::new(0.0, 2.0, -5.0),
+                cam_dir: Vec3::Z,
             })
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, step)
@@ -50,6 +51,8 @@ struct Skater {
     last_event: Option<Event>,
     /// Placeholder chase camera position.
     eye: Vec3,
+    /// Placeholder camera: the flat direction of travel it stays behind.
+    cam_dir: Vec3,
 }
 
 #[derive(Clone, Copy)]
@@ -224,6 +227,7 @@ fn step(
     if skater.controller.select.held && !was_held {
         skater.physics = CorePhysics::new(&skater.scripts);
         skater.current = Frame::of(&skater.physics);
+        skater.cam_dir = Vec3::Z;
     }
     skater.previous = skater.current;
     let p = &mut skater.physics;
@@ -260,9 +264,16 @@ fn present(
         t.translation.y = if crouched { 0.62 } else { 0.8 };
         t.scale = Vec3::new(1.0, if crouched { 0.75 } else { 1.0 }, 1.0);
     }
-    // Placeholder chase camera: behind and above, eased toward its goal.
-    let at = rotation * Vec3::Z;
-    let flat = Vec3::new(at.x, 0.0, at.z).normalize_or(Vec3::Z);
+    // Placeholder chase camera (not the retail camera): it stays behind the
+    // direction of travel, so spins and riding backwards don't swing it
+    // around. Below 1 m/s it keeps its last direction.
+    let v = skater.physics.body.velocity;
+    let travel = Vec3::new(v.x, 0.0, v.z);
+    if travel.length() > 1.0 {
+        let ease = 1.0 - (-4.0 * real.delta_secs()).exp();
+        skater.cam_dir = skater.cam_dir.lerp(travel.normalize(), ease).normalize_or(skater.cam_dir);
+    }
+    let flat = skater.cam_dir;
     let goal = position - flat * 4.5 + Vec3::Y * 2.0;
     let ease = 1.0 - (-6.0 * real.delta_secs()).exp();
     skater.eye = skater.eye.lerp(goal, ease);
