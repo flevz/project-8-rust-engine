@@ -2,6 +2,7 @@
 //! own installed copy. Every structure is labelled CONFIRMED, LIKELY or
 //! UNKNOWN in `docs/formats.md`.
 pub mod checksum;
+pub mod havok;
 pub mod pak;
 pub mod qb;
 

@@ -24,6 +24,8 @@ pub enum Event {
     SkaterJump,
     /// Retail event "Landed" (air update landing).
     Landed,
+    /// Retail event "BailCollision" (hit a wall while bailing).
+    BailCollision,
 }
 
 /// SkaterState `+24` (set by `SetState`, `820D71B0`). Only the states with
@@ -106,8 +108,9 @@ pub struct CorePhysics {
     pub turn_amount: f32,
     /// `+1940` and `+2217`.
     pub last_turn: Option<Turn>,
-    /// Terrain under the board (retail index `+298`), as a terrain global name.
-    pub terrain: &'static str,
+    /// `+298`: terrain index under the board (from the last ground or
+    /// landing hit; entry of the scripts' `terrain_types`).
+    pub terrain: u8,
     /// SkaterState `+32` (via `+2848`): crouched.
     pub crouched: bool,
     /// SkaterState `+36`: game time (ms) when crouched last changed.
@@ -215,7 +218,7 @@ impl CorePhysics {
             lock_velocity_direction: false,
             turn_amount: 0.0,
             last_turn: None,
-            terrain: "terrain_default",
+            terrain: 0,
             crouched: false,
             crouch_changed_ms: 0,
             crouch_duration_ms: 0,
@@ -463,7 +466,7 @@ impl CorePhysics {
 
     /// Retail `820D9F70` (not grinding).
     fn rolling_friction(&mut self, s: &Scripts) {
-        let terrain = s.terrain_float(self.terrain, "SKATE_ROLL_FRICTION");
+        let terrain = s.terrain_float_index(self.terrain, "SKATE_ROLL_FRICTION");
         self.rolling_friction = self.special_friction + terrain;
         // No balance trick is translated, so retail's "+2844 active" is false.
         // 0.02 is the constant at 82002968.

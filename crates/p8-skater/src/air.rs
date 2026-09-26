@@ -5,6 +5,40 @@ use crate::script::Scripts;
 use crate::world::World;
 use glam::{Mat3, Vec3};
 
+/// Retail `821E9B58(m, 2)`: rebuild the other rows around the at row
+/// (same rule as [`orthonormalize_keep_up`], rows rotated).
+pub fn orthonormalize_keep_at(m: &mut Mat3) {
+    let at = m.z_axis;
+    if m.y_axis.dot(at).abs() < at.dot(m.x_axis).abs() {
+        m.x_axis = m.y_axis.cross(at).normalize_or_zero();
+        m.y_axis = at.cross(m.x_axis).normalize_or_zero();
+    } else {
+        m.y_axis = at.cross(m.x_axis).normalize_or_zero();
+        m.x_axis = m.y_axis.cross(at).normalize_or_zero();
+    }
+}
+
+/// Retail `820E0958`: can this hit surface be skated? Flag 0x1 yes, 0x2 no,
+/// 0x8 yes, 0x4 no; otherwise only if it is flatter than
+/// `Wall_Non_Skatable_Angle` degrees from vertical.
+pub fn surface_skatable(s: &Scripts, hit: &crate::world::Hit) -> bool {
+    let f = hit.flags;
+    if f & 0x1 != 0 {
+        return true;
+    }
+    if f & 0x2 != 0 {
+        return false;
+    }
+    if f & 0x8 != 0 {
+        return true;
+    }
+    if f & 0x4 != 0 {
+        return false;
+    }
+    // 0.0174533 = degrees to radians (82000C10); sine is 8262BDA0.
+    hit.normal.y >= (s.global_float("Wall_Non_Skatable_Angle") * 0.017453292).sin()
+}
+
 /// Retail `821E9B58(m, 1)`: rebuild the other rows around the up row.
 /// The row more perpendicular to up is kept as the reference.
 pub fn orthonormalize_keep_up(m: &mut Mat3) {
@@ -237,23 +271,44 @@ impl CorePhysics {
         self.body.position += self.body.velocity * dt + g * (dt * dt * 0.5);
         self.body.velocity += g * dt;
 
-        // Landing: feeler from last position to this one.
-        let Some(hit) = world.feeler(old, self.body.position) else {
+        // Landing: feeler from last position to this one, ignoring surfaces
+        // with flag 0x10 (`820E5048(16, 0)` at 820F365C).
+        let Some(hit) = world.feeler(old, self.body.position, 0x10, 0) else {
             return events;
         };
-        if !hit.skatable {
-            return events;
-        }
-        // Hitting a ceiling (-0.01 at 82001BA8): back off and fall.
-        if hit.normal.y < -0.01 {
+        // Retail skips this hit when the air snap-up check `820E4DB8` finds a
+        // ledge to step onto (not translated yet).
+        let skatable = surface_skatable(s, &hit);
+        if skatable && hit.normal.y < -0.01 {
+            // Hitting a ceiling (-0.01 at 82001BA8): back off and fall.
             self.body.position = old;
             self.body.velocity.y = -0.254;
             return events;
         }
         // 0.0025 is the constant at 820027D0.
         self.body.position = hit.point + hit.normal * 0.0025;
+        if !skatable {
+            self.air_hit_wall(s, hit.normal, &mut events);
+            return events;
+        }
+        self.terrain = hit.terrain;
         self.land(s, hit.normal, &mut events);
         events
+    }
+
+    /// `820F3EF8`: the air feeler hit a surface that can't be skated.
+    fn air_hit_wall(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
+        if self.in_bail {
+            events.push(Event::BailCollision);
+            return;
+        }
+        self.body.velocity = project_keep_length(self.body.velocity, n);
+        self.body.matrix.z_axis = project_keep_length(self.body.matrix.z_axis, n);
+        orthonormalize_keep_at(&mut self.body.matrix);
+        self.matrix_32 = self.body.matrix;
+        self.body.position += n * s.physics_float("Skater_Min_Distance_To_Wall", self.on_bike);
+        // Retail also stamps SkaterState +200 (timer), then runs the lip and
+        // wall-ride checks (`820EA788`, `820E80D8`, ...), not translated.
     }
 
     /// The landing path of `820F2310` (not from vert).

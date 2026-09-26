@@ -88,6 +88,29 @@ impl Scripts {
         lookup(terrain).or_else(|| lookup("TERRAIN_DEFAULT")).unwrap_or(0.0)
     }
 
+    /// The terrain global for a surface's terrain index: entry `index` of
+    /// the script array `terrain_types` (its `checksum` member).
+    pub fn terrain_name_key(&self, index: u8) -> Option<u32> {
+        match self.global("terrain_types")? {
+            Value::Array(items) => match items.get(index as usize)?.get_named("checksum")? {
+                Value::Checksum(k) => Some(*k),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// [`Scripts::terrain_float`] for a terrain index (the physics' `+298`).
+    pub fn terrain_float_index(&self, index: u8, name: &str) -> f32 {
+        let lookup = |key: u32| {
+            self.struct_global(key)?.get_named("PhysicsActions")?.get_named(name).and_then(|v| self.number(v))
+        };
+        self.terrain_name_key(index)
+            .and_then(lookup)
+            .or_else(|| lookup(qb_key("TERRAIN_DEFAULT")))
+            .unwrap_or(0.0)
+    }
+
     /// Retail `82199D00` + `82199A28`: a stat-scaled value.
     pub fn stat(&self, name: &str, on_bike: bool, stats: &StatLevels, ctx: StatContext) -> f32 {
         let found = self.physics_struct(on_bike).and_then(|s| s.get_named(name)).or_else(|| self.global(name));
