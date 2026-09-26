@@ -1,0 +1,12 @@
+[package]
+name = "p8-skater"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Translation of Tony Hawk's Project 8's skater simulation. Every function
+# names the retail function (guest address) it was translated from. Values
+# come from the player's own scripts; nothing from the game is stored here.
+[dependencies]
+glam.workspace = true
+p8-formats.workspace = true

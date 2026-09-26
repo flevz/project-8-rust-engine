@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/p8-sim", "crates/p8-formats", "crates/p8-game"]
+members = ["crates/p8-sim", "crates/p8-formats", "crates/p8-skater", "crates/p8-game"]
 resolver = "3"
 
 [workspace.package]
