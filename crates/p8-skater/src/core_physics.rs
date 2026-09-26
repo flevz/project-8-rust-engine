@@ -26,6 +26,15 @@ pub enum Event {
     Landed,
     /// Retail event "BailCollision" (hit a wall while bailing).
     BailCollision,
+    /// Retail broadcast "SkaterOffEdge" and event "GroundGone": no ground
+    /// under the skater (`820F12C0`).
+    SkaterOffEdge,
+    GroundGone,
+    /// Retail event "WallPush" (`820DB418`).
+    WallPush,
+    /// Retail events "FlailLeft"/"FlailRight": hit a wall fast (`820E5F40`).
+    FlailLeft,
+    FlailRight,
 }
 
 /// SkaterState `+24` (set by `SetState`, `820D71B0`). Only the states with
@@ -152,6 +161,17 @@ pub struct CorePhysics {
     pub gravity_multiplier: f32,
     /// SkaterState `+128`: in a bail (`IsInBail`).
     pub in_bail: bool,
+    /// Object `+128`: the position at the start of this frame (LIKELY: the
+    /// object update stores it before the physics runs).
+    pub old_position: Vec3,
+    /// SkaterState `+40`: flips which way a wall flail goes. UNKNOWN
+    /// meaning; nothing translated sets it.
+    pub state_40: bool,
+    /// SkaterState `+216`: when set, a wall push only clears it. UNKNOWN
+    /// meaning; nothing translated sets it.
+    pub state_216: bool,
+    /// `+2532`: game time of the last wall push.
+    pub last_wallpush_ms: i64,
     pub stats: StatLevels,
     pub stat_context: StatContext,
 }
@@ -238,9 +258,27 @@ impl CorePhysics {
             flipping: false,
             spin_degrees: 0.0,
             in_bail: false,
+            old_position: Vec3::ZERO,
+            state_40: false,
+            state_216: false,
+            last_wallpush_ms: i64::MIN / 2,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
         }
+    }
+
+    /// A fresh skater standing at a restart node: `Obj_MoveToNode` with
+    /// `orient` (`82266148` -> `822E0A88`) sets the matrix to identity then
+    /// rotates it by the node's `Angles` about X, Y and Z. Only the Y turn
+    /// (`820D0780`, same rotation as [`rotate_about_up`] on identity) is
+    /// translated; X and Z are 0 in the restarts used so far.
+    pub fn at_restart(scripts: &Scripts, pos: Vec3, angles: Vec3) -> Self {
+        let mut p = Self::new(scripts);
+        p.body.position = pos;
+        p.old_position = pos;
+        rotate_about_up(&mut p.body.matrix, angles.y);
+        p.matrix_32 = p.body.matrix;
+        p
     }
 
     fn speed(&self) -> f32 {
@@ -634,7 +672,7 @@ impl CorePhysics {
     /// The position is advanced by `velocity * dt` exactly as retail does
     /// before collision; keeping the board on the ground is the caller's job
     /// until ground snapping is translated.
-    pub fn ground_update(&mut self, s: &Scripts, input: &InputState) -> Vec<Event> {
+    pub fn ground_update(&mut self, s: &Scripts, input: &InputState, world: &dyn crate::world::World) -> Vec<Event> {
         let mut events = Vec::new();
         self.kick_flag = false;
         let speed = self.speed();
@@ -701,8 +739,11 @@ impl CorePhysics {
             events.push(Event::Stopped);
         }
 
-        // Move (retail adds velocity * dt, then collides and snaps).
-        self.body.position += self.body.velocity * self.dt;
+        // Move, collide with walls and stay on the ground.
+        self.ground_move(s, input, world, &mut events);
+        if self.state != State::Ground {
+            return events;
+        }
 
         if !self.powerslide {
             self.ground_turn(s, input);
@@ -760,6 +801,12 @@ mod tests {
             (k("physics_air_ramp_rotate_time"), Value::Int(50)),
             (k("physics_air_no_lean_time"), Value::Int(200)),
             (k("physics_air_ramp_lean_time"), Value::Int(200)),
+            f("physics_ground_snap_up", 0.33),
+            f("physics_ground_snap_down", 0.2),
+            f("skater_first_forward_collision_height", 0.2),
+            f("skater_first_forward_collision_length", 0.25),
+            f("ground_stick_angle", 30.0),
+            f("ground_stick_angle_forward", 30.0),
         ]);
         let terrain = Value::Struct(vec![(
             k("physicsactions"),
@@ -778,6 +825,7 @@ mod tests {
                 f("Skater_Default_Stats", 5.0),
                 f("skater_max_sloped_turn_cosine", 0.5),
                 f("default_friction", 0.025),
+                f("wall_non_skatable_angle", 25.0),
                 (k("terrain_default"), Value::Checksum(k("standard_terrain_default"))),
                 (k("standard_terrain_default"), terrain),
             ]
@@ -797,6 +845,7 @@ mod tests {
     const CROUCH: InputState = InputState {
         crouch: true,
         kick: false,
+        triangle: false,
         up: false,
         brake_digital: false,
         down: false,
@@ -874,6 +923,20 @@ mod tests {
         assert_eq!(p.body.at(), Vec3::Z);
     }
 
+    /// An infinite plane through the origin, hit from its front side.
+    struct Plane(Vec3);
+
+    impl crate::world::World for Plane {
+        fn feeler(&self, a: Vec3, b: Vec3, _: u16, _: u16) -> Option<crate::world::Hit> {
+            let (da, db) = (a.dot(self.0), b.dot(self.0));
+            if da < 0.0 || db > 0.0 || da <= db {
+                return None;
+            }
+            let point = a + (b - a) * (da / (da - db));
+            Some(crate::world::Hit { point, normal: self.0, flags: 0, terrain: 0 })
+        }
+    }
+
     #[test]
     fn rolls_down_a_slope_and_crouching_adds_downhill_gravity() {
         let s = scripts();
@@ -886,7 +949,11 @@ mod tests {
             let input = InputState { crouch, ..Default::default() };
             // Crouching also kicks; block that to isolate gravity.
             p.no_kick = true;
-            run(&mut p, &s, input, 1.0);
+            let world = Plane(p.ground_normal);
+            for _ in 0..60 {
+                p.step(&s, &input, &world);
+            }
+            assert_eq!(p.state, State::Ground);
             p.body.velocity.length()
         };
         let standing = slope(false);

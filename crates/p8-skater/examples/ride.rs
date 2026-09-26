@@ -19,9 +19,6 @@ fn main() {
     for (name, input, seconds) in phases {
         for i in 0..(seconds * 60.0) as usize {
             let events = p.step(&s, &input, &FlatFloor::default());
-            if p.state == p8_skater::core_physics::State::Ground {
-                p.body.position.y = 0.0;
-            }
             if i % 6 == 5 || !events.is_empty() && events != [p8_skater::core_physics::Event::Stopped] {
                 let at = p.body.at();
                 println!(

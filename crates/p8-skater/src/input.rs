@@ -20,6 +20,8 @@ pub struct InputState {
     pub brake_digital: bool,
     /// Record "Down" (same record as `brake_digital`).
     pub down: bool,
+    /// `+416` = record "Triangle" (Xbox Y): wall push (`820DB418`).
+    pub triangle: bool,
     /// Records "L1", "R1", "L2" (Xbox LB, RB, LT).
     pub l1: bool,
     pub r1: bool,

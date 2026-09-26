@@ -18,14 +18,28 @@ const TICK_HZ: f64 = 60.0;
 /// Written by `p8-setup`: the path of the player's `qb.pak.xen`.
 const SCRIPTS_LOCATION: &str = "scripts-location.txt";
 
+/// The level the translated skater rides (the cul-de-sac zone).
+const ZONE: &str = "z_houses";
+
 /// The player's scripts, or why they could not be loaded.
-fn load_scripts() -> Result<(p8_skater::Scripts, String), String> {
+fn load_scripts() -> Result<(p8_skater::Scripts, String, std::path::PathBuf), String> {
     let path = std::fs::read_to_string(SCRIPTS_LOCATION)
         .map_err(|_| "run SETUP.bat to use the original Project 8 physics".to_string())?;
     let path = std::path::PathBuf::from(path.trim());
     let (files, globals) = p8_formats::qb::load_pak_globals(&path)?;
     let note = format!("{files} scripts from {}", path.display());
-    Ok((p8_skater::Scripts::new(globals), note))
+    Ok((p8_skater::Scripts::new(globals), note, path))
+}
+
+/// The player's own zone pak, next to their scripts:
+/// `DATA/COMPRESSED/PAK/qb.pak.xen` -> `DATA/COMPRESSED/ZONES/<ZONE>.pak.xen`.
+fn load_zone(scripts: &std::path::Path) -> Result<p8_formats::zone::Zone, String> {
+    let zones = scripts
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("ZONES"))
+        .ok_or("no ZONES folder next to the scripts")?;
+    p8_formats::zone::load(&zones, ZONE)
 }
 
 fn main() {
@@ -40,8 +54,9 @@ fn main() {
         ..default()
     }));
     match scripts {
-        Ok((scripts, source)) => {
-            app.add_plugins(translated::TranslatedPlugin { scripts, source });
+        Ok((scripts, source, path)) => {
+            let zone = load_zone(&path);
+            app.add_plugins(translated::TranslatedPlugin { scripts, source, zone_name: ZONE, zone });
         }
         Err(why) => {
             app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))

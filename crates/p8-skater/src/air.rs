@@ -256,7 +256,7 @@ impl CorePhysics {
         let mut events = Vec::new();
         // Object +128: the position at the start of this frame (LIKELY: the
         // object update stores it before the physics runs).
-        let old = self.body.position;
+        let old = self.old_position;
         let g = Vec3::new(0.0, self.air_gravity(s), 0.0);
         self.standing_kick_limit = 0.0;
         self.turn_amount = 0.0;
@@ -355,9 +355,10 @@ impl CorePhysics {
         self.time_ms += whole as i64;
         self.time_frac_ms -= whole;
         self.last_input = *input;
+        self.old_position = self.body.position;
         self.update_crouch(input);
         let mut events = match self.state {
-            State::Ground => self.ground_update(s, input),
+            State::Ground => self.ground_update(s, input, world),
             State::Air => self.air_update(s, world),
         };
         if events.contains(&Event::Ollied) {

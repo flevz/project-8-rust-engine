@@ -1,25 +1,54 @@
 //! Play mode for the translated skater (`p8-skater`), driven by the player's
 //! own Project 8 scripts.
 //!
-//! Translated so far: riding, the ollie, flying and landing. The level is a
-//! flat floor; until the retail ground snapping is translated the height is
-//! held at 0 while on the ground. The camera is a simple placeholder, not
-//! the retail camera.
+//! Translated so far: riding, the ollie, flying, landing, and staying on
+//! the ground and bumping walls on the player's own level collision (drawn
+//! as-is: the level's real textured models come later). Without the zone
+//! files it falls back to a flat floor. The camera is a simple
+//! placeholder, not the retail camera.
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use p8_skater::core_physics::{Event, State, Turn};
-use p8_skater::{Controller, CorePhysics, FlatFloor, Scripts, XboxPad};
+use p8_formats::havok::Solid;
+use p8_formats::zone::Zone;
+use p8_skater::core_physics::{Event, Turn};
+use p8_skater::world::Level;
+use p8_skater::{Controller, CorePhysics, FlatFloor, Scripts, World, XboxPad};
 
 const TICK_HZ: f64 = 60.0;
 
 pub struct TranslatedPlugin {
     pub scripts: Scripts,
     pub source: String,
+    pub zone_name: &'static str,
+    /// The player's zone, or why it could not be read.
+    pub zone: Result<Zone, String>,
 }
 
 impl Plugin for TranslatedPlugin {
     fn build(&self, app: &mut App) {
-        let physics = CorePhysics::new(&self.scripts);
+        let ground = match &self.zone {
+            Ok(zone) => {
+                let key = p8_formats::qb_key(&format!("{}_TRG_Restart_Default", self.zone_name));
+                let (pos, angles) = zone
+                    .restarts
+                    .iter()
+                    .find(|r| r.name == key)
+                    .map(|r| (Vec3::from(r.pos), Vec3::from(r.angles)))
+                    .unwrap_or_default();
+                Ground {
+                    level: Some(Level::new(&zone.collision)),
+                    convex: zone.collision.solids.iter().filter(|s| !matches!(s, Solid::Triangle { .. })).cloned().collect(),
+                    spawn: (pos, angles),
+                    note: format!("{} ({} collision pieces)", self.zone_name, zone.collision.solids.len()),
+                }
+            }
+            Err(why) => Ground { level: None, convex: Vec::new(), spawn: (Vec3::ZERO, Vec3::ZERO), note: format!("flat floor: {why}") },
+        };
+        let physics = CorePhysics::at_restart(&self.scripts, ground.spawn.0, ground.spawn.1);
         let frame = Frame::of(&physics);
+        let eye = physics.body.position - physics.body.at() * 4.5 + Vec3::Y * 2.0;
+        let cam_dir = physics.body.at();
         app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.9)))
             .insert_resource(Skater {
@@ -30,9 +59,10 @@ impl Plugin for TranslatedPlugin {
                 current: frame,
                 controller: Controller::default(),
                 last_event: None,
-                eye: Vec3::new(0.0, 2.0, -5.0),
-                cam_dir: Vec3::Z,
+                eye,
+                cam_dir,
             })
+            .insert_resource(ground)
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, step)
             .add_systems(Update, (present, hud));
@@ -53,6 +83,57 @@ struct Skater {
     eye: Vec3,
     /// Placeholder camera: the flat direction of travel it stays behind.
     cam_dir: Vec3,
+}
+
+/// What the skater rides on: the player's level, or a flat floor.
+#[derive(Resource)]
+struct Ground {
+    level: Option<Level>,
+    /// Boxes, cylinders and capsules, for drawing.
+    convex: Vec<Solid>,
+    /// The zone's default restart node (position, angles).
+    spawn: (Vec3, Vec3),
+    note: String,
+}
+
+impl Ground {
+    fn world(&self) -> &dyn World {
+        match &self.level {
+            Some(level) => level,
+            None => &FLAT,
+        }
+    }
+}
+
+static FLAT: FlatFloor = FlatFloor { height: 0.0 };
+
+/// The level's collision triangles as one mesh, flat-shaded, walls a little
+/// darker than floors (retail `Wall_Non_Skatable_Angle` is 25 degrees).
+fn level_mesh(level: &Level) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut colors = Vec::new();
+    for (v, _material) in level.triangles() {
+        let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or_zero();
+        let shade = if n.y.abs() >= 25f32.to_radians().sin() { [0.62, 0.62, 0.6, 1.0] } else { [0.5, 0.45, 0.4, 1.0] };
+        for p in v {
+            positions.push(p.to_array());
+            normals.push(n.to_array());
+            colors.push(shade);
+        }
+    }
+    let count = positions.len() as u32;
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_indices(Indices::U32((0..count).collect()))
+}
+
+/// A mesh along Y (cylinder or capsule) placed between two points.
+fn between(a: Vec3, b: Vec3) -> Transform {
+    let d = b - a;
+    Transform::from_translation((a + b) * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Y, d.normalize_or(Vec3::Y)))
 }
 
 #[derive(Clone, Copy)]
@@ -77,38 +158,63 @@ struct Rider;
 struct StatusText;
 
 fn setup(
+    ground: Res<Ground>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Flat test floor with posts every 10 m to show speed and direction.
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(400.0, 400.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.55, 0.55, 0.55),
-            perceptual_roughness: 0.95,
-            ..default()
-        })),
-    ));
-    let post = meshes.add(Cuboid::new(0.15, 1.0, 0.15));
-    let post_color = materials.add(Color::srgb(0.9, 0.9, 0.9));
-    let line = meshes.add(Cuboid::new(0.06, 0.01, 400.0));
-    let line_color = materials.add(Color::srgb(0.45, 0.45, 0.45));
-    for i in -20..=20 {
-        let x = i as f32 * 10.0;
-        commands.spawn((Mesh3d(line.clone()), MeshMaterial3d(line_color.clone()), Transform::from_xyz(x, 0.005, 0.0)));
+    if let Some(level) = &ground.level {
         commands.spawn((
-            Mesh3d(line.clone()),
-            MeshMaterial3d(line_color.clone()),
-            Transform::from_xyz(0.0, 0.005, x).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+            Mesh3d(meshes.add(level_mesh(level))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                perceptual_roughness: 0.95,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })),
         ));
-        for j in -20..=20 {
-            if (i + j) % 4 == 0 {
-                commands.spawn((
-                    Mesh3d(post.clone()),
-                    MeshMaterial3d(post_color.clone()),
-                    Transform::from_xyz(x, 0.5, j as f32 * 10.0),
-                ));
+        let solid = materials.add(Color::srgb(0.7, 0.5, 0.35));
+        for s in &ground.convex {
+            let v = Vec3::from;
+            let (mesh, transform) = match s {
+                Solid::Box { transform, half, .. } => {
+                    let [x, y, z] = transform.cols.map(Vec3::from);
+                    let rotation = Quat::from_mat3(&Mat3::from_cols(x, y, z)).normalize();
+                    let h = v(*half) * 2.0;
+                    (meshes.add(Cuboid::new(h.x, h.y, h.z)), Transform::from_translation(v(transform.t)).with_rotation(rotation))
+                }
+                Solid::Cylinder { a, b, radius, .. } => {
+                    (meshes.add(Cylinder::new(*radius, (v(*b) - v(*a)).length())), between(v(*a), v(*b)))
+                }
+                Solid::Capsule { a, b, radius, .. } => {
+                    (meshes.add(Capsule3d::new(*radius, (v(*b) - v(*a)).length())), between(v(*a), v(*b)))
+                }
+                Solid::Triangle { .. } => continue,
+            };
+            commands.spawn((Mesh3d(mesh), MeshMaterial3d(solid.clone()), transform));
+        }
+    } else {
+        // Flat test floor with posts every 10 m to show speed and direction.
+        commands.spawn((
+            Mesh3d(meshes.add(Plane3d::default().mesh().size(400.0, 400.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.55, 0.55, 0.55),
+                perceptual_roughness: 0.95,
+                ..default()
+            })),
+        ));
+        let post = meshes.add(Cuboid::new(0.15, 1.0, 0.15));
+        let post_color = materials.add(Color::srgb(0.9, 0.9, 0.9));
+        for i in -20..=20 {
+            for j in -20..=20 {
+                if (i + j) % 4 == 0 {
+                    commands.spawn((
+                        Mesh3d(post.clone()),
+                        MeshMaterial3d(post_color.clone()),
+                        Transform::from_xyz(i as f32 * 10.0, 0.5, j as f32 * 10.0),
+                    ));
+                }
             }
         }
     }
@@ -134,14 +240,18 @@ fn setup(
         DirectionalLight { illuminance: 9000.0, shadows_enabled: true, ..default() },
         Transform::from_xyz(20.0, 40.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    commands.spawn((
+        DirectionalLight { illuminance: 2500.0, ..default() },
+        Transform::from_xyz(-10.0, 20.0, -30.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
     commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 2.0, -5.0).looking_at(Vec3::Y, Vec3::Y)));
 
     commands.spawn((
         Text::new(
-            "Translated Project 8 physics (flat test floor; no tricks or ramps yet)\n\
+            "Translated Project 8 physics (level collision shown as plain shapes; no tricks yet)\n\
              Controller: hold A to crouch (and push), release A to ollie, left stick steer / spin in the air,\n\
-             pull back to brake, LB/RB spin, D-pad works like the stick, Back reset\n\
-             Keyboard: hold Space to crouch, release to ollie, W/A/S/D stick, Q/E spin, R reset",
+             pull back to brake, LB/RB spin, Y wall push, D-pad works like the stick, Back restart\n\
+             Keyboard: hold Space to crouch, release to ollie, W/A/S/D stick, Q/E spin, F wall push, R restart",
         ),
         TextFont { font_size: 15.0, ..default() },
         Node { position_type: PositionType::Absolute, left: px(12.0), bottom: px(12.0), ..default() },
@@ -175,6 +285,7 @@ fn read_pad(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>) -> XboxPad 
     press(keys.pressed(KeyCode::KeyQ), LEFT_SHOULDER);
     press(keys.pressed(KeyCode::KeyE), RIGHT_SHOULDER);
     press(keys.pressed(KeyCode::KeyR), BACK);
+    press(keys.pressed(KeyCode::KeyF), Y);
     if keys.pressed(KeyCode::ShiftLeft) {
         lt = 1.0;
     }
@@ -215,6 +326,7 @@ fn read_pad(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>) -> XboxPad 
 
 fn step(
     mut skater: ResMut<Skater>,
+    ground: Res<Ground>,
     time: Res<Time<Fixed>>,
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&Gamepad>,
@@ -225,18 +337,14 @@ fn step(
     let was_held = skater.controller.select.held;
     let input = skater.controller.update(&pad, skater.physics.time_ms);
     if skater.controller.select.held && !was_held {
-        skater.physics = CorePhysics::new(&skater.scripts);
+        skater.physics = CorePhysics::at_restart(&skater.scripts, ground.spawn.0, ground.spawn.1);
         skater.current = Frame::of(&skater.physics);
-        skater.cam_dir = Vec3::Z;
+        skater.cam_dir = skater.physics.body.at();
     }
     skater.previous = skater.current;
     let p = &mut skater.physics;
     p.dt = dt;
-    let events = p.step(&skater.scripts, &input, &FlatFloor::default());
-    // Flat floor stand-in for ground snapping (not yet translated).
-    if p.state == State::Ground {
-        p.body.position.y = 0.0;
-    }
+    let events = p.step(&skater.scripts, &input, ground.world());
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);
     }
@@ -282,7 +390,7 @@ fn present(
     }
 }
 
-fn hud(skater: Res<Skater>, mut text: Query<&mut Text, With<StatusText>>) {
+fn hud(skater: Res<Skater>, ground: Res<Ground>, mut text: Query<&mut Text, With<StatusText>>) {
     let p = &skater.physics;
     let turn = match p.last_turn {
         Some(Turn::Left) => "left",
@@ -290,7 +398,7 @@ fn hud(skater: Res<Skater>, mut text: Query<&mut Text, With<StatusText>>) {
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]  [level: {}]",
         p.body.velocity.length(),
         p.body.position.y,
         p.state,
@@ -299,6 +407,7 @@ fn hud(skater: Res<Skater>, mut text: Query<&mut Text, With<StatusText>>) {
         if p.braking { "  BRAKING" } else { "" },
         skater.last_event,
         skater.source,
+        ground.note,
     );
     if let Ok(mut t) = text.single_mut()
         && **t != line

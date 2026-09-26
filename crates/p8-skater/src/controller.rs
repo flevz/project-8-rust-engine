@@ -218,6 +218,7 @@ impl Controller {
         InputState {
             crouch: self.cross.held,
             kick: self.square.held,
+            triangle: self.triangle.held,
             up: self.up.held,
             down: self.down.held,
             brake_digital: self.down.held,

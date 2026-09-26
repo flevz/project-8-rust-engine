@@ -13,6 +13,7 @@ pub mod air;
 pub mod body;
 pub mod controller;
 pub mod core_physics;
+pub mod ground;
 pub mod input;
 pub mod pad;
 pub mod script;
