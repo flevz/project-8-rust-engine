@@ -260,6 +260,8 @@ impl CorePhysics {
     fn land(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
         self.set_state(State::Ground);
         self.last_speed = self.body.velocity.length();
+        // `820DBAA8(1)` runs here, before the landing velocity blend.
+        self.flip_if_backwards(s);
         let v = self.body.velocity;
         // Retail also checks vert-landing flags +2131/+2135 (not translated).
         let still = v.x == 0.0 && v.z == 0.0;

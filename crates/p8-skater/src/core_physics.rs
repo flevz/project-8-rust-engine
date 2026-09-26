@@ -122,6 +122,9 @@ pub struct CorePhysics {
     pub time_frac_ms: f32,
     /// `+2000`: where the last jump started.
     pub jump_start: Vec3,
+    /// SkaterState `+48`: toggled by the backwards flip (`820DBAA8` via
+    /// `820D45F0`). LIKELY the scripts' "flipped"; not yet read elsewhere.
+    pub flipped: bool,
     /// `+2128`: spinning blocked (`NoSpin`; `CanSpin` clears). Reset: false.
     pub no_spin: bool,
     /// `+2720`: turning enabled (`enableturning`/`disableturning`). Reset: on.
@@ -222,6 +225,7 @@ impl CorePhysics {
             jump_start: Vec3::ZERO,
             gravity_multiplier: 0.0,
             last_input: InputState::default(),
+            flipped: false,
             no_spin: false,
             turning_enabled: true,
             analog_turning: true,
@@ -576,6 +580,36 @@ impl CorePhysics {
 
     /// Retail `820DB318`: point the velocity exactly along the board,
     /// forwards or backwards, keeping the speed.
+    /// Retail `820DBAA8`: rolling backwards along the board faster than
+    /// `Skater_Flip_Speed` turns the skater around (board forward and
+    /// sideways rows negated) and toggles SkaterState `+48`. Retail then
+    /// runs `flip_landing_backwards` / `flip_skating_backwards`, which only
+    /// play animations. The manual/balance-trick branch is not translated
+    /// (no balance tricks yet). Returns whether it flipped.
+    pub fn flip_if_backwards(&mut self, s: &Scripts) -> bool {
+        // Retail also requires not skitching (SkaterState +160).
+        if self.on_bike || self.in_bail || self.braking {
+            return false;
+        }
+        let v = self.body.velocity;
+        if v.dot(self.body.at()) >= 0.0 {
+            return false;
+        }
+        let flip_speed = s.global_float("Skater_Flip_Speed");
+        if v.length_squared() <= flip_speed * flip_speed {
+            return false;
+        }
+        for m in [&mut self.body.matrix, &mut self.matrix_32] {
+            m.x_axis = -m.x_axis;
+            m.z_axis = -m.z_axis;
+        }
+        // `flip_backwards_dont_blend` (0 in the retail scripts) skips this.
+        if s.global_float("flip_backwards_dont_blend") == 0.0 {
+            self.flipped = !self.flipped;
+        }
+        true
+    }
+
     fn velocity_along_board(&mut self) {
         let speed = self.speed();
         // 1e-6 is the constant at 8200297C.
@@ -673,7 +707,11 @@ impl CorePhysics {
         if !self.lock_velocity_direction {
             self.velocity_along_board();
         }
-        // `820D7AB0` runs later in the ground update (after `820DBAA8`).
+        // `820DBAA8`, unless the velocity direction is locked (+2184).
+        if !self.lock_velocity_direction {
+            self.flip_if_backwards(s);
+        }
+        // `820D7AB0` runs later in the ground update.
         if self.ollie_trigger(input) {
             events.push(Event::Ollied);
         }
@@ -733,6 +771,7 @@ mod tests {
                 f("physics_air_hang_stat", 0.9),
                 (k("skater_max_tense_time"), Value::Int(200)),
                 f("landing_velocity_factor", 0.35),
+                f("Skater_Flip_Speed", 1.0),
                 f("Skater_Default_Stats", 5.0),
                 f("skater_max_sloped_turn_cosine", 0.5),
                 f("default_friction", 0.025),
@@ -1000,5 +1039,46 @@ mod tests {
         p.lean_degrees = 30.0;
         p.step(&s, &InputState::default(), &floor);
         assert!((p.lean_degrees - 27.0).abs() < 1e-4, "eases 10% toward 0");
+    }
+
+    #[test]
+    fn landing_more_than_90_degrees_round_turns_the_skater_to_face_travel() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.no_kick = true;
+        p.body.velocity = Vec3::new(0.0, 0.0, 8.0);
+        let floor = crate::world::FlatFloor::default();
+        // Ollie, then turn the board 150 degrees while in the air.
+        run(&mut p, &s, CROUCH, 0.1);
+        p.step(&s, &InputState::default(), &floor);
+        assert_eq!(p.state, State::Air);
+        p.rotate(150f32.to_radians());
+        let flipped_before = p.flipped;
+        let mut landed = false;
+        for _ in 0..120 {
+            landed |= p.step(&s, &InputState::default(), &floor).contains(&Event::Landed);
+            if landed {
+                break;
+            }
+        }
+        assert!(landed);
+        // Rolling backwards on landing: the board is turned round (150 -> -30
+        // degrees from travel) and the stance flag toggled.
+        assert_ne!(p.flipped, flipped_before);
+        assert!(p.body.velocity.dot(p.body.at()) > 0.0, "facing the way it moves");
+        let heading = p.body.at().x.atan2(p.body.at().z).to_degrees();
+        assert!((heading + 30.0).abs() < 0.5, "heading {heading}");
+    }
+
+    #[test]
+    fn slow_backwards_rolling_below_the_flip_speed_is_left_alone() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.body.velocity = Vec3::new(0.0, 0.0, -0.5);
+        assert!(!p.flip_if_backwards(&s));
+        p.body.velocity = Vec3::new(0.0, 0.0, -1.5);
+        assert!(p.flip_if_backwards(&s));
+        assert_eq!(p.body.at(), Vec3::NEG_Z);
+        assert_eq!(p.body.row0(), Vec3::NEG_X);
     }
 }
