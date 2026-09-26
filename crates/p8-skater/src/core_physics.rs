@@ -122,6 +122,24 @@ pub struct CorePhysics {
     pub time_frac_ms: f32,
     /// `+2000`: where the last jump started.
     pub jump_start: Vec3,
+    /// `+2128`: spinning blocked (`NoSpin`; `CanSpin` clears). Reset: false.
+    pub no_spin: bool,
+    /// `+2720`: turning enabled (`enableturning`/`disableturning`). Reset: on.
+    pub turning_enabled: bool,
+    /// `+2721`: analog turning enabled (`Enable/DisableAnalogTurning`). Reset: on.
+    pub analog_turning: bool,
+    /// Stance panel `+29`: in nollie (`nollieon`/`nollieoff`). Inverts lean.
+    pub nollie: bool,
+    /// `+1912`: "lean" angle in degrees. Retail hands it to the model as a
+    /// display rotation (`82260550`, about the model's own Y axis); it does
+    /// not rotate the physics body.
+    pub lean_degrees: f32,
+    /// `+2628`: `lean_degrees` before this frame.
+    pub previous_lean_degrees: f32,
+    /// `+1542`: the lean angle is between 41 and 319 degrees (upside down).
+    pub flipping: bool,
+    /// Trick component `+5360`: degrees spun this air (for trick names).
+    pub spin_degrees: f32,
     /// The input of the current frame (retail reads the Input component).
     pub last_input: InputState,
     /// `+2724`: air gravity multiplier (`AdjustGravity`); 0 = unused.
@@ -204,6 +222,14 @@ impl CorePhysics {
             jump_start: Vec3::ZERO,
             gravity_multiplier: 0.0,
             last_input: InputState::default(),
+            no_spin: false,
+            turning_enabled: true,
+            analog_turning: true,
+            nollie: false,
+            lean_degrees: 0.0,
+            previous_lean_degrees: 0.0,
+            flipping: false,
+            spin_degrees: 0.0,
             in_bail: false,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
@@ -218,7 +244,7 @@ impl CorePhysics {
         s.stat(name, self.on_bike, &self.stats, self.stat_context)
     }
 
-    fn rotate(&mut self, angle: f32) {
+    pub(crate) fn rotate(&mut self, angle: f32) {
         rotate_about_up(&mut self.body.matrix, angle);
         rotate_about_up(&mut self.matrix_32, angle);
     }
@@ -688,6 +714,11 @@ mod tests {
             f("physics_air_gravity", -21.6),
             (k("physics_jump_speed_stat"), stat(7.6, 7.6, "STATS_AIR")),
             (k("physics_jump_speed_min_stat"), stat(7.0, 7.6, "STATS_AIR")),
+            (k("physics_air_rotation_stat"), stat(6.85, 7.75, "STATS_SPIN")),
+            (k("physics_air_no_rotate_time"), Value::Int(150)),
+            (k("physics_air_ramp_rotate_time"), Value::Int(50)),
+            (k("physics_air_no_lean_time"), Value::Int(200)),
+            (k("physics_air_ramp_lean_time"), Value::Int(200)),
         ]);
         let terrain = Value::Struct(vec![(
             k("physicsactions"),
@@ -698,6 +729,7 @@ mod tests {
                 (k("skater_physics"), physics),
                 (k("STATS_SPEED"), Value::Int(3)),
                 (k("STATS_AIR"), Value::Int(0)),
+                (k("STATS_SPIN"), Value::Int(4)),
                 f("physics_air_hang_stat", 0.9),
                 (k("skater_max_tense_time"), Value::Int(200)),
                 f("landing_velocity_factor", 0.35),
@@ -725,12 +757,20 @@ mod tests {
         kick: false,
         up: false,
         brake_digital: false,
+        down: false,
+        l1: false,
+        r1: false,
+        l2: false,
+        up_held_ms: 0,
+        down_held_ms: 0,
         left: false,
         right: false,
         left_held_ms: 0,
         right_held_ms: 0,
         stick_x_raw: 0.0,
         stick_back_raw: 0.0,
+        stick_x: 0.0,
+        stick_y: 0.0,
     };
 
     #[test]
@@ -906,5 +946,59 @@ mod tests {
         // Friction takes the 5 m/s down to about 4.25 while crouching; the
         // landing then adds part of the 7.6 m/s fall.
         assert!(speed > 5.0 && p.body.velocity.y.abs() < 1e-4, "speed {speed}");
+    }
+
+    fn heading(p: &CorePhysics) -> f32 {
+        let at = p.body.at();
+        at.x.atan2(at.z)
+    }
+
+    #[test]
+    fn stick_spins_only_after_the_no_rotate_time_then_at_the_rotation_stat() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.set_state(State::Air);
+        p.body.position.y = 50.0;
+        let floor = crate::world::FlatFloor::default();
+        let mut input = InputState { stick_x: 1.0, right: true, ..Default::default() };
+        // Held 100 ms: inside Physics_Air_No_Rotate_Time (150).
+        input.right_held_ms = 100;
+        p.step(&s, &input, &floor);
+        assert_eq!(heading(&p), 0.0);
+        // Held 300 ms: full rate, stat level 5 of (6.85, 7.75) = 7.3 rad/s.
+        input.right_held_ms = 300;
+        for _ in 0..6 {
+            p.step(&s, &input, &floor);
+        }
+        assert!((heading(&p) + 7.3 * 0.1).abs() < 1e-3, "heading {}", heading(&p));
+        assert!((p.spin_degrees + 7.3 * 0.1 * 57.29578).abs() < 0.1);
+    }
+
+    #[test]
+    fn shoulder_buttons_spin_at_once() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.set_state(State::Air);
+        p.body.position.y = 50.0;
+        let input = InputState { l1: true, ..Default::default() };
+        p.step(&s, &input, &crate::world::FlatFloor::default());
+        // L1 = spin input -1 -> positive angle ("Left").
+        assert!((heading(&p) - 7.3 / 60.0).abs() < 1e-4);
+        assert_eq!(p.last_turn, Some(Turn::Left));
+    }
+
+    #[test]
+    fn lean_needs_l2_and_eases_back_when_released() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.set_state(State::Air);
+        p.body.position.y = 50.0;
+        let floor = crate::world::FlatFloor::default();
+        let up = InputState { stick_y: -1.0, up: true, up_held_ms: 500, ..Default::default() };
+        p.step(&s, &up, &floor);
+        assert_eq!(p.lean_degrees, 0.0, "no L2, no lean");
+        p.lean_degrees = 30.0;
+        p.step(&s, &InputState::default(), &floor);
+        assert!((p.lean_degrees - 27.0).abs() < 1e-4, "eases 10% toward 0");
     }
 }

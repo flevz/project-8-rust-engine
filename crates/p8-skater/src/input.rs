@@ -18,17 +18,32 @@ pub struct InputState {
     pub kick: bool,
     /// `+64` = record "Down": digital brake (`820D74B0`, `820D93F0`).
     pub brake_digital: bool,
+    /// Record "Down" (same record as `brake_digital`).
+    pub down: bool,
+    /// Records "L1", "R1", "L2" (Xbox LB, RB, LT).
+    pub l1: bool,
+    pub r1: bool,
+    pub l2: bool,
+    /// Milliseconds since "Up" / "Down" were last pressed (`822D6200`).
+    pub up_held_ms: i32,
+    pub down_held_ms: i32,
     /// `+96` = record "Left": digital turn left (`820ECEE8`).
     pub left: bool,
     /// `+128` = record "Right": digital turn right.
     pub right: bool,
-    /// Milliseconds `left` / `right` have been held (retail `822D6200`).
+    /// Milliseconds since `left` / `right` were last pressed (`822D6200`;
+    /// retail does not reset this on release).
     pub left_held_ms: i32,
     pub right_held_ms: i32,
-    /// `+872`: analog left/right value in retail units (-128..127),
-    /// positive = right. Scaled by 1/128 (constant at 82000E00).
+    /// `+872`: left stick X in retail units (-128..127), positive = right,
+    /// zero inside the dead zone of both axes (`82229E58`). Scaled by 1/128
+    /// (constant at 82000E00) where read.
     pub stick_x_raw: f32,
     /// `+876`: analog back/forward value in retail units (-128..127),
     /// positive = pulled back. Scaled by 1/128.
     pub stick_back_raw: f32,
+    /// Record base `+856` / `+860`: left stick X / Y past the per-axis dead
+    /// zone, about -1..1 (Y positive = pulled back). Read by air rotation.
+    pub stick_x: f32,
+    pub stick_y: f32,
 }

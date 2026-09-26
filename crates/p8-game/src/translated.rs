@@ -7,7 +7,7 @@
 //! the retail camera.
 use bevy::prelude::*;
 use p8_skater::core_physics::{Event, State, Turn};
-use p8_skater::{CorePhysics, FlatFloor, InputState, Scripts};
+use p8_skater::{Controller, CorePhysics, FlatFloor, Scripts, XboxPad};
 
 const TICK_HZ: f64 = 60.0;
 
@@ -28,8 +28,7 @@ impl Plugin for TranslatedPlugin {
                 physics,
                 previous: frame,
                 current: frame,
-                left_ms: 0.0,
-                right_ms: 0.0,
+                controller: Controller::default(),
                 last_event: None,
                 eye: Vec3::new(0.0, 2.0, -5.0),
             })
@@ -46,9 +45,8 @@ struct Skater {
     physics: CorePhysics,
     previous: Frame,
     current: Frame,
-    /// How long the digital left/right inputs have been held (ms).
-    left_ms: f32,
-    right_ms: f32,
+    /// The translated retail controller path (records and hold times).
+    controller: Controller,
     last_event: Option<Event>,
     /// Placeholder chase camera position.
     eye: Vec3,
@@ -137,10 +135,10 @@ fn setup(
 
     commands.spawn((
         Text::new(
-            "Translated Project 8 physics (flat test floor; no spins, tricks or ramps yet)\n\
-             Controller: hold A to crouch (and push), release A to ollie, left stick steer, pull back to brake,\n\
-             D-pad left/right steer, D-pad down brake, Back reset\n\
-             Keyboard: hold Space to crouch, release to ollie, A/D steer, S brake, R reset",
+            "Translated Project 8 physics (flat test floor; no tricks or ramps yet)\n\
+             Controller: hold A to crouch (and push), release A to ollie, left stick steer / spin in the air,\n\
+             pull back to brake, LB/RB spin, D-pad works like the stick, Back reset\n\
+             Keyboard: hold Space to crouch, release to ollie, W/A/S/D stick, Q/E spin, R reset",
         ),
         TextFont { font_size: 15.0, ..default() },
         Node { position_type: PositionType::Absolute, left: px(12.0), bottom: px(12.0), ..default() },
@@ -154,41 +152,62 @@ fn setup(
     ));
 }
 
-/// Retail stick units: -128..127 (scaled by 1/128 in the game code).
-fn retail_axis(v: f32) -> f32 {
-    (v * 128.0).clamp(-128.0, 127.0).round()
-}
-
-fn read_input(
-    keys: &ButtonInput<KeyCode>,
-    gamepads: &Query<&Gamepad>,
-    skater: &mut Skater,
-    dt_ms: f32,
-) -> (InputState, bool) {
+/// The player's controller (or keyboard) as the Xbox 360 pad the retail
+/// code reads. Everything after this goes through the translated retail
+/// controller path (`p8_skater::controller`).
+fn read_pad(keys: &ButtonInput<KeyCode>, gamepads: &Query<&Gamepad>) -> XboxPad {
+    use p8_skater::pad::xinput::*;
     let key = |k| if keys.pressed(k) { 1.0 } else { 0.0 };
-    // Keyboard keys act like the stick at full tilt.
+    // Keyboard: W/A/S/D as the left stick at full tilt.
     let mut stick = Vec2::new(key(KeyCode::KeyD) - key(KeyCode::KeyA), key(KeyCode::KeyW) - key(KeyCode::KeyS));
-    let mut input = InputState { crouch: keys.pressed(KeyCode::Space), ..default() };
-    let mut reset = keys.just_pressed(KeyCode::KeyR);
+    let mut buttons = 0u16;
+    let mut lt = 0.0f32;
+    let mut rt = 0.0f32;
+    let mut press = |on: bool, bit: u16| {
+        if on {
+            buttons |= bit;
+        }
+    };
+    press(keys.pressed(KeyCode::Space), A);
+    press(keys.pressed(KeyCode::KeyQ), LEFT_SHOULDER);
+    press(keys.pressed(KeyCode::KeyE), RIGHT_SHOULDER);
+    press(keys.pressed(KeyCode::KeyR), BACK);
+    if keys.pressed(KeyCode::ShiftLeft) {
+        lt = 1.0;
+    }
     for pad in gamepads {
         stick += pad.left_stick();
-        // A holds the crouch (CONFIRMED by play and code, see p8-skater).
-        input.crouch |= pad.pressed(GamepadButton::South);
-        // D-pad records "Left"/"Right"/"Down" (named by retail 822D6270).
-        input.left |= pad.pressed(GamepadButton::DPadLeft);
-        input.right |= pad.pressed(GamepadButton::DPadRight);
-        input.brake_digital |= pad.pressed(GamepadButton::DPadDown);
-        reset |= pad.just_pressed(GamepadButton::Select);
+        let map = [
+            (GamepadButton::South, A),
+            (GamepadButton::East, B),
+            (GamepadButton::West, X),
+            (GamepadButton::North, Y),
+            (GamepadButton::DPadUp, DPAD_UP),
+            (GamepadButton::DPadDown, DPAD_DOWN),
+            (GamepadButton::DPadLeft, DPAD_LEFT),
+            (GamepadButton::DPadRight, DPAD_RIGHT),
+            (GamepadButton::LeftTrigger, LEFT_SHOULDER),
+            (GamepadButton::RightTrigger, RIGHT_SHOULDER),
+            (GamepadButton::Select, BACK),
+            (GamepadButton::Start, START),
+        ];
+        for (button, bit) in map {
+            press(pad.pressed(button), bit);
+        }
+        lt = lt.max(pad.get(GamepadButton::LeftTrigger2).unwrap_or(0.0));
+        rt = rt.max(pad.get(GamepadButton::RightTrigger2).unwrap_or(0.0));
     }
     let stick = stick.clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
-    input.stick_x_raw = retail_axis(stick.x);
-    // Retail +876 is positive when the stick is pulled back.
-    input.stick_back_raw = retail_axis(-stick.y);
-    skater.left_ms = if input.left { skater.left_ms + dt_ms } else { 0.0 };
-    skater.right_ms = if input.right { skater.right_ms + dt_ms } else { 0.0 };
-    input.left_held_ms = skater.left_ms as i32;
-    input.right_held_ms = skater.right_ms as i32;
-    (input, reset)
+    let axis = |v: f32| (v * 32767.0).round().clamp(-32768.0, 32767.0) as i16;
+    XboxPad {
+        buttons,
+        left_trigger: (lt * 255.0) as u8,
+        right_trigger: (rt * 255.0) as u8,
+        thumb_lx: axis(stick.x),
+        thumb_ly: axis(stick.y),
+        thumb_rx: 0,
+        thumb_ry: 0,
+    }
 }
 
 fn step(
@@ -199,8 +218,10 @@ fn step(
 ) {
     let skater = &mut *skater;
     let dt = time.delta_secs();
-    let (input, reset) = read_input(&keys, &gamepads, skater, dt * 1000.0);
-    if reset {
+    let pad = read_pad(&keys, &gamepads);
+    let was_held = skater.controller.select.held;
+    let input = skater.controller.update(&pad, skater.physics.time_ms);
+    if skater.controller.select.held && !was_held {
         skater.physics = CorePhysics::new(&skater.scripts);
         skater.current = Frame::of(&skater.physics);
     }
@@ -258,10 +279,11 @@ fn hud(skater: Res<Skater>, mut text: Query<&mut Text, With<StatusText>>) {
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   height {:4.2} m   {:?}   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}]",
         p.body.velocity.length(),
         p.body.position.y,
         p.state,
+        p.spin_degrees,
         if p.crouched { "CROUCHED" } else { "standing" },
         if p.braking { "  BRAKING" } else { "" },
         skater.last_event,

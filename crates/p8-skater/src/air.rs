@@ -22,7 +22,139 @@ impl CorePhysics {
     /// Retail `820D71B0` (SetState): only the parts that affect the
     /// translated physics (timestamps and trigger bookkeeping omitted).
     pub fn set_state(&mut self, state: State) {
+        // Entering the air clears the trick component's spin count (820D7438).
+        if state == State::Air && self.state != State::Air {
+            self.spin_degrees = 0.0;
+        }
         self.state = state;
+    }
+
+    /// Retail `820E9620`: spinning and "lean" in the air.
+    ///
+    /// Not translated: the vert auto-turn (needs vert air), `SmoothSpin`
+    /// (`+2752`), and the Nail the Trick checks.
+    pub fn air_rotation(&mut self, s: &Scripts, input: &InputState) {
+        if self.in_bail {
+            return;
+        }
+        let pf = |name: &str| s.physics_float(name, false);
+        let stat = |me: &Self, name: &str| s.stat(name, me.on_bike, &me.stats, me.stat_context);
+        // Lean input (stick Y, else Up -1 / Down +1) and spin input (stick X).
+        let mut lean_in = input.stick_y;
+        let mut spin_in = input.stick_x;
+        if lean_in == 0.0 {
+            if input.up {
+                lean_in = -1.0;
+            } else if input.down {
+                lean_in = 1.0;
+            }
+        }
+        if !self.analog_turning {
+            spin_in = 0.0;
+            lean_in = 0.0;
+        }
+        // L1 / R1 spin (record R1's "held" check uses +224; "+128" is L1).
+        let mut buttons = false;
+        if input.l1 && !input.r1 {
+            spin_in = -1.0;
+            buttons = true;
+        }
+        if input.r1 && !input.l1 {
+            spin_in = 1.0;
+            buttons = true;
+        }
+        if self.analog_turning && spin_in == 0.0 {
+            if input.right {
+                spin_in = 1.0;
+            } else if input.left {
+                spin_in = -1.0;
+            }
+        }
+        // With L2 and both inputs, the pair is normalised.
+        if input.l2 && lean_in != 0.0 && spin_in != 0.0 {
+            let v = glam::Vec2::new(spin_in, lean_in).normalize();
+            spin_in = v.x;
+            lean_in = v.y;
+        }
+        if self.nollie {
+            lean_in = -lean_in;
+        }
+
+        // Lean: only with L2 (Physics_Air_Lean_fast_stat), after Up/Down
+        // have been held Physics_Air_No_Lean_Time, ramped over
+        // Physics_Air_Ramp_Lean_Time.
+        let no_lean = pf("Physics_Air_No_Lean_Time");
+        let ramp_lean = pf("Physics_Air_Ramp_Lean_Time");
+        let lean_rate = if input.l2 { stat(self, "Physics_Air_Lean_fast_stat") } else { 0.0 };
+        let mut lean = 0.0;
+        let mut lean_held = 0.0;
+        if lean_in != 0.0 {
+            lean = -(lean_rate * lean_in);
+            lean_held = if input.up { input.up_held_ms } else { input.down_held_ms } as f32;
+        }
+        if lean_held <= no_lean {
+            lean = 0.0;
+        }
+        if lean_held < ramp_lean {
+            lean *= (lean_held - no_lean) / ramp_lean;
+        }
+
+        // Spin.
+        let mut spin = 0.0;
+        if self.turning_enabled && !self.no_spin {
+            let rate = if input.l2 {
+                stat(self, "Physics_Air_Rotation_fast_stat")
+            } else {
+                stat(self, "Physics_Air_Rotation_stat")
+            };
+            let mut held = 0.0;
+            if spin_in != 0.0 {
+                spin = -(rate * spin_in);
+                held = if input.left { input.left_held_ms } else { input.right_held_ms } as f32;
+            }
+            if !buttons {
+                let no_rotate = pf("Physics_Air_No_Rotate_Time");
+                let ramp_rotate = pf("Physics_Air_Ramp_Rotate_Time");
+                if held <= no_rotate {
+                    spin = 0.0;
+                } else if held - no_rotate < ramp_rotate {
+                    spin *= (held - no_rotate) / ramp_rotate;
+                }
+            }
+        } else if buttons && !self.no_spin {
+            spin = -(stat(self, "Physics_Air_Rotation_stat") * spin_in);
+        }
+        if spin != 0.0 {
+            let angle = self.dt * spin;
+            self.last_turn = Some(if angle > 0.0 { crate::core_physics::Turn::Left } else { crate::core_physics::Turn::Right });
+            self.rotate(angle);
+            self.spin_degrees += angle * 57.29578;
+        }
+
+        // Lean angle (display), or ease it back to a whole turn.
+        self.previous_lean_degrees = self.lean_degrees;
+        let mut changed = false;
+        if lean != 0.0 {
+            self.lean_degrees += self.dt * lean * 57.29578;
+            changed = true;
+        } else {
+            let x = (self.lean_degrees as i32 % 360) as f32;
+            if x != 0.0 {
+                let correction = if x > 0.0 {
+                    if x > 180.0 { (360.0 - x) * 0.1 } else { x * -0.1 }
+                } else if x < -180.0 {
+                    (-360.0 - x) * 0.1
+                } else {
+                    x * -0.1
+                };
+                self.lean_degrees += correction;
+                changed = true;
+            }
+        }
+        if changed {
+            let a = (self.lean_degrees as i32 % 360).abs();
+            self.flipping = (41..=319).contains(&a);
+        }
     }
 
     /// Retail `820D76C0`: air gravity, `Physics_Air_Gravity / Physics_Air_hang_Stat`
@@ -79,8 +211,10 @@ impl CorePhysics {
     /// Retail air update `820F2310`, for a plain ollie: gravity, the move,
     /// and landing on a skatable surface.
     ///
-    /// Not translated (absent): air rotation and spins (`820E9620`), board
-    /// and body lean (`820EA0D0`, `820E4AD0`, `820EEB38`), vert air and lip
+    /// Not translated (absent): air rotation (`820E9620`, which reads the
+    /// spin and "lean" settings), the other calls near the start of the air
+    /// update whose purpose is not yet read (`820EA0D0`, `820E4AD0`, which
+    /// reads `Physics_recover_rate_stat`, and `820EEB38`), vert air and lip
     /// checks, wall collision (`820EF410`), bails on landing, moving
     /// platforms, and the nose/tail landing feelers (`820E5250`, which only
     /// record contact).
@@ -96,6 +230,8 @@ impl CorePhysics {
         self.bert_slide = false;
         self.kick_flag = false;
         self.last_turn = None;
+        let input = self.last_input;
+        self.air_rotation(s, &input);
 
         let dt = self.dt;
         self.body.position += self.body.velocity * dt + g * (dt * dt * 0.5);
