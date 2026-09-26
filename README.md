@@ -12,8 +12,10 @@ levels, models and animations from *your own* installed copy of the game.
 ![Prototype: ollie in the original test park](docs/images/prototype.png)
 
 - A Project 8-style skater: pushing, turning, slopes, walls, ollie, spins,
-  flips, grabs, landing checks, manuals, grinds and bails. It uses
-  **temporary handling values**, not yet measured from the original game.
+  flips, grabs, landing checks, manuals, grinds and bails. `SETUP.bat` loads
+  **original Project 8 physics values** (gravity, jump speeds, top speed,
+  turning, spin, braking) from your own copy. The movement code itself is
+  still an approximation until the original code is translated.
 - An original test park (quarter pipes, kickers, a funbox and a rail) with
   placeholder visuals.
 - `p8-inspect`, which scans your installed game files and reports their
@@ -26,7 +28,10 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the stages.
 Requires Rust (https://rustup.rs) and the Visual Studio C++ build tools.
 
 1. Double-click `BUILD.bat`. The first build takes a while.
-2. Double-click `PLAY.bat`.
+2. Double-click `SETUP.bat` and drag in your installed Project 8 folder. It
+   reads the original skater physics values from your own `qb.pak.xen` into
+   a local `tuning.json` (see `p8-setup-report.txt`).
+3. Double-click `PLAY.bat`.
 
 Controls:
 

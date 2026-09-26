@@ -3752,7 +3752,9 @@ name = "p8-game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "p8-formats",
  "p8-sim",
+ "serde_json",
 ]
 
 [[package]]

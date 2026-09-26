@@ -3,5 +3,6 @@
 //! UNKNOWN in `docs/formats.md`.
 pub mod checksum;
 pub mod pak;
+pub mod qb;
 
 pub use checksum::qb_key;

@@ -272,7 +272,8 @@ mod tests {
         header(&mut pak, ".qb", 512, 4, 0, None);
         header(&mut pak, ".last", 0, 0, 0, None);
         pak.resize(516, 7);
-        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&pak).unwrap();
         let packed = enc.finish().unwrap();
         let (parsed, data) = parse_file(&packed, None).unwrap();

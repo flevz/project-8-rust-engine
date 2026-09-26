@@ -8,6 +8,12 @@ publish.workspace = true
 name = "project8"
 path = "src/main.rs"
 
+[[bin]]
+name = "p8-setup"
+path = "src/bin/p8-setup.rs"
+
 [dependencies]
 bevy.workspace = true
 p8-sim.workspace = true
+p8-formats.workspace = true
+serde_json.workspace = true

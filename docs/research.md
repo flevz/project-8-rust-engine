@@ -73,3 +73,12 @@ Planned pipeline (see ROADMAP.md): the player's own installation, then
 `p8-formats` readers, then a local converted cache, then the game. The
 simulation only consumes triangles, rail segments and a spawn point, so
 converted levels need no simulation changes.
+
+## Original physics values (read by `p8-setup`)
+
+CONFIRMED: `qb.pak.xen` holds the skater globals in a script that defines
+`skater_physics` (a struct) plus top-level `physics_*_stat` items.
+Stat-scaled values are structs with an unnamed `(min, max)` pair and a
+`STATS_*` index; `skater_default_stats` is 5. The stat interpolation is
+LIKELY linear over levels 0-10. `crates/p8-game/src/original.rs` lists
+every value that is copied and how the simulation uses it.

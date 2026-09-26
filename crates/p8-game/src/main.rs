@@ -3,6 +3,8 @@
 //! Stage 1 of `docs/ROADMAP.md`: the `p8-sim` skater in an original test park
 //! with placeholder visuals. Project 8 levels, models and animations arrive in
 //! later stages through converters that read the player's own installation.
+#[cfg(test)]
+mod original;
 mod park;
 
 use bevy::prelude::*;
