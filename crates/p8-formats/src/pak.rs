@@ -22,6 +22,10 @@
 //! | 24 | parent key |
 //! | 28 | flags; bit 0x20 means a 160-byte name string follows the header |
 //!
+//! CONFIRMED on retail `dbg.pak.xen` and `dbgq.pak.xen`: the layout above,
+//! with offsets relative to each header, entries aligned to 16 bytes, and the
+//! whole file compressed as a raw DEFLATE stream (see [`decompress`]).
+//!
 //! The list ends with an entry whose type is `.last` or `last`. When a sibling
 //! `.pab.xen` exists, the headers live in the `.pak.xen` and the data in the
 //! `.pab.xen`; offsets then address the two files concatenated.
@@ -164,6 +168,42 @@ impl Pak {
     }
 }
 
+/// Retail archives are a single raw DEFLATE stream (no zlib header).
+/// Returns the input unchanged if it is not compressed that way.
+pub fn decompress(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    let mut decoder = flate2::read::DeflateDecoder::new(bytes);
+    match decoder.read_to_end(&mut out) {
+        Ok(_) if !out.is_empty() => out,
+        _ => bytes.to_vec(),
+    }
+}
+
+/// Parse a file as stored on disc, decompressing first when needed.
+pub fn parse_file(headers: &[u8], pab: Option<&[u8]>) -> Result<(Pak, Vec<u8>), PakError> {
+    let plain = |b: &[u8]| -> (Vec<u8>, usize) {
+        let mut data = b.to_vec();
+        let len = data.len();
+        if let Some(p) = pab {
+            data.extend_from_slice(p);
+        }
+        (data, len)
+    };
+    let (data, _) = plain(headers);
+    if let Ok(pak) = Pak::parse(headers, data.len()) {
+        return Ok((pak, data));
+    }
+    let inflated = decompress(headers);
+    let pab = pab.map(decompress);
+    let mut data = inflated.clone();
+    if let Some(p) = &pab {
+        data.extend_from_slice(p);
+    }
+    let pak = Pak::parse(&inflated, data.len())?;
+    Ok((pak, data))
+}
+
 /// Common Neversoft extensions, for naming `type_key`s in reports.
 pub const KNOWN_EXTENSIONS: &[&str] = &[
     ".qb", ".mqb", ".sqb", ".nqb", ".qs", ".qs.en", ".tex", ".img", ".pimg", ".stex", ".scn",
@@ -223,6 +263,21 @@ mod tests {
         assert_eq!(parsed.entries[1].offset, 516);
         assert_eq!(parsed.entries[1].name.as_deref(), Some("textures/a.tex"));
         assert_eq!(extension_name(parsed.entries[0].type_key), Some(".qb"));
+    }
+
+    #[test]
+    fn compressed_archives_are_inflated_before_parsing() {
+        use std::io::Write;
+        let mut pak = Vec::new();
+        header(&mut pak, ".qb", 512, 4, 0, None);
+        header(&mut pak, ".last", 0, 0, 0, None);
+        pak.resize(516, 7);
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&pak).unwrap();
+        let packed = enc.finish().unwrap();
+        let (parsed, data) = parse_file(&packed, None).unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(&data[512..516], &[7, 7, 7, 7]);
     }
 
     #[test]

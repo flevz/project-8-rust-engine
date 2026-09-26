@@ -5,7 +5,7 @@
 //! hypothesised in `p8_formats::pak`. The report contains structure only
 //! (names, counts, sizes and the first 8 bytes of each archive), never game
 //! content, so it is safe to share.
-use p8_formats::pak::{Pak, extension_name};
+use p8_formats::pak::extension_name;
 use p8_formats::qb_key;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -133,12 +133,8 @@ fn main() {
         let name = lower_name(pak_path);
         let pab_path = pak_path.with_file_name(name.replace(".pak.xen", ".pab.xen"));
         let pab = std::fs::read(&pab_path).ok();
-        let mut data = headers.clone();
-        if let Some(pab) = &pab {
-            data.extend_from_slice(pab);
-        }
-        match Pak::parse(&headers, data.len()) {
-            Ok(pak) => {
+        match p8_formats::pak::parse_file(&headers, pab.as_deref()) {
+            Ok((pak, data)) => {
                 parsed_ok += 1;
                 let mut types: BTreeMap<String, usize> = BTreeMap::new();
                 for e in &pak.entries {
