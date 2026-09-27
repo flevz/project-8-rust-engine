@@ -84,6 +84,7 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
     let ollie = std::env::args().nth(4).as_deref() == Some("ollie");
     let mut last = (State::Ground, 0u32);
     let mut lip_frames = 0;
+    let mut was_rumbling = false;
     for i in 0..(8 * 60) {
         lip_frames = if k.physics.state == State::Lip { lip_frames + 1 } else { 0 };
         let crouch = ollie && (30..40).contains(&lip_frames);
@@ -91,9 +92,9 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
         let events = k.step(s, &input, level);
         let p = &k.physics;
         let now = (p.state, k.script_name().unwrap_or(0));
-        if i % 10 == 9 || !events.is_empty() || now != last {
+        if i % 10 == 9 || !events.is_empty() || now != last || (k.physics.vibration.levels != [0, 0]) != was_rumbling {
             println!(
-                "t={:4.2}s pos {:7.2?} vel {:6.2?} {:?}{} lean {:7.1} script {} {events:?}{}",
+                "t={:4.2}s pos {:7.2?} vel {:6.2?} {:?}{} lean {:7.1} script {} {events:?}{}{}",
                 (i + 1) as f32 / 60.0,
                 p.body.position.to_array(),
                 p.body.velocity.to_array(),
@@ -102,9 +103,11 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
                 p.balance.lip.lean,
                 name(k.script_name()),
                 meter(&p.balance.display),
+                rumble(&p.vibration),
             );
         }
         last = now;
+        was_rumbling = k.physics.vibration.levels != [0, 0];
     }
 }
 
@@ -123,4 +126,12 @@ fn meter(d: &p8_skater::meter_display::MeterDisplay) -> String {
         d.alpha1,
         d.alpha2
     )
+}
+
+/// Controller rumble, if any motor runs.
+fn rumble(v: &p8_skater::vibration::Vibration) -> String {
+    if v.levels == [0, 0] {
+        return String::new();
+    }
+    format!("\n      rumble left {} right {} (of 255)", v.levels[0], v.levels[1])
 }

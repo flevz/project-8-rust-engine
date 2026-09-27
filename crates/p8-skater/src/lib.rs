@@ -25,6 +25,7 @@ pub mod skater;
 pub mod stats;
 pub mod transfer;
 pub mod vert;
+pub mod vibration;
 pub mod world;
 
 pub use body::Body;

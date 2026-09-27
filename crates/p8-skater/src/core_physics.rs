@@ -230,6 +230,9 @@ pub struct CorePhysics {
     /// `+1908`, `+1909`: which way off the balance meter is safe (the
     /// meter's colours), set by `820E5988` ([`Self::update_balance_sides`]).
     pub balance_sides: [bool; 2],
+    /// The "vibration" component (controller rumble), kept here so script
+    /// commands can reach it.
+    pub vibration: crate::vibration::Vibration,
     /// A script the physics starts on the skater's script now (retail does
     /// the goto and a script update in place, e.g. `LipTrick` from
     /// `820F44C0`); `skater.rs` does it right after the physics step.
@@ -392,6 +395,7 @@ impl CorePhysics {
             allow_lip_no_grind: false,
             balance: Default::default(),
             balance_sides: [false; 2],
+            vibration: Default::default(),
             script_goto: None,
             transfer: Default::default(),
             jump_ms: 0,

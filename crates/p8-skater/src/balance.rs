@@ -234,6 +234,39 @@ impl Balance {
         }
     }
 
+    /// The component's per-frame update (`820CF438`, vtable `820027F4`
+    /// slot 1): rumble while a meter leans. Returns the percent it sends to
+    /// both motors (`Vibrate Actuator = 1`, then `Actuator = 0`, no
+    /// duration), or `None` when the lean (`820CEB80`) is 0. Percent =
+    /// |lean| / 4096 (82001D5C) * 100 (82000D8C) * f + `min_balance_vibration`,
+    /// clamped to 0..100; f = the object's speed (`+208`, x y z) capped at 1,
+    /// or 1 on a lip or when physics `+1548` is set (field UNKNOWN, taken as
+    /// clear).
+    pub fn rumble_percent(&self, s: &Scripts, speed: f32) -> Option<f32> {
+        let lean = self.meter_of(self.kind).map_or(0.0, |m| m.lean);
+        if lean == 0.0 {
+            return None;
+        }
+        let f = if self.kind == qb_key("Lip") { 1.0 } else { speed.min(1.0) };
+        let percent = lean.abs() * (1.0 / 4096.0) * 100.0 * f + s.global_float("min_balance_vibration");
+        Some(percent.clamp(0.0, 100.0))
+    }
+
+    fn meter_of(&self, kind: u32) -> Option<&Meter> {
+        let k = qb_key;
+        if kind == k("Manual") || kind == k("NoseManual") || kind == k("Flatland") {
+            Some(&self.manual)
+        } else if kind == k("Grind") || kind == k("Slide") {
+            Some(&self.grind)
+        } else if kind == k("Lip") {
+            Some(&self.lip)
+        } else if kind == k("Skitch") {
+            Some(&self.skitch)
+        } else {
+            None
+        }
+    }
+
     /// Retail `820CE7F8` (only `ClearPanel_Landed` calls it, just before
     /// `820CE840`): `82190AD8` on each meter keeps the longest time
     /// (`+56`) and zeroes the time (`+48`).
@@ -538,6 +571,21 @@ mod tests {
         bal.reset_all();
         assert_eq!((bal.lip.cheese, bal.lip.lean, bal.lip.lean_speed, bal.kind), (0.0, 0.0, 0.0, 0));
         assert_eq!((bal.lip.max_time, bal.lip.time), (3.0, 0.0));
+    }
+
+    #[test]
+    fn lip_rumble_follows_the_lean() {
+        let mut g: std::collections::BTreeMap<u32, Value> = std::collections::BTreeMap::new();
+        g.insert(qb_key("min_balance_vibration"), Value::Float(10.0));
+        let s = Scripts::new(g);
+        let mut bal = Balance::default();
+        assert_eq!(bal.rumble_percent(&s, 0.0), None);
+        bal.kind = qb_key("Lip");
+        bal.lip.lean = -2048.0;
+        // 2048 / 4096 * 100 + 10, speed ignored on a lip.
+        assert_eq!(bal.rumble_percent(&s, 0.0), Some(60.0));
+        bal.lip.lean = 4000.0;
+        assert_eq!(bal.rumble_percent(&s, 0.0), Some(100.0));
     }
 
     #[test]

@@ -127,6 +127,16 @@ impl Skater {
             }
         }
         self.spawned.retain(|r| !r.is_done());
+        // Component updates after the scripts (their order among the
+        // skater's components is LIKELY, not read): the balance
+        // component's rumble (820CF438), then the vibration timers (8228D260).
+        let p = &mut self.physics;
+        let now = p.time_ms;
+        if let Some(percent) = p.balance.rumble_percent(s, p.body.velocity.length()) {
+            p.vibration.vibrate(false, 1, percent, None, now);
+            p.vibration.vibrate(false, 0, percent, None, now);
+        }
+        p.vibration.update(now);
         events
     }
 
@@ -483,6 +493,15 @@ impl Ctx<'_> {
             p.allow_lip_no_grind = n == k("AllowLipNoGrind"); // 820D5C08 / 820D5C20: +2137
             return Some(true);
         }
+        if n == k("Vibrate") {
+            // 8228D528 (the "vibration" component).
+            let off = params.flag(k("OFF"));
+            let actuator = params.int(k("Actuator")).unwrap_or(0);
+            let percent = params.float(k("Percent")).unwrap_or(0.0);
+            let duration = params.float(k("duration"));
+            let now = p.time_ms;
+            return Some(p.vibration.vibrate(off, actuator, percent, duration, now));
+        }
         if n == k("ClearPanel_Landed") || n == k("ClearPanel_Bailed") {
             // 82124BA8 / 82124EC0 (the combo ends). Only the balance part is
             // translated: 820CE840 resets every meter. The score, gaps,
@@ -561,6 +580,7 @@ impl Ctx<'_> {
 
 /// Commands this host translates (so expressions call them).
 const COMMANDS: &[&str] = &[
+    "Vibrate",
     "ClearPanel_Landed",
     "ClearPanel_Bailed",
     "Jump",

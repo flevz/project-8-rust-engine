@@ -8,6 +8,7 @@ mod balance_meter;
 #[cfg(test)]
 mod original;
 mod park;
+mod rumble;
 mod translated;
 
 use bevy::prelude::*;

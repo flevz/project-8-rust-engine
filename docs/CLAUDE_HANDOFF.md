@@ -173,6 +173,8 @@ animations), retail camera, textured level rendering, audio, menus, stats menu.
 | `crates/p8-script/src/params.rs` | `Params` (retail `CStruct` semantics: AddComponent, lookups, `get_in` with struct includes, `resolve_alias`). |
 | `crates/p8-formats/src/zone.rs` | Zone loading: collision, restarts, rail nodes, compressed-node template expansion. |
 | `crates/p8-game/src/translated.rs` | Bevy play mode: level mesh from collision, placeholder skater and camera, HUD, input. |
+| `crates/p8-skater/src/vibration.rs` | Controller rumble component (`Vibrate`, timers, pad levels). |
+| `crates/p8-game/src/rumble.rs` | Sends the rumble levels to the connected controllers. |
 | `crates/p8-game/src/balance_meter.rs` | Loads `balancemeter_bg`, `balancemeter`, `balancemeter_2`, `balancearrow_glow` from `ZONES/global.pak.xen`; places them as UI images each frame. |
 | `crates/p8-skater/examples/*.rs` | Headless test rides on the real level: `level_ride`, `script_ride` (real scripts), `vert_ride` (a halfpipe; `up` holds Up), `lip_ride` (holds Y; `ollie` ollies out), `transfer_ride` (`spine` or `acid`, R2 held; physics only, the award scripts are printed). |
 | `crates/p8-script/examples/check_scripts.rs` | Walks every script in the player's `qb.pak.xen` (currently 7626, all clean). |
@@ -446,7 +448,7 @@ because of the Bevy test build; run the crates separately.
   `apt-get install libwayland-dev libudev-dev libasound2-dev libxkbcommon-dev`;
   it also runs there under `Xvfb :99` with `mesa-vulkan-drivers` and
   `libxkbcommon-x11-0` (screenshots with ImageMagick `import -window root`).
-- Tests: p8-skater 56 (2 new in `meter_display.rs`, cheese wear-off, combo-end reset), p8-script 9,
+- Tests: p8-skater 60 (2 new in `meter_display.rs`, cheese wear-off, combo-end reset, lip rumble, 3 in `vibration.rs`), p8-script 9,
   p8-formats 10 (2 new in `texture.rs`), p8-game 1 + 2.
 - Balance meter: `lip_ride` now prints the meter's on-screen state. On
   z_houses the meter appears when `DoBalanceTrick` runs, the arrow follows
@@ -538,12 +540,7 @@ command the lip scripts run on z_houses, was checked:
 - Same as retail, nothing to do: constructor `820CE520` (all zero),
   `820CE590` (component links).
 - **Not done, found by the audit:**
-  - Controller rumble while balancing: the component's per-frame update
-    `820CF438` sends `Vibrate {Actuator, Percent}` with percent =
-    |lean| / 4096 * 100 * speed factor (1 on lips) + `min_balance_vibration`
-    (10), clamped 0..100. `Vibrate` is a general command many scripts use
-    (landings, rails), so rumble needs its own small task (Bevy gilrs
-    rumble).
+  - Controller rumble: **done** (see "Controller rumble" below).
   - `FlipAfter` / `Rotate` in `OllieLipOut`: `FlipAfter` (`820FD738`) sets
     flipandrotate `+25`; the flip itself (`820FD8E8`) runs on the next
     `PlayAnim` event (`820FDCA8`) or `HandleFlipOrBoardRotateAfter`. Needs
@@ -561,6 +558,32 @@ command the lip scripts run on z_houses, was checked:
     (`820CE618`/`820CE6B0`, not used by scripts).
   - Already listed before: moving platforms in the lip update, the
     perfect-balance cheat, online play.
+
+### Controller rumble (translated after the audit)
+
+- `p8-skater/src/vibration.rs`: the "vibration" component. Command
+  `Vibrate` (`8228D528`: Actuator 0 left/heavy, 1 right/light; Percent;
+  optional duration; `OFF`), per-frame timers (`8228D260`), pad levels
+  (`823A67E0`: 255 * percent / 100, sent as level << 8; max 255 from
+  `823A6280`). Starts on (`default_system_startup: vibrationon`; the
+  profile option is not read).
+- `Balance::rumble_percent` = balance component update `820CF438`: while a
+  meter leans, both motors at |lean|/4096*100*f + `min_balance_vibration`
+  (10), f = speed capped at 1, 1 on lips. Run from `Skater::step` after the
+  scripts, then the vibration timers (order among components LIKELY).
+- The scripts stop it: `InAirExceptions` / `OnGroundExceptions` /
+  `GeneralBail` / `ManualLand` run `VibrateOff` (`vibrate off`). Ollies,
+  flip tricks, wallplants and landings call `Vibrate` with durations and now
+  rumble too.
+- `p8-game/src/rumble.rs`: sends level changes to every connected pad
+  (Bevy `GamepadRumbleRequest`, Stop then Add held for an hour: the hold
+  stands in for "until changed").
+- On z_houses (`lip_ride`, which prints `rumble`): 25/255 when the lip
+  balance starts, 255 just before falling off, 0 as the lip ends.
+- Not done: pause blocking (`82778B54`, object `+308` bit 0; no pause yet),
+  `VibrationOn/Off/IsOn` (options menu, player index), `VibrateController`
+  and `Vibrate_Controller_Safe` (menus, special level objects), physics
+  `+1548` in `820CF438` (UNKNOWN, taken as clear).
 
 ## 17b. How to check a feature is complete (the user asked for this)
 

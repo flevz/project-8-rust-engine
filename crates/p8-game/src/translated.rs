@@ -68,7 +68,7 @@ impl Plugin for TranslatedPlugin {
             .insert_resource(crate::balance_meter::ZonesDir(self.zones_dir.clone()))
             .add_systems(Startup, (setup, crate::balance_meter::setup))
             .add_systems(FixedUpdate, step)
-            .add_systems(Update, (present, hud, crate::balance_meter::draw));
+            .add_systems(Update, (present, hud, crate::balance_meter::draw, crate::rumble::send));
     }
 }
 
