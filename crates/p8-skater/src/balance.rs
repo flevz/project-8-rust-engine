@@ -234,6 +234,27 @@ impl Balance {
         }
     }
 
+    /// Retail `820CE840`, from the script commands `ClearPanel_Landed`
+    /// (`82124BA8`) and `ClearPanel_Bailed` (`82124EC0`), i.e. when a combo
+    /// ends: every meter is reset (`821909A0`: cheese `+68`, `+72`, time
+    /// `+48`, `+96`, instability time `+52`, lean `+60` and its speed `+64`
+    /// to 0, `+92` to -1; the longest time `+56` stays) and no type runs
+    /// (`+24`, `+28`). `821909A0` also runs `reset_balance_indicator` when
+    /// the global flag `balance_check` is set (a debug display; global flags
+    /// are not translated). Retail also clears SkaterState `+256`
+    /// (untranslated, as in the update).
+    pub fn reset_all(&mut self) {
+        for m in [&mut self.manual, &mut self.grind, &mut self.skitch, &mut self.lip] {
+            m.cheese = 0.0;
+            m.buttons_live = false;
+            m.time = 0.0;
+            m.instable_time = 0.0;
+            m.lean = 0.0;
+            m.lean_speed = 0.0;
+        }
+        self.kind = 0;
+    }
+
     /// `82190A60` also hides the meter on screen (both modes).
     pub fn stop(&mut self) {
         for m in [&mut self.manual, &mut self.grind, &mut self.lip, &mut self.skitch] {
@@ -490,6 +511,19 @@ mod tests {
             bal.wear_off_cheese(&c, 1.0 / 60.0);
         }
         assert!(bal.lip.cheese <= 0.01);
+    }
+
+    #[test]
+    fn combo_end_resets_the_cheese_and_lean() {
+        let mut bal = Balance::default();
+        bal.lip.cheese = 2000.0;
+        bal.lip.lean = 1500.0;
+        bal.lip.lean_speed = 30.0;
+        bal.lip.max_time = 2.0;
+        bal.kind = qb_key("Lip");
+        bal.reset_all();
+        assert_eq!((bal.lip.cheese, bal.lip.lean, bal.lip.lean_speed, bal.kind), (0.0, 0.0, 0.0, 0));
+        assert_eq!(bal.lip.max_time, 2.0);
     }
 
     #[test]

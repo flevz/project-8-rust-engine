@@ -137,7 +137,7 @@ commands). Regenerate it before relying on the counts.
 |---|---|---|
 | **Lip tricks** | Rails loaded from the level; rail search; rail grab in the air with Y held; lip entry checks and snapping; lip state; balance meter; ollie out; falling off the meter; the `liptrick` → `InvertTrick` → `LipOut`/`OllieLipOut` scripts run for real | The **trick queue** (`SetQueueTricks`, `DoNextTrick`, button triggers) is not translated, so every lip is the default Invert (`DefaultLipTrick`); bails (`LipBail`); animations; score. |
 | Rails | Build (`82197138`, `821939F8`) and search (`821968F8`) for normal levels | Grinds (`820F8120` grind set-up, `820F4DE8`, `820F8CF0`), single-node rails (`820F4108`), moving-object rails, park-editor paths, `CreatedFromVariable`/`createdfromtod` rails |
-| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`), cheese wear-off (`820D4A20`, `82190B10`); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
+| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`), cheese wear-off (`820D4A20`, `82190B10`), combo-end reset (`820CE840`, `821909A0`, from `ClearPanel_Landed/Bailed`, balance part only); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
 | Air update `820F2310` | See above | Wallride/wallplant (`820EDAA8`, `820E8618`, `820E80D8`), pitch bail (`820F31E4`), high ollie `820D79F8`, lip check `820EA788`, bikes, moving platforms, nose/tail contact feelers `820E5250` |
 | Air spin `820E9620` | Spin and lean | Vert auto-turn, SmoothSpin, Nail the Trick |
 | Ground update `820F6978` | See above | **Ground side collision `820EB9A0`**, manuals branch, skitching, high ollie, several animation/bookkeeping calls |
@@ -446,7 +446,7 @@ because of the Bevy test build; run the crates separately.
   `apt-get install libwayland-dev libudev-dev libasound2-dev libxkbcommon-dev`;
   it also runs there under `Xvfb :99` with `mesa-vulkan-drivers` and
   `libxkbcommon-x11-0` (screenshots with ImageMagick `import -window root`).
-- Tests: p8-skater 55 (2 new in `meter_display.rs`, 1 cheese wear-off), p8-script 9,
+- Tests: p8-skater 56 (2 new in `meter_display.rs`, cheese wear-off, combo-end reset), p8-script 9,
   p8-formats 10 (2 new in `texture.rs`), p8-game 1 + 2.
 - Balance meter: `lip_ride` now prints the meter's on-screen state. On
   z_houses the meter appears when `DoBalanceTrick` runs, the arrow follows
@@ -466,8 +466,17 @@ because of the Bevy test build; run the crates separately.
   by `82190C10`) never wore off. Fixed with `820D4A20` / `82190B10`
   (`Balance::wear_off_cheese`, called from `step()` after the transfer
   allowance): it drops by Cheese / CheeseFrames per 60th of a second (lip:
-  3 s to zero). A lip within ~3 s of the last still starts off-centre, as in
-  retail.
+  3 s to zero).
+- User follow-up: the cheese must reset when the combo ends. Confirmed:
+  `ClearPanel_Landed` (`82124BA8`) and `ClearPanel_Bailed` (`82124EC0`)
+  end with `820CE840`, which resets every meter (`821909A0`: cheese, lean,
+  lean speed, times) and the running type. Landing runs them through
+  `landskatertricks` (`Land2`, `LipOut`/`OllieLipOut` on the ground,
+  `BailSkaterTricks` for bails). Translated as `Balance::reset_all`; the two
+  commands are handled in `skater.rs` **for the balance part only** (their
+  score, gap and event parts wait for the score system, so they no longer
+  show in the untranslated-commands count). So now: the cheese wears off
+  over CheeseFrames during a combo, and is cleared when the combo ends.
 - `transfer_ride` on z_houses: `spine` finds the spine at x ~ -65, flies
   over it and lands down the far side at 12.7 m/s with `LandedFromSpine`;
   `acid` rolls off a deck at 6 m/s, pops to 5 m/s, drops into the ramp

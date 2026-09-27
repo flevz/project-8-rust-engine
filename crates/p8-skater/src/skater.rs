@@ -483,6 +483,14 @@ impl Ctx<'_> {
             p.allow_lip_no_grind = n == k("AllowLipNoGrind"); // 820D5C08 / 820D5C20: +2137
             return Some(true);
         }
+        if n == k("ClearPanel_Landed") || n == k("ClearPanel_Bailed") {
+            // 82124BA8 / 82124EC0 (the combo ends). Only the balance part is
+            // translated: 820CE840 resets every meter. The score, gaps,
+            // SkaterLanded / SkaterBailed / SkaterExitCombo events and the
+            // rest are not (no score system yet). Returns TRUE (li r3,1).
+            p.balance.reset_all();
+            return Some(true);
+        }
         if n == k("StopBalanceTrick") {
             p.balance.stop();
             return Some(true);
@@ -550,6 +558,8 @@ impl Ctx<'_> {
 
 /// Commands this host translates (so expressions call them).
 const COMMANDS: &[&str] = &[
+    "ClearPanel_Landed",
+    "ClearPanel_Bailed",
     "Jump",
     "Crouched",
     "AirTimeGreaterThan",
