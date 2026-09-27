@@ -256,6 +256,9 @@ mod tests {
         let f = |name: &str, v: f32| (k(name), Value::Float(v));
         let physics = Value::Struct(vec![
             f("physics_rolling_friction", 0.0),
+            (k("skater_max_speed_stat"), Value::Struct(vec![(0, Value::Pair(18.0, 18.0))])),
+            (k("skater_max_max_speed_stat"), Value::Struct(vec![(0, Value::Pair(38.0, 38.0))])),
+            f("physics_heavy_air_friction", 0.0004),
             f("physics_ground_snap_up", 0.33),
             f("physics_ground_snap_down", 0.2),
             f("skater_first_forward_collision_height", 0.2),

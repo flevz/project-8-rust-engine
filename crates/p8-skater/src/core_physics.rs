@@ -57,10 +57,18 @@ pub enum Turn {
 /// Script command `OverrideLimits` (`820D5C68`) while active (`+2084` != 0).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverrideLimits {
-    /// `+2100`: gravity while moving up (param "gravity", LIKELY).
-    pub gravity: f32,
-    /// `+2096`: air friction (param "friction", LIKELY).
+    /// `+2084`: seconds left; -1 = `notimelimit`, -2 = `CurrentLevel`
+    /// (only `levelend` ends it). Counted down by `820E0188`.
+    pub timer: f32,
+    /// `+2088`: speed above which the heavy air friction applies ("Max").
+    pub max: f32,
+    /// `+2092`: speed cap ("max_max", default "Max").
+    pub max_max: f32,
+    /// `+2096`: air friction ("friction", default 2e-6).
     pub friction: f32,
+    /// `+2100`: gravity while moving up ("gravity", default
+    /// `Physics_Ground_Gravity`).
+    pub gravity: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -469,6 +477,40 @@ impl CorePhysics {
         }
     }
 
+    /// Retail `820E0188`: the speed limits, run each frame after the
+    /// crouch update and before the state update (`820FC990`).
+    pub fn speed_limits(&mut self, s: &Scripts) {
+        // Skipped in a spine transfer (SkaterState `+136`, not translated).
+        let mut max_max = self.stat(s, "Skater_Max_Max_Speed_Stat");
+        let mut max = self.stat(s, "Skater_Max_Speed_Stat");
+        // Retail also reads Skater_Vert_Max_Speed_Time here and ignores it.
+        if let Some(o) = self.override_limits.as_mut() {
+            // -1 and -2 never count down.
+            if o.timer != -1.0 && o.timer != -2.0 {
+                o.timer -= self.dt;
+                if o.timer < 0.0 {
+                    o.timer = 0.0;
+                }
+            }
+            max_max = o.max_max;
+            max = o.max;
+            if o.timer == 0.0 {
+                self.override_limits = None;
+            }
+        }
+        let mut speed = self.speed();
+        if speed > max_max {
+            // Retail keeps w; the length and direction use x, y and z.
+            self.body.velocity = self.body.velocity.normalize() * max_max;
+            speed = max_max;
+        }
+        if speed > max {
+            self.air_drag(s.physics_float("physics_heavy_air_friction", false));
+        }
+        // `+1976`, the time left on a special friction: only the restart
+        // resets (820EB690) write it, to 0, so it never counts down here.
+    }
+
     /// Retail `820D90E8`: air drag, `dt * speed² * k * 60` along the motion.
     fn air_drag(&mut self, k: f32) {
         let v = self.body.velocity;
@@ -799,6 +841,9 @@ mod tests {
             (k("physics_standing_acceleration_stat"), stat(5.0, 5.0, "STATS_SPEED")),
             (k("physics_crouching_acceleration_stat"), stat(7.5, 7.5, "STATS_SPEED")),
             (k("skater_max_crouched_kick_speed_stat"), stat(9.5, 9.5, "STATS_SPEED")),
+            (k("skater_max_speed_stat"), stat(18.0, 18.0, "STATS_SPEED")),
+            (k("skater_max_max_speed_stat"), stat(38.0, 38.0, "STATS_SPEED")),
+            f("physics_heavy_air_friction", 0.0004),
             (k("physics_brake_acceleration"), Value::Int(23)),
             f("physics_brake_stick_threshold", 0.4),
             (k("use_new_analog_controls"), Value::Int(1)),
@@ -1196,4 +1241,38 @@ mod tests {
         assert_eq!(p.body.at(), Vec3::NEG_Z);
         assert_eq!(p.body.row0(), Vec3::NEG_X);
     }
+
+    #[test]
+    fn speed_limits_cap_at_max_max_and_slow_above_max() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.body.velocity = Vec3::new(0.0, 30.0, 40.0);
+        p.speed_limits(&s);
+        // Capped to 38, then the heavy friction: 38 - dt * 38² * 0.0004 * 60.
+        let expected = 38.0 - (1.0 / 60.0) * 38.0 * 38.0 * 0.0004 * 60.0;
+        assert!((p.body.velocity.length() - expected).abs() < 1e-3);
+        assert!((p.body.velocity.normalize() - Vec3::new(0.0, 0.6, 0.8)).length() < 1e-5);
+
+        p.body.velocity = Vec3::new(0.0, 0.0, 18.0);
+        p.speed_limits(&s);
+        assert_eq!(p.body.velocity, Vec3::new(0.0, 0.0, 18.0));
+    }
+
+    #[test]
+    fn override_limits_count_down_then_end() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.override_limits =
+            Some(OverrideLimits { timer: 0.02, max: 5.0, max_max: 6.0, friction: 2e-6, gravity: -9.8 });
+        p.body.velocity = Vec3::new(0.0, 0.0, 10.0);
+        p.speed_limits(&s);
+        assert!(p.body.velocity.length() < 6.0 && p.override_limits.is_some());
+        p.speed_limits(&s);
+        // The last frame still uses the override, then it ends.
+        assert!(p.override_limits.is_none());
+        p.body.velocity = Vec3::new(0.0, 0.0, 10.0);
+        p.speed_limits(&s);
+        assert_eq!(p.body.velocity, Vec3::new(0.0, 0.0, 10.0));
+    }
+
 }

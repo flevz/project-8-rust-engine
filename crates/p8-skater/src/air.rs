@@ -526,7 +526,8 @@ impl CorePhysics {
     }
 
     /// One physics frame, as retail's component update `820FC990` runs it:
-    /// the crouch update, then the update for the current state.
+    /// the crouch update, the speed limits, then the update for the current
+    /// state.
     ///
     /// Without the scripts (`scripted` false), their event handlers are
     /// stood in for here, only as far as they are read: on the ground
@@ -549,6 +550,7 @@ impl CorePhysics {
             self.late_ollie = false;
         }
         self.update_crouch(input);
+        self.speed_limits(s);
         let was_air = self.state == State::Air;
         let mut events = match self.state {
             State::Ground => self.ground_update(s, input, world),

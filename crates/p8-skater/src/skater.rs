@@ -8,7 +8,7 @@
 //! SkaterCorePhysics; the pairs are listed in the research notes). Each
 //! translated command names its function. Commands not translated yet are
 //! recorded and answer false.
-use crate::core_physics::{CorePhysics, Event, State};
+use crate::core_physics::{CorePhysics, Event, OverrideLimits, State};
 use crate::input::InputState;
 use crate::script::Scripts;
 use crate::world::World;
@@ -245,8 +245,38 @@ impl Ctx<'_> {
             }
             return Some(true);
         }
-        if n == k("OverrideLimits") && params.flag(k("end")) {
-            p.override_limits = None; // 820D5C68: `end` clears +2084
+        if n == k("OverrideLimits") {
+            // 820D5C68.
+            if params.flag(k("levelend")) {
+                p.override_limits = None;
+                return Some(true);
+            }
+            if p.override_limits.is_some_and(|o| o.timer == -2.0) {
+                return Some(true);
+            }
+            if params.flag(k("End")) {
+                p.override_limits = None;
+                return Some(true);
+            }
+            // "Max" is required (asserts when missing).
+            let max = params.float(k("Max")).unwrap_or(0.0);
+            let mut o = OverrideLimits {
+                // 2.54e11 is the constant at 82002994.
+                timer: params.float(k("Time")).unwrap_or(2.54e11),
+                max,
+                max_max: params.float(k("max_max")).unwrap_or(max),
+                // 2e-6 is the constant at 82002990.
+                friction: params.float(k("friction")).unwrap_or(2e-6),
+                gravity: params.float(k("gravity")).unwrap_or(self.s.physics_float("Physics_Ground_Gravity", p.on_bike)),
+            };
+            if params.flag(k("notimelimit")) {
+                o.timer = -1.0;
+            }
+            if params.flag(k("CurrentLevel")) {
+                o.timer = -2.0;
+            }
+            // Retail stores the timer; a stored 0 means inactive.
+            p.override_limits = if o.timer == 0.0 { None } else { Some(o) };
             return Some(true);
         }
         if n == k("SkaterIsFlipping") {
