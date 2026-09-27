@@ -546,6 +546,21 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
   (893 instr.) and `822EDB00` (972), helpers `822EA2C8`, `822ED7C0`;
   samplers `822ECF10` (from `82375AE0`) and `822EEA30` (from `822CA1E8`,
   `823757A0`). Translate these; do not guess the bit packing.
+- (3) status: the retail decompressor `822EF058` runs in unicorn on real
+  clips (scratch harness, see NOTES section 24) and gives unit
+  quaternions; key layout, times (frames at 60/s), per-bone offsets,
+  byte-swapped standardkey tables, the present-bones bitmask (wrapper
+  `+0x18`, 101 bits, slot = skeleton bone index) are known.
+  **Not known yet: how sampled rotations/translations become bone
+  matrices.** Tried by drawing (do not repeat): replacing the rest pose
+  (as stored or conjugated), adding to it, rest*key and key*rest, and
+  keeping the root bones 0/1 from the rest pose; none gives a correct
+  riding idle (Sk8_Gnd_Stnd_Slow_Idle01_xDx). Next: read the Skeleton
+  component code that consumes the pose buffers filled by `822CA1E8`
+  (buffers at r30 / r30+2080, defaults copied from skeleton data +40/+44,
+  flags at r30+4160) and the quaternion-to-matrix / parent chain, then
+  translate. `_xx` single-pose clips (flags 0x16091040) are uncompressed
+  floats at +0x80 (rotations) / +0x700 (positions), sampler `822EA3D0`.
 - Next after (3): the board model (`board_default`, own skeleton `board`
   in global.pak) and the animation system.
 
