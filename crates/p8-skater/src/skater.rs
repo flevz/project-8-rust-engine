@@ -292,6 +292,42 @@ impl Ctx<'_> {
         if n == k("IsSkaterOnBike") {
             return Some(p.on_bike); // 820D5180: +1564
         }
+        if n == k("InVertAir") {
+            return Some(p.vert.in_vert_air); // 820D5BA8: SkaterState +56
+        }
+        if n == k("setvertairflag") {
+            p.vert.in_vert_air = true; // 820D63B0
+            return Some(true);
+        }
+        if n == k("forcebreakvert") {
+            // 820F1250: 820EC7B0(1), then 820DC5D0.
+            p.break_vert(self.s, true);
+            p.upright_sideways(self.s);
+            return Some(true);
+        }
+        if n == k("LandedFromVert") {
+            return Some(p.vert.landed_from_vert); // 820D5A68: +2131
+        }
+        if n == k("SetLandedFromVert") {
+            p.vert.landed_from_vert = true; // 820D5AB0
+            return Some(true);
+        }
+        if n == k("ResetLandedFromVert") {
+            // 820D5AC8: also clears +2134 (spine landing, untranslated).
+            p.vert.landed_from_vert = false;
+            return Some(true);
+        }
+        if n == k("WasLastLandingVert") {
+            return Some(p.vert.last_landing_vert); // 820D5BD8: +2136
+        }
+        if n == k("SetLastLandingVert") {
+            p.vert.last_landing_vert = true; // 820D5B90
+            return Some(true);
+        }
+        if n == k("SetLastLandingGround") {
+            p.vert.last_landing_vert = false; // 820D5BC0
+            return Some(true);
+        }
         // --- SkaterState (registry 826D6300) ---
         if n == k("OnGround") {
             return Some(p.state == State::Ground); // 82116970: +24 == 0
@@ -393,6 +429,15 @@ const COMMANDS: &[&str] = &[
     "SkaterIsUpsideDown",
     "ResetIsFlipping",
     "IsSkaterOnBike",
+    "InVertAir",
+    "setvertairflag",
+    "forcebreakvert",
+    "LandedFromVert",
+    "SetLandedFromVert",
+    "ResetLandedFromVert",
+    "WasLastLandingVert",
+    "SetLastLandingVert",
+    "SetLastLandingGround",
     "OnGround",
     "InAir",
     "OnWall",

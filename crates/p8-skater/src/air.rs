@@ -206,8 +206,8 @@ impl CorePhysics {
     /// read by `IsInSpineTransfer`; not translated, so never), when the
     /// ground normal is upside down (`+116` < -0.1), and when moving up
     /// while on a movable object (SkaterPhysicsControl `+2852`->`+24`,
-    /// the pointer `HasMovableContact` tests; the level has none). Not translated: its vert-state bookkeeping
-    /// (clears SkaterState `+56` and `+1380`, sets `+144`).
+    /// the pointer `HasMovableContact` tests; the level has none). Once it
+    /// finds that ground it leaves vert air and sets SkaterState `+144`.
     pub fn air_recover(&mut self, s: &Scripts, world: &dyn World) {
         // -0.1 is the constant at 820029A0.
         if self.ground_normal.y < -0.1 {
@@ -220,6 +220,9 @@ impl CorePhysics {
         if hit.flags & 0x8 != 0 || hit.normal.y < 0.2 {
             return;
         }
+        // 820E4BE0: out of vert air (and +1380, untranslated), and +144.
+        self.vert.in_vert_air = false;
+        self.vert.over_ground = true;
         if self.body.up().y > 0.975 {
             return;
         }
@@ -238,10 +241,11 @@ impl CorePhysics {
     }
 
     /// Retail `820D76C0`: air gravity, `Physics_Air_Gravity / Physics_Air_hang_Stat`
-    /// (the vert-air hang stat applies on vert, not translated), times the
-    /// `AdjustGravity` multiplier when set. The moon cheat is not translated.
+    /// (`Physics_Vert_hang_Stat` in vert air), times the `AdjustGravity`
+    /// multiplier when set. The moon cheat is not translated.
     pub fn air_gravity(&self, s: &Scripts) -> f32 {
-        let mut g = s.physics_float("Physics_Air_Gravity", self.on_bike) / s.global_float("Physics_Air_hang_Stat");
+        let hang = if self.vert.in_vert_air { "Physics_Vert_hang_Stat" } else { "Physics_Air_hang_Stat" };
+        let mut g = s.physics_float("Physics_Air_Gravity", self.on_bike) / s.global_float(hang);
         if self.gravity_multiplier != 0.0 {
             g *= self.gravity_multiplier;
         }
@@ -256,15 +260,20 @@ impl CorePhysics {
         // the air path (820F0850, a late ollie) only plays a sound.
         if self.state == State::Ground {
             self.jump_start = self.body.position;
+            // 820F09E4: the vert takeoff, then SkaterState +80 is set.
+            self.vert_takeoff(s);
+            self.set_break_window(true);
         }
-        // `820DA3D0` (vert push-out and quick-exit checks) is not translated.
         let max_tense = s.global_float("Skater_max_tense_time") as i64;
         self.crouch_duration_ms = self.crouch_duration_ms.min(max_tense);
-        // Retail picks vert jump stats when on vert (SkaterState +56/+72) or
-        // not on the ground; those states are not translated.
-        // 0.3 is the double at 82002AD0: board pointing up = launch ramp.
+        // 820F0A4C: vert jump stats in vert air, or on the ground on a vert
+        // surface. 0.3 is the double at 82002AD0: board pointing up =
+        // launch ramp. (The `BonelessHeight` variants are not translated.)
+        let vert = self.vert.in_vert_air || (self.state == State::Ground && self.vert.on_vert_ground);
         let launch = self.body.at().y > 0.3;
-        let (max_name, min_name) = if launch {
+        let (max_name, min_name) = if vert {
+            ("Physics_Vert_Jump_Speed_Stat", "Physics_Vert_Jump_Speed_min_Stat")
+        } else if launch {
             ("Physics_Launch_Jump_Speed_Stat", "Physics_Launch_Jump_Speed_min_Stat")
         } else {
             ("Physics_Jump_Speed_Stat", "Physics_Jump_Speed_min_Stat")
@@ -278,11 +287,16 @@ impl CorePhysics {
             jump = speed;
         }
         self.uncrouch();
-        let v = &mut self.body.velocity;
-        if v.y < 0.0 {
-            v.y = 0.0;
+        // 820F0C80: moving down in vert air, jump out along the eased
+        // normal `+96` and leave vert air; the upward part is then 0.
+        if self.vert.in_vert_air && self.body.velocity.y < 0.0 {
+            self.body.velocity += self.vert.eased_normal * jump;
+            self.vert.in_vert_air = false;
+            jump = 0.0;
+        } else if self.body.velocity.y < 0.0 {
+            self.body.velocity.y = 0.0;
         }
-        v.y += jump;
+        self.body.velocity.y += jump;
         // Upside down (-0.1 at 820029A0): jump the other way and step off.
         if self.body.up().y < -0.1 {
             self.body.velocity.y += jump * -1.5;
@@ -297,15 +311,16 @@ impl CorePhysics {
     ///
     /// Not translated (absent): `820EA0D0` (runs only in a spine transfer or
     /// with SkaterState `+152`, a state the bike commands set), `820EEB38`
-    /// (bikes only), vert air and lip checks, bails on landing, moving
-    /// platforms, and the nose/tail landing feelers (`820E5250`, which only
-    /// record contact).
+    /// (bikes only), lip checks, bails on landing, moving platforms, and the
+    /// nose/tail landing feelers (`820E5250`, which only record contact).
     pub fn air_update(&mut self, s: &Scripts, world: &dyn World) -> Vec<Event> {
         let mut events = Vec::new();
         // Object +128: the position at the start of this frame (LIKELY: the
         // object update stores it before the physics runs).
         let old = self.old_position;
         let g = Vec3::new(0.0, self.air_gravity(s), 0.0);
+        // 820F2410: SkaterState +72 (on vert ground) is cleared.
+        self.vert.on_vert_ground = false;
         self.standing_kick_limit = 0.0;
         self.turn_amount = 0.0;
         self.flag_2637 = false;
@@ -315,13 +330,29 @@ impl CorePhysics {
         let input = self.last_input;
         self.air_rotation(s, &input);
         // `820EA0D0` runs here (not translated).
-        self.air_recover(s, world);
+        // 820F24B4: the leveling is skipped in vert air, unless SkaterState
+        // +144 is set or the spine button is held.
+        if self.vert.over_ground || self.spine_button(&input) || !self.vert.in_vert_air {
+            self.air_recover(s, world);
+        }
+        // `820D79F8` runs here (not translated). 820F2518: outside vert air
+        // (and spine transfers, the rotate component and bike state +152,
+        // none translated), the sideways uprighting.
+        if !self.vert.in_vert_air {
+            self.upright_sideways(s);
+        }
 
         let dt = self.dt;
         self.body.position += self.body.velocity * dt + g * (dt * dt * 0.5);
         self.body.velocity += g * dt;
-        // 820F305C: outside vert, the second matrix copy follows the matrix.
-        self.matrix_32 = self.body.matrix;
+        self.vert_air_update(s, world);
+        // 820F3018: in vert air the normal easing runs; otherwise the
+        // second matrix copy follows the matrix.
+        if self.vert.in_vert_air {
+            self.ease_normal(s);
+        } else {
+            self.matrix_32 = self.body.matrix;
+        }
 
         // `820EF410`: walls ahead. When it handled the frame, retail skips
         // the landing (820F369C).
@@ -399,7 +430,7 @@ impl CorePhysics {
     /// `..._Length` past it. Returns true when it dealt with the frame
     /// (stepped up onto a ledge), which skips the landing.
     ///
-    /// Not translated: vert (the `+56` branch), wallrides and wallplants
+    /// Not translated: wallrides and wallplants
     /// (`820EDAA8`, `820E8618`, which may take over first), trigger 512
     /// scripts, the bonk sound, SkaterState `+200` bookkeeping, the wall
     /// normal kept for `GetWallNormal` (`+2592`) and moving objects.
@@ -447,6 +478,16 @@ impl CorePhysics {
             }
         }
 
+        // 820EF8A4: in vert air, sit against the wall at
+        // `Skater_Min_Distance_To_Wall` and drop the velocity into it.
+        if self.vert.in_vert_air {
+            let min = s.physics_float("Skater_Min_Distance_To_Wall", self.on_bike);
+            self.body.position = hit.point - up * h + n * min;
+            let v = self.body.velocity;
+            self.body.velocity = v - n * v.dot(n);
+            return false;
+        }
+
         // Slide along the wall: drop the velocity into the wall, keeping
         // the vertical part unless the wall faces down (-0.1 at 820029A0),
         // then push off it by a tenth of the speed (0.1 at 82000BF4).
@@ -485,15 +526,22 @@ impl CorePhysics {
         // wall-ride checks (`820EA788`, `820E80D8`, ...), not translated.
     }
 
-    /// The landing path of `820F2310` (not from vert).
+    /// The landing path of `820F2310`.
     fn land(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
         self.set_state(State::Ground);
         self.last_speed = self.body.velocity.length();
         // `820DBAA8(1)` runs here, before the landing velocity blend.
         self.flip_if_backwards(s);
         let v = self.body.velocity;
-        // Retail also checks vert-landing flags +2131/+2135 (not translated).
-        let still = v.x == 0.0 && v.z == 0.0;
+        // 820F38A4: landing from vert air sets +2131 (`LandedFromVert`)
+        // and +2135; otherwise +2135 is cleared.
+        if self.vert.in_vert_air {
+            self.vert.landed_from_vert = true;
+            self.vert.landing_from_vert = true;
+        } else {
+            self.vert.landing_from_vert = false;
+        }
+        let still = v.x == 0.0 && v.z == 0.0 && !self.vert.landing_from_vert && !self.vert.landed_from_vert;
         let input = self.last_input;
         if still && self.stick_pulled_back(s, &input) {
             self.body.velocity.y = 0.0;
@@ -512,6 +560,10 @@ impl CorePhysics {
         if self.body.velocity.length_squared() < 0.064516 {
             self.body.velocity = Vec3::ZERO;
         }
+        // 820F3DD8: out of vert air; +96, +112 and +128 take the normal.
+        self.vert.in_vert_air = false;
+        self.vert.eased_normal = n;
+        self.vert.ease_from = n;
         self.ground_normal = n;
         self.previous_normal = n;
         self.body.matrix.y_axis = n;

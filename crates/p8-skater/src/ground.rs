@@ -158,13 +158,14 @@ impl CorePhysics {
         true
     }
 
-    /// Retail `820D7648`: take a new ground normal as the skater's up.
-    fn orient_to_ground(&mut self, n: Vec3) {
+    /// Retail `820D7648`: take a new ground normal as the skater's up, and
+    /// start easing `+96` toward it from where it is (`+128`, `+160` = 1).
+    pub(crate) fn orient_to_ground(&mut self, n: Vec3) {
         if n == self.ground_normal {
             return;
         }
-        // Retail also copies `+96` to `+128` and stores 1.0 at `+160`
-        // (UNKNOWN; not read by translated code).
+        self.vert.ease_from = self.vert.eased_normal;
+        self.vert.ease_left = 1.0;
         self.ground_normal = n;
         self.body.matrix.y_axis = n;
         orthonormalize_keep_up(&mut self.body.matrix);
@@ -173,10 +174,10 @@ impl CorePhysics {
     /// Retail `820F12C0`: find the ground under the skater and stay on it,
     /// or leave the ground (off an edge).
     ///
-    /// Not translated: SkaterState `+72`/`+96`/`+176` bookkeeping from the
-    /// surface flags (read by vert and animation code), `820DA1A8`,
-    /// `820E0A50` and trigger handling after a snap, and after going off an
-    /// edge `820DA3D0` and the vert and lip checks (`820D53F8`, `820E1600`).
+    /// Not translated: SkaterState `+96`/`+176` bookkeeping from the surface
+    /// flags (read by animation code), `820E0A50` and trigger handling after
+    /// a snap, the display-matrix part of `820DA1A8`, and after going off an
+    /// edge the spine-transfer search (`820E1600`, `820DA7B0`).
     fn ground_snap(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut Vec<Event>) {
         let up = self.body.up();
         let start = self.body.position + up * s.physics_float("Physics_Ground_Snap_Up", self.on_bike);
@@ -212,6 +213,8 @@ impl CorePhysics {
                     }
                 }
                 if stick {
+                    // SkaterState +72 from the hit's vert flag (+1185).
+                    self.vert.on_vert_ground = hit.flags & 0x8 != 0;
                     self.orient_to_ground(n);
                 }
                 // Upside down (0.0 up.y) and slower than 7.6 (82002A5C).
@@ -231,6 +234,7 @@ impl CorePhysics {
                     self.body.position = hit.point + n * SKIN;
                     // `820E53D8(+298)`: the new terrain under the board.
                     self.terrain = hit.terrain;
+                    self.ease_normal(s);
                 }
             }
         }
@@ -238,6 +242,19 @@ impl CorePhysics {
             self.set_state(State::Air);
             events.push(Event::SkaterOffEdge);
             events.push(Event::GroundGone);
+            self.vert_takeoff(s);
+            if self.vert.in_vert_air {
+                self.set_break_window(true);
+                if !self.spine_button(input) {
+                    self.break_vert(s, false);
+                }
+                let t = s.global_float("Skater_vert_active_up_time") as i32;
+                if input.up_released_ms > t && input.up_held_ms > t {
+                    self.set_break_window(false);
+                }
+            }
+            // Otherwise, with the spine button, retail looks for a spine to
+            // transfer to (`820E1600`): not translated.
         }
     }
 }

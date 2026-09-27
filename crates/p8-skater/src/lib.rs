@@ -19,6 +19,7 @@ pub mod pad;
 pub mod script;
 pub mod skater;
 pub mod stats;
+pub mod vert;
 pub mod world;
 
 pub use body::Body;

@@ -1,0 +1,455 @@
+//! Vert: leaving a vert wall (quarter pipe) into vert air, following the
+//! wall below while in the air, breaking out of vert over the lip, and the
+//! eased normal these use. Surfaces with collision flag 0x8 are vert
+//! (`820E5048` copies it to `+1185`, the snap to SkaterState `+72`).
+//!
+//! Not translated: spine transfers (`820E68A8`, `820E1600`, SkaterState
+//! `+136`, which is therefore never set), the skater-rotate component's
+//! flags (`+2836`->`+40`/`+80`, never set), moving platforms, bikes, and
+//! `+1380` (only spine/lip code and bike code set it).
+use crate::air::orthonormalize_keep_at;
+use crate::core_physics::{CorePhysics, project_keep_length};
+use crate::input::InputState;
+use crate::script::Scripts;
+use crate::world::World;
+use glam::{Mat3, Vec3};
+
+/// 0.0174533: degrees to radians (82000C10).
+const DEG: f32 = 0.017453292;
+
+/// Retail `820BE1B0` (matrix from `821E8EE8`): `M = RotX(angle) * M` in
+/// row-vector form, a turn about the matrix's own row 0.
+pub(crate) fn rotate_about_row0(m: &mut Mat3, angle: f32) {
+    let (s, c) = (angle.sin(), angle.cos());
+    let (y, z) = (m.y_axis, m.z_axis);
+    m.y_axis = y * c + z * s;
+    m.z_axis = z * c - y * s;
+}
+
+/// Retail `820BF0E8` (matrix from `821E93E8`): `M = RotZ(angle) * M`, a
+/// turn about the matrix's own at row.
+pub(crate) fn rotate_about_at(m: &mut Mat3, angle: f32) {
+    let (s, c) = (angle.sin(), angle.cos());
+    let (x, y) = (m.x_axis, m.y_axis);
+    m.x_axis = x * c + y * s;
+    m.y_axis = y * c - x * s;
+}
+
+impl CorePhysics {
+    /// Retail `820D53F8`: the spine-transfer button ("R2") is held, unless
+    /// in Nail the Trick (script `IsSkaterInNailTheTrick`; not translated,
+    /// so never).
+    pub(crate) fn spine_button(&self, input: &InputState) -> bool {
+        input.r2
+    }
+
+    /// Set a SkaterState flag the retail way (`820D4...` inline pattern):
+    /// the time stamp only changes when the value does.
+    pub(crate) fn set_break_window(&mut self, on: bool) {
+        if self.vert.break_window != on {
+            self.vert.break_window = on;
+            self.vert.break_window_ms = self.time_ms;
+        }
+    }
+
+    /// Retail `820DA1A8`, its normal easing: `+96` eases from `+128` to the
+    /// ground normal `+112` as `+160` runs from 1 to 0 at
+    /// `Normal_Lerp_Speed` (x1.5 when the normal points down). The rest of
+    /// it (the display matrix `+32`, and a camera value) is not translated.
+    pub(crate) fn ease_normal(&mut self, s: &Scripts) {
+        let target = self.ground_normal;
+        let mut speed = s.global_float("Normal_Lerp_Speed");
+        if target.y < 0.0 {
+            // 1.5 is the constant at 82000DD8.
+            speed *= 1.5;
+        }
+        let v = &mut self.vert;
+        if v.ease_left == 0.0 {
+            return;
+        }
+        if v.ease_from == target {
+            v.ease_left = 0.0;
+            return;
+        }
+        // 60 is the constant at 82001EB4.
+        v.ease_left -= self.dt * speed * 60.0;
+        if v.ease_left <= 0.0 {
+            v.ease_left = 0.0;
+            v.eased_normal = target;
+        } else {
+            v.eased_normal = (target + (v.ease_from - target) * v.ease_left).normalize_or_zero();
+        }
+    }
+
+    /// Retail `820DA3D0`: leaving the ground. On a vert wall, keep only the
+    /// speed along the wall, face the skater's up out from the wall, push
+    /// out by `Physics_Vert_Push_Out` and enter vert air.
+    pub(crate) fn vert_takeoff(&mut self, s: &Scripts) {
+        // Upside down (-0.1 at 820029A0): out of vert, step off the
+        // ceiling by 0.025 (820027D4). Retail then runs script `ForcedBail`
+        // with `allow_quick_exit`; bails are not translated.
+        if self.ground_normal.y < -0.1 {
+            self.vert.in_vert_air = false;
+            self.body.position -= self.ground_normal * 0.025;
+            return;
+        }
+        if !self.vert.on_vert_ground {
+            self.vert.in_vert_air = false;
+            return;
+        }
+        self.vert.normal = self.ground_normal;
+        // Object `+128`, lowered by 0.0025 (820027D0).
+        self.vert.point = self.old_position - Vec3::Y * 0.0025;
+        let flat = Vec3::new(self.ground_normal.x, 0.0, self.ground_normal.z);
+        // 0.001 is the constant at 82000D80.
+        if flat.length() <= 0.001 {
+            self.vert.in_vert_air = false;
+            return;
+        }
+        let n = flat.normalize();
+        self.body.velocity = project_keep_length(self.body.velocity, n);
+        self.orient_to_ground(n);
+        // Retail also stores the at row with y negated at `+1296` and sets
+        // SkaterState `+120`, both read only by untranslated code.
+        self.body.position += n * s.global_float("Physics_Vert_Push_Out");
+        self.vert.in_vert_air = true;
+        self.vert.tracking = true;
+        // 0.15 is the constant at 820029DC.
+        self.vert.lift = 0.15;
+    }
+
+    /// Retail `820EC7B0`: break out of vert air, over the lip. Happens when
+    /// "Up" has been held longer than `Skater_vert_push_time` (and not
+    /// Left, Right, Square or Circle), with the spine button, or when
+    /// `force` is set (`forcebreakvert`).
+    pub(crate) fn break_vert(&mut self, s: &Scripts, force: bool) {
+        let input = self.last_input;
+        let push_time = s.global_float("Skater_vert_push_time") as i32;
+        let pushing = !self.on_bike
+            && input.up
+            && input.up_held_ms > push_time
+            && !input.left
+            && !input.right
+            && !input.kick
+            && !input.circle;
+        let spine = self.spine_button(&input);
+        if !pushing && !spine && !force {
+            return;
+        }
+        let n = self.vert.eased_normal;
+        if spine {
+            // 820ECC84: retail first looks for a spine to transfer to
+            // (`820E68A8`, not translated: as if none was found), then
+            // moves 0.6 (820024BC) toward the wall's far side.
+            self.body.velocity.x -= n.x * 0.6;
+            self.body.velocity.z -= n.z * 0.6;
+            let tilt = s.global_float("Skater_Break_Vert_forward_tilt");
+            rotate_about_row0(&mut self.body.matrix, tilt * DEG);
+            self.vert.in_vert_air = false;
+            self.vert.tracking = false;
+            self.set_break_window(false);
+            self.vert.over_ground = true;
+            self.face_velocity();
+            return;
+        }
+        let k = self.body.velocity.length() * s.global_float("physics_break_air_speed_scale");
+        self.body.velocity.x -= n.x * k;
+        self.body.velocity.z -= n.z * k;
+        self.body.velocity.y *= s.global_float("physics_break_air_up_scale");
+        let tilt = s.global_float("Skater_Break_Vert_forward_tilt");
+        rotate_about_row0(&mut self.body.matrix, tilt * DEG);
+        self.vert.in_vert_air = false;
+        self.vert.tracking = false;
+        self.set_break_window(false);
+        // Retail also clears SkaterState `+200` (a wall-hit timer read only
+        // by untranslated code).
+        self.face_velocity();
+        self.matrix_32 = self.body.matrix;
+    }
+
+    /// The end of `820EC7B0`: the at row takes the flat direction of the
+    /// velocity (keeping its own y), then the matrix is rebuilt around it.
+    fn face_velocity(&mut self) {
+        let dir = self.body.velocity.normalize_or_zero();
+        let m = &mut self.body.matrix;
+        m.z_axis.x = dir.x;
+        m.z_axis.z = dir.z;
+        m.z_axis = m.z_axis.normalize_or_zero();
+        orthonormalize_keep_at(m);
+    }
+
+    /// Retail `820DC5D0`: outside vert air, roll the skater upright about
+    /// the at row at `skater_upright_sideways_speed` degrees a second while
+    /// up leans sideways by more than `1.2 * dt`, unless at points nearly
+    /// straight up or down (0.95).
+    pub(crate) fn upright_sideways(&mut self, s: &Scripts) {
+        let at = self.body.at();
+        // 0.95 is the constant at 82002A00.
+        if at.y.abs() > 0.95 {
+            return;
+        }
+        let side = Vec3::new(-at.z, 0.0, at.x);
+        let lean = self.body.up().dot(side);
+        // 1.2 and -1.2 are the constants at 820029FC and 820029F8.
+        let rate = s.global_float("skater_upright_sideways_speed") * DEG * self.dt;
+        let angle = if lean > self.dt * 1.2 {
+            rate
+        } else if lean < self.dt * -1.2 {
+            -rate
+        } else {
+            return;
+        };
+        rotate_about_at(&mut self.body.matrix, angle);
+        self.matrix_32 = self.body.matrix;
+    }
+
+    /// The vert block of the air update (`820F2900`..`820F3014`), after the
+    /// move.
+    pub(crate) fn vert_air_update(&mut self, s: &Scripts, world: &dyn World) {
+        let input = self.last_input;
+        if self.vert.break_window {
+            if self.vert.tracking && self.vert.in_vert_air {
+                // Nothing under the board (0.0025 above to 0.58 below,
+                // 820027D0 and 82002AE8): the break-vert check.
+                let up = self.body.up();
+                let pos = self.body.position;
+                if world.feeler(pos + up * 0.0025, pos + up * -0.58, 0x10, 0).is_none() {
+                    self.break_vert(s, false);
+                    let t = s.global_float("Skater_vert_active_up_time") as i32;
+                    if input.up_released_ms > t && input.up_held_ms > t {
+                        self.set_break_window(false);
+                    }
+                }
+            }
+            let allow = s.global_float("Skater_Vert_Allow_break_Time") as i64;
+            if self.time_ms - self.vert.break_window_ms > allow {
+                self.set_break_window(false);
+            }
+        } else if self.vert.in_vert_air && self.spine_button(&input) && self.body.velocity.y > 0.0 {
+            self.break_vert(s, false);
+        }
+        if self.vert.tracking && self.vert.in_vert_air {
+            self.follow_vert_wall(s, world);
+        }
+    }
+
+    /// `820F2B28`..`820F3014`: look across the vert wall's plane (0.76 each
+    /// side, 82002AE4) at the height followed so far for a vert surface,
+    /// first `+1312` higher, then lower in 0.075 steps (82002960), up to 10
+    /// times. If found and still facing the same way, move over it, take its
+    /// normal and push out; otherwise stop following.
+    fn follow_vert_wall(&mut self, s: &Scripts, world: &dyn World) {
+        let pos = self.body.position;
+        let n = self.vert.normal;
+        let base = Vec3::new(pos.x, self.vert.point.y, pos.z);
+        let mut a = base + n * 0.76;
+        let mut b = base - n * 0.76;
+        let vert_hit = |a: Vec3, b: Vec3| world.feeler(a, b, 0, 0).filter(|h| h.flags & 0x8 != 0);
+        let mut hit = None;
+        // 0.0125 is the constant at 820029D8.
+        if self.vert.lift > 0.0125 {
+            let lift = Vec3::Y * self.vert.lift;
+            hit = vert_hit(a + lift, b + lift);
+            if hit.is_none() {
+                // 0.5 is f30 (82000BE8).
+                self.vert.lift *= 0.5;
+            }
+        }
+        if hit.is_none() {
+            hit = vert_hit(a, b);
+        }
+        if hit.is_none() {
+            for _ in 0..10 {
+                a.y -= 0.075;
+                b.y -= 0.075;
+                hit = vert_hit(a, b);
+                if let Some(h) = hit {
+                    self.vert.point.y = h.point.y;
+                    break;
+                }
+            }
+        }
+        // sqrt(|hit.n . n| over x and z); 0.02 is the constant at 82002968.
+        let Some(h) = hit.filter(|h| (h.normal.x * n.x + n.z * h.normal.z).abs().sqrt() > 0.02) else {
+            self.vert.tracking = false;
+            return;
+        };
+        let mut point = h.point;
+        if self.vert.point.y > point.y {
+            point.y = self.vert.point.y;
+        }
+        self.vert.point = point;
+        self.body.position.x = point.x;
+        self.body.position.z = point.z;
+        self.vert.normal = h.normal;
+        self.body.position += h.normal * s.global_float("Physics_Vert_Push_Out");
+        let flat = Vec3::new(h.normal.x, 0.0, h.normal.z).normalize_or_zero();
+        self.orient_to_ground(flat);
+        self.body.velocity = project_keep_length(self.body.velocity, flat);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core_physics::{CorePhysics, State};
+    use crate::input::InputState;
+    use crate::script::Scripts;
+    use crate::world::{Hit, World, filter_allows};
+    use glam::Vec3;
+    use p8_formats::qb::Value;
+    use p8_formats::qb_key as k;
+
+    fn scripts() -> Scripts {
+        let f = |name: &str, v: f32| (k(name), Value::Float(v));
+        Scripts::new(
+            [
+                (k("skater_physics"), Value::Struct(vec![])),
+                f("Physics_Vert_Push_Out", 0.075),
+                f("Normal_Lerp_Speed", 0.1),
+                f("Skater_vert_push_time", 130.0),
+                f("Skater_vert_active_up_time", 250.0),
+                f("Skater_Vert_Allow_break_Time", 200.0),
+                f("physics_break_air_speed_scale", 0.75),
+                f("physics_break_air_up_scale", 0.75),
+                f("Skater_Break_Vert_forward_tilt", 45.0),
+                f("skater_upright_sideways_speed", -60.0),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    /// A vert wall in the plane z = 0 facing -z, from y = 0 up to `top`.
+    struct Wall {
+        top: f32,
+    }
+
+    impl World for Wall {
+        fn feeler(&self, start: Vec3, end: Vec3, ignore_1: u16, ignore_0: u16) -> Option<Hit> {
+            if !filter_allows(0x8, ignore_1, ignore_0) || start.z >= 0.0 || end.z < 0.0 {
+                return None;
+            }
+            let t = -start.z / (end.z - start.z);
+            let point = start + (end - start) * t;
+            (point.y >= 0.0 && point.y <= self.top).then_some(Hit {
+                point,
+                normal: Vec3::NEG_Z,
+                flags: 0x8,
+                terrain: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn takeoff_from_vert_keeps_speed_along_the_wall_and_faces_out() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.vert.on_vert_ground = true;
+        p.ground_normal = Vec3::new(0.0, 0.05, -1.0).normalize();
+        p.body.velocity = Vec3::new(0.5, 8.0, 0.4);
+        let speed = p.body.velocity.length();
+        p.body.position = Vec3::new(0.0, 3.0, -0.1);
+        p.vert_takeoff(&s);
+        assert!(p.vert.in_vert_air && p.vert.tracking);
+        assert!(p.body.velocity.z.abs() < 1e-5);
+        assert!((p.body.velocity.length() - speed).abs() < 1e-4);
+        assert!((p.body.up() - Vec3::NEG_Z).length() < 1e-5);
+        assert!((p.body.position.z - (-0.175)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn takeoff_from_a_non_vert_surface_is_not_vert_air() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.vert.in_vert_air = true;
+        p.vert_takeoff(&s);
+        assert!(!p.vert.in_vert_air);
+    }
+
+    #[test]
+    fn vert_air_follows_the_wall_below() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.state = State::Air;
+        p.vert.in_vert_air = true;
+        p.vert.tracking = true;
+        p.vert.point = Vec3::new(0.0, 1.0, 0.0);
+        p.vert.normal = Vec3::NEG_Z;
+        p.vert.lift = 0.15;
+        p.body.position = Vec3::new(2.0, 2.0, -0.3);
+        p.body.velocity = Vec3::new(1.0, 0.0, -0.5);
+        p.vert_air_update(&s, &Wall { top: 3.0 });
+        assert!(p.vert.tracking);
+        assert!((p.body.position - Vec3::new(2.0, 2.0, -0.075)).length() < 1e-5);
+        assert!((p.vert.point.y - 1.15).abs() < 1e-5);
+        assert!(p.body.velocity.z.abs() < 1e-5);
+        assert!((p.body.velocity.length() - 1.25f32.sqrt()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn vert_air_searches_down_then_stops_following() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.state = State::Air;
+        p.vert.in_vert_air = true;
+        p.vert.tracking = true;
+        p.vert.point = Vec3::new(0.0, 1.0, 0.0);
+        p.vert.normal = Vec3::NEG_Z;
+        p.body.position = Vec3::new(0.0, 2.0, -0.1);
+        // Found 7 steps of 0.075 down (1 - 0.525 = 0.475 is under 0.5).
+        p.vert_air_update(&s, &Wall { top: 0.5 });
+        assert!(p.vert.tracking);
+        assert!((p.vert.point.y - 0.475).abs() < 1e-4);
+        // Nothing within 10 steps.
+        p.vert.point.y = 2.0;
+        p.vert_air_update(&s, &Wall { top: 0.5 });
+        assert!(!p.vert.tracking);
+        assert!(p.vert.in_vert_air);
+    }
+
+    #[test]
+    fn holding_up_breaks_vert_over_the_lip() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.vert.in_vert_air = true;
+        p.vert.eased_normal = Vec3::NEG_Z;
+        p.body.velocity = Vec3::new(0.0, 5.0, 0.0);
+        p.last_input = InputState { up: true, up_held_ms: 100, ..Default::default() };
+        p.break_vert(&s, false);
+        assert!(p.vert.in_vert_air, "not held long enough");
+        p.last_input.up_held_ms = 200;
+        p.break_vert(&s, false);
+        assert!(!p.vert.in_vert_air);
+        assert!((p.body.velocity - Vec3::new(0.0, 3.75, 3.75)).length() < 1e-5);
+        // Tilted 45 degrees forward (nose down), then turned to the flat
+        // direction of the velocity, which here it already had.
+        let h = 0.5f32.sqrt();
+        assert!((p.body.at() - Vec3::new(0.0, -h, h)).length() < 1e-5);
+    }
+
+    #[test]
+    fn upright_sideways_rolls_up_toward_straight() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        crate::vert::rotate_about_at(&mut p.body.matrix, 0.5);
+        let side = |p: &CorePhysics| p.body.up().dot(Vec3::new(-p.body.at().z, 0.0, p.body.at().x));
+        let before = side(&p).abs();
+        p.upright_sideways(&s);
+        assert!(side(&p).abs() < before);
+        assert!((p.body.at() - Vec3::Z).length() < 1e-5);
+    }
+
+    #[test]
+    fn eased_normal_reaches_the_ground_normal_in_ten_frames() {
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.orient_to_ground(Vec3::NEG_Z);
+        for _ in 0..9 {
+            p.ease_normal(&s);
+        }
+        assert!(p.vert.eased_normal != Vec3::NEG_Z);
+        p.ease_normal(&s);
+        p.ease_normal(&s);
+        assert_eq!(p.vert.eased_normal, Vec3::NEG_Z);
+    }
+}

@@ -61,6 +61,11 @@ impl Record {
     pub fn held_ms(&self, now_ms: i64) -> i64 {
         now_ms - self.pressed_ms
     }
+
+    /// `822D61C0`: milliseconds since the last release.
+    pub fn released_ms_ago(&self, now_ms: i64) -> i64 {
+        now_ms - self.released_ms
+    }
 }
 
 /// Pad-state bytes (`8222A320`'s struct at controller `+64`).
@@ -230,6 +235,7 @@ impl Controller {
             r1: self.r1.held,
             l2: self.l2.held,
             up_held_ms: self.up.held_ms(now_ms) as i32,
+            up_released_ms: self.up.released_ms_ago(now_ms) as i32,
             down_held_ms: self.down.held_ms(now_ms) as i32,
             left_held_ms: self.left.held_ms(now_ms) as i32,
             right_held_ms: self.right.held_ms(now_ms) as i32,

@@ -198,6 +198,47 @@ pub struct CorePhysics {
     pub late_ollie: bool,
     pub stats: StatLevels,
     pub stat_context: StatContext,
+    /// Vert state (see `vert.rs`).
+    pub vert: Vert,
+}
+
+/// The vert bookkeeping, SkaterState (`+2848`) flags and physics fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Vert {
+    /// SkaterState `+72`: the ground under the board has flag 0x8 (vert).
+    /// Set by the ground snap from the hit (`+1185`), cleared each air frame.
+    pub on_vert_ground: bool,
+    /// SkaterState `+56`: in vert air (`InVertAir`).
+    pub in_vert_air: bool,
+    /// SkaterState `+64`: following the vert wall below while in vert air.
+    pub tracking: bool,
+    /// SkaterState `+80` and its time stamp `+84`: the break-vert window
+    /// after a vert takeoff.
+    pub break_window: bool,
+    pub break_window_ms: i64,
+    /// SkaterState `+144`: set when the air leveling found ground below or
+    /// vert was broken; lets the air leveling run in vert air.
+    pub over_ground: bool,
+    /// `+1264`: the vert wall point followed in the air.
+    pub point: Vec3,
+    /// `+1280`: the vert wall's flat normal.
+    pub normal: Vec3,
+    /// `+1312`: how far above `point` to look for the wall first.
+    pub lift: f32,
+    /// `+2131`: `LandedFromVert` (set by a landing from vert air or
+    /// `SetLandedFromVert`; `ResetLandedFromVert` clears it).
+    pub landed_from_vert: bool,
+    /// `+2135`: the last landing was from vert air (set or cleared by every
+    /// landing).
+    pub landing_from_vert: bool,
+    /// `+2136`: `WasLastLandingVert`; only the scripts set it
+    /// (`SetLastLandingVert` / `SetLastLandingGround`).
+    pub last_landing_vert: bool,
+    /// `+96`: the normal eased toward `+112` by `820DA1A8`, `+128` where it
+    /// eases from and `+160` how much of the way is left (1 to 0).
+    pub eased_normal: Vec3,
+    pub ease_from: Vec3,
+    pub ease_left: f32,
 }
 
 /// Retail `8262BE78`, cosine (its neighbour `8262BDA0` is sine: CONFIRMED by
@@ -292,6 +333,8 @@ impl CorePhysics {
             late_ollie: false,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
+            // Reset (820D4700) sets +96 and +128 like +112: straight up.
+            vert: Vert { eased_normal: Vec3::Y, ease_from: Vec3::Y, ..Vert::default() },
         }
     }
 
@@ -736,6 +779,12 @@ impl CorePhysics {
     /// until ground snapping is translated.
     pub fn ground_update(&mut self, s: &Scripts, input: &InputState, world: &dyn crate::world::World) -> Vec<Event> {
         let mut events = Vec::new();
+        // 820F6978 starts by clearing SkaterState +80, +56, +64 and +144
+        // (and +136, +152, +192, +200, +208, +1380, +1616: untranslated).
+        self.set_break_window(false);
+        self.vert.in_vert_air = false;
+        self.vert.tracking = false;
+        self.vert.over_ground = false;
         self.kick_flag = false;
         let speed = self.speed();
         if speed - self.last_speed >= s.physics_float("Physics_kick_accel_threshold", self.on_bike) {
@@ -819,6 +868,8 @@ impl CorePhysics {
         }
         // `820D7AB0` runs later in the ground update.
         if self.ollie_trigger(input) {
+            // 820F80D0: the vert takeoff runs as soon as the trigger fires.
+            self.vert_takeoff(s);
             events.push(Event::Ollied);
         }
         events
@@ -921,6 +972,7 @@ mod tests {
         r1: false,
         l2: false,
         up_held_ms: 0,
+        up_released_ms: 0,
         down_held_ms: 0,
         left: false,
         right: false,

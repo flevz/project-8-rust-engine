@@ -31,6 +31,8 @@ pub struct InputState {
     pub l2: bool,
     /// Milliseconds since "Up" / "Down" were last pressed (`822D6200`).
     pub up_held_ms: i32,
+    /// Milliseconds since "Up" was last released (`822D61C0`).
+    pub up_released_ms: i32,
     pub down_held_ms: i32,
     /// `+96` = record "Left": digital turn left (`820ECEE8`).
     pub left: bool,
