@@ -561,6 +561,13 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
   flags at r30+4160) and the quaternion-to-matrix / parent chain, then
   translate. `_xx` single-pose clips (flags 0x16091040) are uncompressed
   floats at +0x80 (rotations) / +0x700 (positions), sampler `822EA3D0`.
+- User report (model shown): after landing a 180 the model snaps to face
+  forward. The model is drawn from the physics matrix; retail keeps
+  regular/goofy + fakie state (`flipped` +2024, `FlipAndRotate`
+  `820FDAF0`, display matrix `matrix_32` +32, `820DA1A8` display
+  smoothing, flipandrotate component `+25` FlipAfter) and draws from the
+  display matrix. To do with the animation system (stance also picks
+  mirrored animations). Not started.
 - Next after (3): the board model (`board_default`, own skeleton `board`
   in global.pak) and the animation system.
 
