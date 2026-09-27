@@ -10,12 +10,15 @@
 //! - Retail structure offsets are kept in field docs (e.g. `+1540`) so every
 //!   field can be checked against the original.
 pub mod air;
+pub mod balance;
 pub mod body;
 pub mod controller;
 pub mod core_physics;
 pub mod ground;
 pub mod input;
+pub mod lip;
 pub mod pad;
+pub mod rails;
 pub mod script;
 pub mod skater;
 pub mod stats;

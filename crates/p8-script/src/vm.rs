@@ -290,13 +290,13 @@ impl Script {
             self.pc = Some(end);
             return Some(truth(&v) != 0);
         }
-        let (name, mut p) = self.read_name(&code, pc);
+        let (name, mut p) = self.read_name(host, &code, pc);
         p = self.transparent(host, p);
         match byte(&code, p) {
             COLON => {
                 // `object : command params`.
                 let p2 = self.transparent(host, p + 1);
-                let (cmd, p3) = self.read_name(&code, p2);
+                let (cmd, p3) = self.read_name(host, &code, p2);
                 let (params, end) = self.parse_params(host, p3, Some(&self.locals.clone()));
                 self.pc = Some(end);
                 return Some(match host.object_command(self, name, cmd, &params) {
@@ -528,14 +528,14 @@ impl Script {
 
     /// Retail `8220C500`: the name at the start of a line: `name`, the
     /// checksum held by `<name>`, or for `<...>` the first unnamed checksum.
-    fn read_name(&self, code: &[u8], pc: usize) -> (u32, usize) {
+    fn read_name(&self, host: &dyn Host, code: &[u8], pc: usize) -> (u32, usize) {
         match byte(code, pc) {
             NAME => (u32_at(code, pc + 1), pc + 5),
             ALL_ARGS => (self.locals.unnamed_checksum().unwrap_or(0), pc + 1),
             ARG if byte(code, pc + 1) == NAME => {
                 let key = u32_at(code, pc + 2);
-                let v = match self.locals.get(key) {
-                    Some(Value::Checksum(c)) => *c,
+                let v = match self.locals.get_in(key, &|k| host.global(k)) {
+                    Some(Value::Checksum(c)) => c,
                     _ => 0,
                 };
                 (v, pc + 6)
@@ -674,7 +674,7 @@ impl Script {
             ARG => {
                 // `<name>`: missing adds nothing; an unnamed struct merges.
                 let name = u32_at(&code, p + 1);
-                if let Some(v) = caller.and_then(|c| c.get(name)).cloned() {
+                if let Some(v) = caller.and_then(|c| c.get_in(name, &|k| host.global(k))) {
                     match (&v, key) {
                         (Value::Struct(_), 0) => out.merge(&Params::from_struct(&v)),
                         _ => out.add(key, v),
@@ -696,8 +696,8 @@ impl Script {
                 // `?name`, or `?<name>` naming the global through a local.
                 let (name, end) = if byte(&code, p) == ARG {
                     let k = u32_at(&code, p + 2);
-                    let n = match caller.and_then(|c| c.get(k)) {
-                        Some(Value::Checksum(c)) => *c,
+                    let n = match caller.and_then(|c| c.get_in(k, &|g| host.global(g))) {
+                        Some(Value::Checksum(c)) => c,
                         _ => 0,
                     };
                     (n, p + 6)
@@ -840,10 +840,9 @@ impl Script {
                         values.push(Value::Int(r as i32));
                         p = end;
                     } else {
-                        values.push(match global {
-                            Some(Value::Checksum(_)) | None => Value::Checksum(name),
-                            Some(v) => v,
-                        });
+                        // Right after '.', the member name stays a name.
+                        let after_dot = ops.last() == Some(&DOT);
+                        values.push(if after_dot { Value::Checksum(name) } else { resolve_name(host, name) });
                         p += 5;
                     }
                     expect_operand = false;
@@ -885,7 +884,17 @@ impl Script {
                 _ => {
                     let mut tmp = Params::new();
                     let end = self.value(host, p, 0, &mut tmp, Some(&locals));
-                    values.push(tmp.first().cloned().unwrap_or(Value::Int(0)));
+                    let mut v = tmp.first().cloned().unwrap_or(Value::Int(0));
+                    // Retail `82218210`: a `<local>` holding a name that
+                    // names a global stands for the global's value (not
+                    // right after '.').
+                    if t == ARG
+                        && ops.last() != Some(&DOT)
+                        && let Value::Checksum(c) = v
+                    {
+                        v = resolve_name(host, c);
+                    }
+                    values.push(v);
                     p = end.max(p + 1);
                     expect_operand = false;
                 }
@@ -930,6 +939,22 @@ impl Script {
         if name == k("GotParam") {
             let key = params.unnamed_checksum().unwrap_or(0);
             return Some(self.locals.got(key));
+        }
+        if name == k("StructureContains") {
+            // 822ACAD0: `Structure` (a struct, or a name of a struct among
+            // the script's locals); `Name` or the first unnamed checksum;
+            // true if it has a component or a flag of that name.
+            let s = match params.get(k("Structure")) {
+                Some(Value::Struct(m)) => Some(Params(m.clone())),
+                Some(Value::Checksum(c)) => match self.locals.get(*c) {
+                    Some(Value::Struct(m)) => Some(Params(m.clone())),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(s) = s else { return Some(false) };
+            let key = params.checksum(k("Name")).or(params.unnamed_checksum()).unwrap_or(0);
+            return Some(s.get_in(key, &|g| host.global(g)).is_some() || s.flag(key));
         }
         if name == k("Goto") {
             let target = params.unnamed_checksum().unwrap_or(0);
@@ -1037,6 +1062,7 @@ fn is_vm_command(name: u32) -> bool {
         "Wait",
         "Block",
         "GotParam",
+        "StructureContains",
         "Goto",
         "SetException",
         "SetExceptionHandler",
@@ -1122,6 +1148,22 @@ fn num(v: &Value) -> Option<f32> {
 /// `=` (822178C0), `||`, `+` on numbers and strings. Not read in full, so
 /// unconfirmed: `-`, `*`, `/` (numbers as `+` does), `<`/`>` (82217CA0,
 /// 82217F58, numbers only here), `.` (member of a struct), `[` (element).
+/// Retail `82218210` / `8220BAD4`: a name standing for a global's value
+/// (following names of names); scripts, functions and unknown names stay
+/// names.
+fn resolve_name(host: &dyn Host, name: u32) -> Value {
+    let mut cur = name;
+    for _ in 0..16 {
+        match host.global(cur) {
+            None => return Value::Checksum(cur),
+            Some(Value::Script(_)) => return Value::Checksum(cur),
+            Some(Value::Checksum(next)) => cur = next,
+            Some(v) => return v,
+        }
+    }
+    Value::Checksum(cur)
+}
+
 fn apply(host: &dyn Host, op: u8, values: &mut Vec<Value>) {
     let b = values.pop().unwrap_or(Value::Int(0));
     let a = values.pop().unwrap_or(Value::Int(0));
@@ -1154,7 +1196,10 @@ fn apply(host: &dyn Host, op: u8, values: &mut Vec<Value>) {
         LESS => Int(matches!((num(&a), num(&b)), (Some(x), Some(y)) if x < y) as i32),
         GREATER => Int(matches!((num(&a), num(&b)), (Some(x), Some(y)) if x > y) as i32),
         DOT => match (&a, &b) {
-            (Struct(m), Checksum(k)) => m.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or(Int(0)),
+            // 82211BE0, which also searches included global structs.
+            (Struct(m), Checksum(k)) => {
+                crate::params::Params(m.clone()).get_in(*k, &|g| host.global(g)).unwrap_or(Int(0))
+            }
             _ => Int(0),
         },
         ARRAY_OPEN => match (&a, &b) {

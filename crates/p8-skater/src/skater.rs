@@ -31,6 +31,8 @@ fn event_name(e: Event) -> Option<&'static str> {
         Event::WallPush => "WallPush",
         Event::FlailLeft => "FlailLeft",
         Event::FlailRight => "FlailRight",
+        Event::OffMeterTop => "OffMeterTop",
+        Event::OffMeterBottom => "OffMeterBottom",
         Event::SkaterJump | Event::SkaterOffEdge => return None,
     })
 }
@@ -50,6 +52,7 @@ struct Ctx<'a> {
     input: InputState,
     seed: &'a mut u32,
     events: Vec<Event>,
+    world: Option<&'a dyn World>,
 }
 
 impl Skater {
@@ -59,7 +62,8 @@ impl Skater {
         let mut physics = CorePhysics::at_restart(s, pos, angles);
         physics.scripted = true;
         let mut seed = 1;
-        let mut ctx = Ctx { p: &mut physics, s, input: InputState::default(), seed: &mut seed, events: Vec::new() };
+        let mut ctx =
+            Ctx { p: &mut physics, s, input: InputState::default(), seed: &mut seed, events: Vec::new(), world: None };
         let script = Script::new(&mut ctx, qb_key("skaterinit"), &Params::new());
         let mut me = Skater { physics, script, untranslated: Vec::new(), seed };
         if me.script.is_none() {
@@ -75,7 +79,14 @@ impl Skater {
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
         let mut events = self.physics.step(s, input, world);
         let Some(script) = self.script.as_mut() else { return events };
-        let mut ctx = Ctx { p: &mut self.physics, s, input: *input, seed: &mut self.seed, events: Vec::new() };
+        let goto = self.physics.script_goto.take();
+        let mut ctx =
+            Ctx { p: &mut self.physics, s, input: *input, seed: &mut self.seed, events: Vec::new(), world: Some(world) };
+        if let Some(name) = goto {
+            // Retail goes to the script and updates it in place (820F4990).
+            script.goto(&mut ctx, name, &Params::new());
+            script.update(&mut ctx);
+        }
         for e in events.clone() {
             if let Some(name) = event_name(e) {
                 script.event(&mut ctx, qb_key(name), &Params::new());
@@ -223,9 +234,17 @@ impl Ctx<'_> {
         if n == k("SetState") {
             // 820F1050: AIR -> 1, Ground -> 0 (then a heading history for
             // animation, 820DE3E8, not needed), Lip -> 3 (not translated).
+            // Leaving the lip runs trigger 144 (not translated); taking the
+            // lip without being on one forgets the rail (+1192).
             match params.unnamed_checksum() {
                 Some(c) if c == k("AIR") => p.set_state(State::Air),
                 Some(c) if c == k("Ground") => p.set_state(State::Ground),
+                Some(c) if c == k("Lip") => {
+                    if p.state != State::Lip {
+                        p.rail = None;
+                    }
+                    p.set_state(State::Lip);
+                }
                 _ => return None,
             }
             return Some(true);
@@ -335,9 +354,81 @@ impl Ctx<'_> {
         if n == k("InAir") {
             return Some(p.state == State::Air); // 82116980: +24 == 1
         }
-        if n == k("OnWall") || n == k("OnLip") || n == k("OnRail") || n == k("OnStall") {
+        if n == k("OnLip") {
+            return Some(p.state == State::Lip); // 821169B0: +24 == 3
+        }
+        if n == k("OnWall") || n == k("OnRail") || n == k("OnStall") {
             // 82116998 ...: other states, none translated, so never.
             return Some(false);
+        }
+        if n == k("SkateInAble") {
+            // 820EB538: flags `Lip` and `Left`.
+            let world = self.world?;
+            return Some(p.skate_in_able(self.s, world, params.flag(k("Left")), params.flag(k("Lip"))));
+        }
+        if n == k("Move") {
+            // 8221DE50: along the object's own axes (X row 0, Y up, Z at).
+            let m = p.body.matrix;
+            let x = params.float(k("X")).unwrap_or(0.0);
+            let y = params.float(k("Y")).unwrap_or(0.0);
+            let z = params.float(k("Z")).unwrap_or(0.0);
+            p.body.position += m.x_axis * x + m.y_axis * y + m.z_axis * z;
+            return Some(true);
+        }
+        if n == k("SetSkaterVelocity") {
+            // 821DE168 (refused in a spine transfer, never here): an unnamed
+            // number sets the speed along the velocity; otherwise vel_x,
+            // vel_y and vel_z (world axes, missing = 0).
+            if let Some(speed) = params.unnamed_float() {
+                p.body.velocity = p.body.velocity.normalize_or_zero() * speed;
+            } else {
+                p.body.velocity = Vec3::new(
+                    params.float(k("vel_x")).unwrap_or(0.0),
+                    params.float(k("vel_y")).unwrap_or(0.0),
+                    params.float(k("vel_z")).unwrap_or(0.0),
+                );
+            }
+            return Some(true);
+        }
+        if n == k("GetSkaterVelocity") {
+            // 821DFCB0: vel_x/y/z as integers (truncated). Its skewed and
+            // scaled variants are not translated.
+            let v = p.body.velocity;
+            script.locals.add(k("vel_x"), Value::Int(v.x as i32));
+            script.locals.add(k("vel_y"), Value::Int(v.y as i32));
+            script.locals.add(k("vel_z"), Value::Int(v.z as i32));
+            return Some(true);
+        }
+        if n == k("DoBalanceTrick") {
+            let (stats, ctx, on_bike, now) = (p.stats.clone(), p.stat_context, p.on_bike, p.time_ms);
+            let mut rng = p.rng;
+            let mut random = |n: u32| {
+                rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (rng >> 8) % n.max(1)
+            };
+            let mut c = crate::balance::BalanceCtx {
+                s: self.s,
+                stats: &stats,
+                stat_context: ctx,
+                on_bike,
+                now_ms: now,
+                random: &mut random,
+            };
+            p.balance.do_balance_trick(&mut c, params);
+            p.rng = rng;
+            return Some(true);
+        }
+        if n == k("NoRailTricks") || n == k("AllowRailTricks") {
+            p.no_rail_tricks = n == k("NoRailTricks"); // 820D5C38 / 820D5C50: +2216
+            return Some(true);
+        }
+        if n == k("AllowLipNoGrind") || n == k("ClearAllowLipNoGrind") {
+            p.allow_lip_no_grind = n == k("AllowLipNoGrind"); // 820D5C08 / 820D5C20: +2137
+            return Some(true);
+        }
+        if n == k("StopBalanceTrick") {
+            p.balance.stop();
+            return Some(true);
         }
         if n == k("InBailstate") {
             return Some(p.in_bail); // 82116A10: +128
@@ -442,6 +533,16 @@ const COMMANDS: &[&str] = &[
     "InAir",
     "OnWall",
     "OnLip",
+    "SkateInAble",
+    "Move",
+    "SetSkaterVelocity",
+    "GetSkaterVelocity",
+    "DoBalanceTrick",
+    "StopBalanceTrick",
+    "NoRailTricks",
+    "AllowRailTricks",
+    "AllowLipNoGrind",
+    "ClearAllowLipNoGrind",
     "OnRail",
     "OnStall",
     "InBailstate",

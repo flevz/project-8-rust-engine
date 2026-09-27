@@ -56,6 +56,15 @@ impl CorePhysics {
     /// Retail `820D71B0` (SetState): only the parts that affect the
     /// translated physics (timestamps and trigger bookkeeping omitted).
     pub fn set_state(&mut self, state: State) {
+        // Leaving the lip: back to where the lip started (+1248), which is
+        // then cleared.
+        if self.state == State::Lip && state != State::Lip && self.lip_pos != Vec3::ZERO {
+            self.body.position = self.lip_pos;
+            self.old_position = self.lip_pos;
+        }
+        if state != State::Lip {
+            self.lip_pos = Vec3::ZERO;
+        }
         // Entering the air clears the trick component's spin count (820D7438).
         if state == State::Air && self.state != State::Air {
             self.spin_degrees = 0.0;
@@ -607,12 +616,15 @@ impl CorePhysics {
         let mut events = match self.state {
             State::Ground => self.ground_update(s, input, world),
             State::Air => self.air_update(s, world),
+            State::Lip => self.lip_update(s, input),
         };
         // 820F4050: the air update ends with the ollie trigger `820D7AB0`
         // on every path that does not land.
         if was_air && !events.contains(&Event::Landed) && self.ollie_trigger(input) {
             events.push(Event::Ollied);
         }
+        // 820FCD8C: rails, after the state update.
+        self.rail_check(s, input, world);
         if self.scripted {
             return events;
         }

@@ -28,6 +28,11 @@ pub fn filter_allows(flags: u16, ignore_1: u16, ignore_0: u16) -> bool {
 pub trait World {
     /// The closest allowed surface on the line from `start` to `end`.
     fn feeler(&self, start: Vec3, end: Vec3, ignore_1: u16, ignore_0: u16) -> Option<Hit>;
+
+    /// The level's rails, if it has any.
+    fn rails(&self) -> Option<&crate::rails::RailManager> {
+        None
+    }
 }
 
 /// A level that is one infinite floor at `height` with no flags, facing up:
@@ -84,6 +89,8 @@ pub struct Level {
     tris: Vec<Tri>,
     convex: Vec<(Convex, u32)>,
     grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    /// The level's rails (see [`Level::with_rails`]).
+    pub rails: crate::rails::RailManager,
 }
 
 fn v(a: [f32; 3]) -> Vec3 {
@@ -133,7 +140,7 @@ impl Level {
                 }
             }
         }
-        Self { tris, convex, grid }
+        Self { tris, convex, grid, rails: Default::default() }
     }
 
     /// Every triangle, for drawing (corners and material).
@@ -263,7 +270,20 @@ fn ray_sphere(s: Vec3, d: Vec3, c: Vec3, r: f32) -> Option<(f32, Vec3)> {
     (0.0..=1.0).contains(&t).then(|| (t, (m + d * t).normalize_or_zero()))
 }
 
+impl Level {
+    /// The level with its rails (the zone's rail nodes; `terrain` maps a
+    /// terrain checksum to its index, see [`crate::Scripts::terrain_index`]).
+    pub fn with_rails(mut self, nodes: &[p8_formats::zone::RailNode], terrain: &dyn Fn(u32) -> u8) -> Self {
+        self.rails = crate::rails::RailManager::build(nodes, terrain);
+        self
+    }
+}
+
 impl World for Level {
+    fn rails(&self) -> Option<&crate::rails::RailManager> {
+        Some(&self.rails)
+    }
+
     fn feeler(&self, start: Vec3, end: Vec3, ignore_1: u16, ignore_0: u16) -> Option<Hit> {
         let d = end - start;
         let mut best: Option<(f32, Vec3, u32)> = None;

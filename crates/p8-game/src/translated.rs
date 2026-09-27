@@ -37,7 +37,7 @@ impl Plugin for TranslatedPlugin {
                     .map(|r| (Vec3::from(r.pos), Vec3::from(r.angles)))
                     .unwrap_or_default();
                 Ground {
-                    level: Some(Level::new(&zone.collision)),
+                    level: Some(Level::new(&zone.collision).with_rails(&zone.rails, &|t| self.scripts.terrain_index(t))),
                     convex: zone.collision.solids.iter().filter(|s| !matches!(s, Solid::Triangle { .. })).cloned().collect(),
                     spawn: (pos, angles),
                     note: format!("{} ({} collision pieces)", self.zone_name, zone.collision.solids.len()),

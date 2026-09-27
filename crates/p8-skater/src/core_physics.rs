@@ -35,6 +35,10 @@ pub enum Event {
     /// Retail events "FlailLeft"/"FlailRight": hit a wall fast (`820E5F40`).
     FlailLeft,
     FlailRight,
+    /// Retail events "OffMeterTop"/"OffMeterBottom": the balance meter
+    /// tipped over (`82190F58`).
+    OffMeterTop,
+    OffMeterBottom,
 }
 
 /// SkaterState `+24` (set by `SetState`, `820D71B0`). Only the states with
@@ -45,6 +49,8 @@ pub enum State {
     Ground,
     /// 1: air update `820F2310`.
     Air,
+    /// 3: lip update `820F49D8` (a lip trick on a coping rail).
+    Lip,
 }
 
 /// Which way the last ground turn went (`+1940`: checksum "Left"/"Right").
@@ -200,6 +206,34 @@ pub struct CorePhysics {
     pub stat_context: StatContext,
     /// Vert state (see `vert.rs`).
     pub vert: Vert,
+    /// `+1192`: the rail record being ridden (a lip's coping).
+    pub rail: Option<usize>,
+    /// `+1200`, `+1208`: when the last rail was left and how long it may
+    /// not be taken again. Only grind code (not translated) sets them.
+    pub rail_left_ms: i64,
+    pub rail_again_ms: i64,
+    /// SkaterState `+88`: the rail found is a different one.
+    pub new_rail: bool,
+    /// `+1248`: where the skater was when the lip started (restored when the
+    /// lip state ends, `820D71B0`); zero when not on a lip.
+    pub lip_pos: Vec3,
+    /// `+2528`: the last wallplant (wallplants are not translated; the
+    /// default is "long ago", as retail's clock is far past its reset 0).
+    pub last_wallplant_ms: i64,
+    /// `+2216`: `NoRailTricks` (`AllowRailTricks` clears it): no rails.
+    pub no_rail_tricks: bool,
+    /// `+2137`: `AllowLipNoGrind` (`ClearAllowLipNoGrind` clears it): a
+    /// rail grab becomes a lip whatever the angles.
+    pub allow_lip_no_grind: bool,
+    /// The balance component (`+2844`).
+    pub balance: crate::balance::Balance,
+    /// A script the physics starts on the skater's script now (retail does
+    /// the goto and a script update in place, e.g. `LipTrick` from
+    /// `820F44C0`); `skater.rs` does it right after the physics step.
+    pub script_goto: Option<u32>,
+    /// State of the stand-in for retail's random numbers (`821E8508`; its
+    /// generator is not read).
+    pub rng: u32,
 }
 
 /// The vert bookkeeping, SkaterState (`+2848`) flags and physics fields.
@@ -335,6 +369,17 @@ impl CorePhysics {
             stat_context: StatContext::default(),
             // Reset (820D4700) sets +96 and +128 like +112: straight up.
             vert: Vert { eased_normal: Vec3::Y, ease_from: Vec3::Y, ..Vert::default() },
+            rail: None,
+            rail_left_ms: 0,
+            rail_again_ms: 0,
+            new_rail: false,
+            lip_pos: Vec3::ZERO,
+            last_wallplant_ms: i64::MIN / 4,
+            no_rail_tricks: false,
+            allow_lip_no_grind: false,
+            balance: Default::default(),
+            script_goto: None,
+            rng: 0x1234_5678,
         }
     }
 

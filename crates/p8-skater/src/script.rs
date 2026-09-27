@@ -88,6 +88,18 @@ impl Scripts {
         lookup(terrain).or_else(|| lookup("TERRAIN_DEFAULT")).unwrap_or(0.0)
     }
 
+    /// A terrain checksum's index in `terrain_types` (retail `8228E528`
+    /// looks it up in a table LIKELY built from that array); 0 if absent.
+    pub fn terrain_index(&self, key: u32) -> u8 {
+        match self.global("terrain_types") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .position(|t| t.get_named("checksum") == Some(&Value::Checksum(key)))
+                .unwrap_or(0) as u8,
+            _ => 0,
+        }
+    }
+
     /// The terrain global for a surface's terrain index: entry `index` of
     /// the script array `terrain_types` (its `checksum` member).
     pub fn terrain_name_key(&self, index: u8) -> Option<u32> {
@@ -118,6 +130,12 @@ impl Scripts {
             Some(v) => self.stat_value(v, stats, ctx),
             None => 0.0,
         }
+    }
+
+    /// Retail `82199A28` on a stat definition found elsewhere (e.g. a
+    /// member of `LipParams`).
+    pub fn stat_value_of(&self, def: &Value, stats: &StatLevels, ctx: StatContext) -> f32 {
+        self.stat_value(def, stats, ctx)
     }
 
     /// Retail `82199A28`, translated line by line.

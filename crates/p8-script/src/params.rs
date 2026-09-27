@@ -12,6 +12,18 @@ fn same_kind(a: &Value, b: &Value) -> bool {
     matches!((a, b), (Int(_) | Float(_), Int(_) | Float(_))) || std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
+/// A global named by a checksum, following globals that are themselves
+/// names (retail symbol type 13 aliases).
+pub fn resolve_alias(mut c: u32, global: &dyn Fn(u32) -> Option<Value>) -> Option<Value> {
+    for _ in 0..16 {
+        match global(c)? {
+            Value::Checksum(next) => c = next,
+            v => return Some(v),
+        }
+    }
+    None
+}
+
 impl Params {
     pub fn new() -> Self {
         Self::default()
@@ -60,6 +72,31 @@ impl Params {
     /// Retail `82211DD0(params, 0)`: the first component, named or not.
     pub fn first(&self) -> Option<&Value> {
         self.0.first().map(|(_, v)| v)
+    }
+
+    /// Retail `82211BE0` in full: the component named `key`, also searching
+    /// the global structures that unnamed checksums name (a struct can
+    /// "include" another this way); the last match wins. `global` looks up
+    /// a global.
+    pub fn get_in(&self, key: u32, global: &dyn Fn(u32) -> Option<Value>) -> Option<Value> {
+        self.get_in_depth(key, global, 0)
+    }
+
+    fn get_in_depth(&self, key: u32, global: &dyn Fn(u32) -> Option<Value>, depth: u32) -> Option<Value> {
+        let mut found = None;
+        for (k, v) in &self.0 {
+            if key != 0 && *k == key {
+                found = Some(v.clone());
+            } else if *k == 0
+                && let Value::Checksum(c) = v
+                && depth < 16
+                && let Some(Value::Struct(inner)) = resolve_alias(*c, global)
+                && let Some(v) = Params(inner).get_in_depth(key, global, depth + 1)
+            {
+                found = Some(v);
+            }
+        }
+        found
     }
 
     /// Retail `82213628`: an unnamed checksum equal to `key`.

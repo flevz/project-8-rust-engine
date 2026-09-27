@@ -1,6 +1,10 @@
 //! One of the player's zone paks (`DATA/COMPRESSED/ZONES/z_*.pak.xen`): its
-//! static collision (`.hkc`) and the restart nodes of its node array
-//! (`.nqb`, e.g. `Z_Houses_NodeArray`).
+//! static collision (`.hkc`) and the restart and rail nodes of its node
+//! array (`.nqb`, e.g. `Z_Houses_NodeArray`).
+//!
+//! Most nodes are stored compressed: an unnamed checksum names a global
+//! struct (e.g. `Z_Houses_NodeArray_compressed_node_0`) whose fields the
+//! node has too (retail struct lookups follow such references, LIKELY).
 use crate::havok::{self, LevelCollision};
 use crate::qb::{self, Value};
 use crate::{pak, qb_key};
@@ -19,10 +23,46 @@ pub struct Restart {
     pub kind: Option<u32>,
 }
 
+/// A node the retail rail manager collects (`82197138`): `Class` RailNode,
+/// ClimbingNode or ManualNode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailNode {
+    /// Position in the node array (what `links` refer to).
+    pub index: u32,
+    pub class: u32,
+    pub pos: [f32; 3],
+    pub links: Vec<u32>,
+    /// `Type`.
+    pub kind: Option<u32>,
+    /// `TerrainType` (a terrain checksum).
+    pub terrain: Option<u32>,
+    /// The unnamed checksums (flags such as CreatedAtStart, LipOverride,
+    /// DefaultLine, hangleft, HangRight, NoClimbing, AbsentInNetGames).
+    pub flags: Vec<u32>,
+}
+
 #[derive(Debug, Default)]
 pub struct Zone {
     pub collision: LevelCollision,
     pub restarts: Vec<Restart>,
+    pub rails: Vec<RailNode>,
+}
+
+/// A node with its compressed-node templates spliced in.
+fn expand(node: &Value, globals: &std::collections::BTreeMap<u32, Value>) -> Value {
+    let Value::Struct(fields) = node else { return node.clone() };
+    let mut out = Vec::new();
+    for (k, v) in fields {
+        match (k, v) {
+            (0, Value::Checksum(c)) if matches!(globals.get(c), Some(Value::Struct(_))) => {
+                if let Some(Value::Struct(t)) = globals.get(c) {
+                    out.extend(t.iter().cloned());
+                }
+            }
+            _ => out.push((*k, v.clone())),
+        }
+    }
+    Value::Struct(out)
 }
 
 fn vector(v: Option<&Value>) -> Option<[f32; 3]> {
@@ -52,9 +92,49 @@ pub fn load(zones_dir: &Path, name: &str) -> Result<Zone, String> {
                 *zone.collision.unknown.entry(k).or_default() += n;
             }
         } else if e.type_key == qb_key(".nqb")
-            && let Some(Value::Array(nodes)) = qb::globals(bytes).get(&node_array)
+            && let globals = qb::globals(bytes)
+            && let Some(Value::Array(nodes)) = globals.get(&node_array)
         {
-            for node in nodes {
+            let rail_classes = [qb_key("RailNode"), qb_key("ClimbingNode"), qb_key("ManualNode")];
+            for (index, node) in nodes.iter().enumerate() {
+                let node = &expand(node, &globals);
+                if let Some(Value::Checksum(class)) = node.get_named("Class")
+                    && rail_classes.contains(class)
+                {
+                    let checksum = |name: &str| match node.get_named(name) {
+                        Some(Value::Checksum(c)) => Some(*c),
+                        _ => None,
+                    };
+                    let links = match node.get_named("links") {
+                        Some(Value::Array(l)) => l
+                            .iter()
+                            .filter_map(|v| match v {
+                                Value::Int(i) => Some(*i as u32),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    let flags = match node {
+                        Value::Struct(f) => f
+                            .iter()
+                            .filter_map(|(k, v)| match (k, v) {
+                                (0, Value::Checksum(c)) => Some(*c),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    zone.rails.push(RailNode {
+                        index: index as u32,
+                        class: *class,
+                        pos: vector(node.get_named("Pos")).unwrap_or([0.0; 3]),
+                        links,
+                        kind: checksum("Type"),
+                        terrain: checksum("TerrainType"),
+                        flags,
+                    });
+                }
                 if node.get_named("Class") != Some(&Value::Checksum(qb_key("Restart"))) {
                     continue;
                 }
