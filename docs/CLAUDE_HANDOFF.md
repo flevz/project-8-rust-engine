@@ -523,6 +523,45 @@ After that, in the user's order: grinds (rail grab's grind set-up
 meter's grind parts), manuals (`82190F58` manual meter is shared), then bails.
 The user may instead ask for models and animations; pushing depends on them.
 
+## 17a. Audit of the balance meter and lip stalls (done with the 17b method)
+
+Every function of the balance component (vtable `820027F4`, commands in
+`component_commands.tsv`) and of the meter (`82190930..82191840`), and every
+command the lip scripts run on z_houses, was checked:
+
+- Translated: DoBalanceTrick, StopBalanceTrick, meter start/update/stop,
+  display, safe sides, cheese wear-off, combo-end reset (`820CE840`) and,
+  added by the audit, `820CE7F8` (ClearPanel_Landed keeps the longest
+  balance time before the reset). `balanceparams` handling matches retail
+  (kept once given; cleared only by a skater reset `8219AD18` -> `820CF168`,
+  which a restart covers by making a new skater).
+- Same as retail, nothing to do: constructor `820CE520` (all zero),
+  `820CE590` (component links).
+- **Not done, found by the audit:**
+  - Controller rumble while balancing: the component's per-frame update
+    `820CF438` sends `Vibrate {Actuator, Percent}` with percent =
+    |lean| / 4096 * 100 * speed factor (1 on lips) + `min_balance_vibration`
+    (10), clamped 0..100. `Vibrate` is a general command many scripts use
+    (landings, rails), so rumble needs its own small task (Bevy gilrs
+    rumble).
+  - `FlipAfter` / `Rotate` in `OllieLipOut`: `FlipAfter` (`820FD738`) sets
+    flipandrotate `+25`; the flip itself (`820FD8E8`) runs on the next
+    `PlayAnim` event (`820FDCA8`) or `HandleFlipOrBoardRotateAfter`. Needs
+    animation events, so it waits for animations. It decides which way the
+    skater faces after an ollie out of a lip.
+  - Trick queue commands (ClearTrickQueue, SetQueueTricks, DoNextTrick,
+    KillExtraTricks, SetTrickName/Score, UseGrindEvents): the planned next
+    task.
+  - `Obj_FlagSet` (object flags): untranslated, so the flags read as clear
+    (REVERTFS/BS, LIPTRICK_CAM_REVERSED).
+  - Grinds/stalls: `AdjustBalance` (`820CEE88`, via
+    `apply_acid_drop_cheese`), `SetWobbleDetails` (`820CF668`). Manuals:
+    `StartBalanceTrick`, `SetBalanceTrickType`, `DoingBalanceTrick`,
+    `AdjustBalance`. Pausing the meter `switchoff/onbalancemeter`
+    (`820CE618`/`820CE6B0`, not used by scripts).
+  - Already listed before: moving platforms in the lip update, the
+    perfect-balance cheat, online play.
+
 ## 17b. How to check a feature is complete (the user asked for this)
 
 The user should not have to find missing pieces by playing. Twice in one

@@ -488,6 +488,9 @@ impl Ctx<'_> {
             // translated: 820CE840 resets every meter. The score, gaps,
             // SkaterLanded / SkaterBailed / SkaterExitCombo events and the
             // rest are not (no score system yet). Returns TRUE (li r3,1).
+            if n == k("ClearPanel_Landed") {
+                p.balance.record_longest(); // 82124E98: 820CE7F8
+            }
             p.balance.reset_all();
             return Some(true);
         }

@@ -234,6 +234,18 @@ impl Balance {
         }
     }
 
+    /// Retail `820CE7F8` (only `ClearPanel_Landed` calls it, just before
+    /// `820CE840`): `82190AD8` on each meter keeps the longest time
+    /// (`+56`) and zeroes the time (`+48`).
+    pub fn record_longest(&mut self) {
+        for m in [&mut self.manual, &mut self.grind, &mut self.lip, &mut self.skitch] {
+            if m.time > m.max_time {
+                m.max_time = m.time;
+            }
+            m.time = 0.0;
+        }
+    }
+
     /// Retail `820CE840`, from the script commands `ClearPanel_Landed`
     /// (`82124BA8`) and `ClearPanel_Bailed` (`82124EC0`), i.e. when a combo
     /// ends: every meter is reset (`821909A0`: cheese `+68`, `+72`, time
@@ -520,10 +532,12 @@ mod tests {
         bal.lip.lean = 1500.0;
         bal.lip.lean_speed = 30.0;
         bal.lip.max_time = 2.0;
+        bal.lip.time = 3.0;
         bal.kind = qb_key("Lip");
+        bal.record_longest();
         bal.reset_all();
         assert_eq!((bal.lip.cheese, bal.lip.lean, bal.lip.lean_speed, bal.kind), (0.0, 0.0, 0.0, 0));
-        assert_eq!(bal.lip.max_time, 2.0);
+        assert_eq!((bal.lip.max_time, bal.lip.time), (3.0, 0.0));
     }
 
     #[test]
