@@ -15,6 +15,8 @@ use p8_skater::core_physics::{Event, Turn};
 use p8_skater::world::Level;
 use p8_skater::{Controller, CorePhysics, FlatFloor, Scripts, World, XboxPad};
 
+mod lip_gauge;
+
 const TICK_HZ: f64 = 60.0;
 
 pub struct TranslatedPlugin {
@@ -37,13 +39,26 @@ impl Plugin for TranslatedPlugin {
                     .map(|r| (Vec3::from(r.pos), Vec3::from(r.angles)))
                     .unwrap_or_default();
                 Ground {
-                    level: Some(Level::new(&zone.collision).with_rails(&zone.rails, &|t| self.scripts.terrain_index(t))),
-                    convex: zone.collision.solids.iter().filter(|s| !matches!(s, Solid::Triangle { .. })).cloned().collect(),
+                    level: Some(
+                        Level::new(&zone.collision).with_rails(&zone.rails, &|t| self.scripts.terrain_index(t)),
+                    ),
+                    convex: zone
+                        .collision
+                        .solids
+                        .iter()
+                        .filter(|s| !matches!(s, Solid::Triangle { .. }))
+                        .cloned()
+                        .collect(),
                     spawn: (pos, angles),
                     note: format!("{} ({} collision pieces)", self.zone_name, zone.collision.solids.len()),
                 }
             }
-            Err(why) => Ground { level: None, convex: Vec::new(), spawn: (Vec3::ZERO, Vec3::ZERO), note: format!("flat floor: {why}") },
+            Err(why) => Ground {
+                level: None,
+                convex: Vec::new(),
+                spawn: (Vec3::ZERO, Vec3::ZERO),
+                note: format!("flat floor: {why}"),
+            },
         };
         let object = p8_skater::Skater::new(&self.scripts, ground.spawn.0, ground.spawn.1);
         let frame = Frame::of(&object.physics);
@@ -65,7 +80,7 @@ impl Plugin for TranslatedPlugin {
             .insert_resource(ground)
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, step)
-            .add_systems(Update, (present, hud));
+            .add_systems(Update, (present, hud, lip_gauge::update));
     }
 }
 
@@ -164,6 +179,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    lip_gauge::spawn(&mut commands);
     if let Some(level) = &ground.level {
         commands.spawn((
             Mesh3d(meshes.add(level_mesh(level))),
@@ -183,7 +199,10 @@ fn setup(
                     let [x, y, z] = transform.cols.map(Vec3::from);
                     let rotation = Quat::from_mat3(&Mat3::from_cols(x, y, z)).normalize();
                     let h = v(*half) * 2.0;
-                    (meshes.add(Cuboid::new(h.x, h.y, h.z)), Transform::from_translation(v(transform.t)).with_rotation(rotation))
+                    (
+                        meshes.add(Cuboid::new(h.x, h.y, h.z)),
+                        Transform::from_translation(v(transform.t)).with_rotation(rotation),
+                    )
                 }
                 Solid::Cylinder { a, b, radius, .. } => {
                     (meshes.add(Cylinder::new(*radius, (v(*b) - v(*a)).length())), between(v(*a), v(*b)))
@@ -221,21 +240,19 @@ fn setup(
     }
 
     // Placeholder skater: a board and a rider. Project 8 models come later.
-    commands
-        .spawn((SkaterRoot, Transform::default(), Visibility::default()))
-        .with_children(|root| {
-            root.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.22, 0.05, 0.82))),
-                MeshMaterial3d(materials.add(Color::srgb(0.12, 0.12, 0.12))),
-                Transform::from_xyz(0.0, 0.09, 0.0),
-            ));
-            root.spawn((
-                Rider,
-                Mesh3d(meshes.add(Capsule3d::new(0.2, 0.95))),
-                MeshMaterial3d(materials.add(Color::srgb(0.95, 0.55, 0.1))),
-                Transform::from_xyz(0.0, 0.8, 0.0),
-            ));
-        });
+    commands.spawn((SkaterRoot, Transform::default(), Visibility::default())).with_children(|root| {
+        root.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.22, 0.05, 0.82))),
+            MeshMaterial3d(materials.add(Color::srgb(0.12, 0.12, 0.12))),
+            Transform::from_xyz(0.0, 0.09, 0.0),
+        ));
+        root.spawn((
+            Rider,
+            Mesh3d(meshes.add(Capsule3d::new(0.2, 0.95))),
+            MeshMaterial3d(materials.add(Color::srgb(0.95, 0.55, 0.1))),
+            Transform::from_xyz(0.0, 0.8, 0.0),
+        ));
+    });
 
     commands.spawn((
         DirectionalLight { illuminance: 9000.0, shadows_enabled: true, ..default() },

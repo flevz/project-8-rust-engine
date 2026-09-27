@@ -81,6 +81,10 @@ impl Balance {
     /// Flatland), GrindParams (Grind, Slide), LipParams or SkitchParams;
     /// stat-scaled (`82199DD8`).
     pub fn param(&self, c: &BalanceCtx, name: &str) -> f32 {
+        self.param_value(c.s, c.stats, c.stat_context, name)
+    }
+
+    fn param_value(&self, s: &Scripts, stats: &StatLevels, stat_context: StatContext, name: &str) -> f32 {
         let k = qb_key;
         let group = if let Some(p) = &self.params {
             Some(p.clone())
@@ -97,12 +101,26 @@ impl Balance {
             } else {
                 return 0.0;
             };
-            c.s.global(g).cloned()
+            s.global(g).cloned()
         };
         match group.as_ref().and_then(|g| g.get_named(name)) {
-            Some(def) => c.s.stat_value_of(def, c.stats, c.stat_context),
+            Some(def) => s.stat_value_of(def, stats, stat_context),
             None => 0.0,
         }
+    }
+
+    /// Read-only display position for the active lip meter. The endpoints
+    /// are the same stat-scaled Lean_Bail_Angle used by update_lip; the UI
+    /// must not invent another balance range or advance the random stream.
+    pub fn lip_fraction(&self, s: &Scripts, stats: &StatLevels, stat_context: StatContext) -> Option<f32> {
+        if self.kind != qb_key("Lip") || self.lip.button_a == 0 || self.lip.button_b == 0 {
+            return None;
+        }
+        let bail = self.param_value(s, stats, stat_context, "Lean_Bail_Angle");
+        if !bail.is_finite() || bail <= 0.0 || !self.lip.lean.is_finite() {
+            return None;
+        }
+        Some((self.lip.lean / bail).clamp(-1.0, 1.0))
     }
 
     fn meter_mut(&mut self, kind: u32) -> Option<&mut Meter> {
@@ -166,11 +184,8 @@ impl Balance {
         let cheese = self.param(c, "Cheese");
         let sign = |x: f32| if x >= 0.0 { 1.0 } else { -1.0 };
         let fresh = self.meter_mut(kind).is_some_and(|m| m.lean_speed == 0.0);
-        let random_flip = fresh
-            && kind != k("NoseManual")
-            && kind != k("Flatland")
-            && kind != k("Manual")
-            && (c.random)(2) != 0;
+        let random_flip =
+            fresh && kind != k("NoseManual") && kind != k("Flatland") && kind != k("Manual") && (c.random)(2) != 0;
         let m = self.meter_mut(kind).expect("a balance type with a meter");
         m.time = 0.0;
         m.button_a = a;
@@ -372,14 +387,8 @@ mod tests {
     fn start(bal: &mut Balance, s: &Scripts, stats: &StatLevels) {
         let k = qb_key;
         let mut rnd = |_n: u32| 0;
-        let mut c = BalanceCtx {
-            s,
-            stats,
-            stat_context: StatContext::default(),
-            on_bike: false,
-            now_ms: 0,
-            random: &mut rnd,
-        };
+        let mut c =
+            BalanceCtx { s, stats, stat_context: StatContext::default(), on_bike: false, now_ms: 0, random: &mut rnd };
         let p = p8_script::Params(vec![
             (k("ButtonA"), Value::Checksum(k("Right"))),
             (k("ButtonB"), Value::Checksum(k("Left"))),
@@ -425,5 +434,29 @@ mod tests {
         bal.stop();
         assert_eq!(bal.kind, 0);
         assert_eq!(bal.lip.button_a, 0);
+    }
+
+    #[test]
+    fn lip_display_uses_the_active_failure_limit_and_custom_parameters() {
+        let s = scripts();
+        let stats = StatLevels::with_default(10.0);
+        let context = StatContext::default();
+        let mut bal = Balance::default();
+        assert_eq!(bal.lip_fraction(&s, &stats, context), None);
+        start(&mut bal, &s, &stats);
+        bal.lip.lean = 2000.0;
+        assert_eq!(bal.lip_fraction(&s, &stats, context), Some(0.5));
+        bal.params = Some(Value::Struct(vec![(
+            qb_key("Lean_Bail_Angle"),
+            Value::Struct(vec![(0, Value::Pair(500.0, 1000.0))]),
+        )]));
+        assert_eq!(bal.lip_fraction(&s, &stats, context), Some(1.0));
+        bal.lip.lean = -500.0;
+        assert_eq!(bal.lip_fraction(&s, &stats, context), Some(-0.5));
+        bal.params =
+            Some(Value::Struct(vec![(qb_key("Lean_Bail_Angle"), Value::Struct(vec![(0, Value::Pair(0.0, 0.0))]))]));
+        assert_eq!(bal.lip_fraction(&s, &stats, context), None);
+        bal.stop();
+        assert_eq!(bal.lip_fraction(&s, &stats, context), None);
     }
 }
