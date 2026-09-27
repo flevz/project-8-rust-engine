@@ -42,6 +42,27 @@ texels or less on a side with packed mips starts 16 texels into its tile
 (CONFIRMED for a taller-than-wide texture). Only format 0x14 (DXT4/5) is
 decoded so far. See `crates/p8-formats/src/texture.rs`.
 
+## `.ske` skeletons: CONFIRMED (bind pose matches the meshes)
+
+See `crates/p8-formats/src/skeleton.rs`: bone count, name / parent / mirror
+tables, local positions and rotations; the rotation relative to the parent
+is the conjugate of the stored quaternion.
+
+## `.skin.xen` models: CONFIRMED (geometry, skinning, normals, UVs)
+
+One raw DEFLATE stream. Materials (0x134 bytes each, three texture names),
+a `0xBABEFACE`-marked geometry section, 0x80-byte mesh records, u16 strip
+indices with 0x7FFF restarts, vertices in blocks sharing up to four bones
+(32 bytes each: position, two u16 weights, 11:11:10 normal / tangent /
+binormal), and a second stream with colour and half-float UVs. See
+`crates/p8-formats/src/scene.rs` for the details and what is not read yet.
+
+## `.tex.xen` texture dictionaries: CONFIRMED (colour textures)
+
+`0xFACECAA7`, count, 0x28-byte entries shaped like `.img` headers with a
+type byte (0 colour, 1 normal map, 3 other) and the data offset at `+0x24`.
+DXT1 and DXT5 decode; DXN normal maps not yet. See `texture.rs`.
+
 ## Everything else: UNKNOWN
 
 This covers scenes and levels, collision, textures, models, skeletons,

@@ -161,11 +161,20 @@ struct Rider;
 #[derive(Component)]
 struct StatusText;
 
+/// How the skater's model loaded (shown in the HUD).
+#[derive(Resource)]
+pub(crate) struct ModelNote(String);
+
+#[allow(clippy::too_many_arguments)]
 fn setup(
     ground: Res<Ground>,
+    skater: Res<Skater>,
+    zones: Res<crate::balance_meter::ZonesDir>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
 ) {
     if let Some(level) = &ground.level {
         commands.spawn((
@@ -223,8 +232,9 @@ fn setup(
         }
     }
 
-    // Placeholder skater: a board and a rider. Project 8 models come later.
-    commands
+    // The skater: the player's own pro skater model if it loads, else a
+    // placeholder rider. The board is still a placeholder.
+    let root = commands
         .spawn((SkaterRoot, Transform::default(), Visibility::default()))
         .with_children(|root| {
             root.spawn((
@@ -238,7 +248,35 @@ fn setup(
                 MeshMaterial3d(materials.add(Color::srgb(0.95, 0.55, 0.1))),
                 Transform::from_xyz(0.0, 0.8, 0.0),
             ));
-        });
+        })
+        .id();
+    let model = match zones.0.as_deref().and_then(|z| z.parent()) {
+        Some(compressed) => crate::skater_model::spawn(
+            &mut commands,
+            root,
+            &skater.scripts,
+            compressed,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut bindposes,
+        ),
+        None => Err("no DATA/COMPRESSED folder".into()),
+    };
+    let note = match model {
+        Ok(n) => {
+            commands.queue(move |world: &mut bevy::ecs::world::World| {
+                let mut q = world.query_filtered::<Entity, With<Rider>>();
+                let riders: Vec<Entity> = q.iter(world).collect();
+                for r in riders {
+                    world.despawn(r);
+                }
+            });
+            format!("model {n}")
+        }
+        Err(e) => format!("model not loaded: {e}"),
+    };
+    commands.insert_resource(ModelNote(note));
 
     commands.spawn((
         DirectionalLight { illuminance: 9000.0, shadows_enabled: true, ..default() },
@@ -398,6 +436,7 @@ fn hud(
     skater: Res<Skater>,
     ground: Res<Ground>,
     meter: Option<Res<crate::balance_meter::MeterTextures>>,
+    model: Option<Res<ModelNote>>,
     mut text: Query<&mut Text, With<StatusText>>,
 ) {
     let p = &skater.object.physics;
@@ -407,7 +446,7 @@ fn hud(
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]  [{}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]  [{}]  [{}]",
         p.body.velocity.length(),
         p.body.position.y,
         p.state,
@@ -423,6 +462,7 @@ fn hud(
         },
         ground.note,
         meter.as_ref().map_or("balance meter textures not loaded yet", |m| m.note.as_str()),
+        model.as_ref().map_or("model not loaded yet", |m| m.0.as_str()),
     );
     if let Ok(mut t) = text.single_mut()
         && **t != line

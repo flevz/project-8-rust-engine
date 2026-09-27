@@ -9,6 +9,7 @@ mod balance_meter;
 mod original;
 mod park;
 mod rumble;
+mod skater_model;
 mod translated;
 
 use bevy::prelude::*;

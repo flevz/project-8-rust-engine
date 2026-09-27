@@ -15,8 +15,8 @@
 //!   bit 11 packed mips. CONFIRMED on these files: the widths, heights and
 //!   format decode to images that look right.
 //!
-//! Only what the balance meter needs is decoded: format `0x14` (DXT4/5)
-//! with the 8-in-16 endian swap, base level only.
+//! Decoded: formats `0x12` (DXT1) and `0x14` (DXT4/5) with the 8-in-16
+//! endian swap, base level only. Also `.tex.xen` texture dictionaries.
 use std::path::Path;
 
 use crate::{pak, qb_key};
@@ -107,12 +107,31 @@ fn dxt5_block(b: &[u8; 16]) -> [[u8; 4]; 16] {
     out
 }
 
-/// Decode an `.img` file's base level.
-pub fn decode_img(bytes: &[u8]) -> Result<Rgba8, String> {
-    let d3d = be32(bytes, 0x1C)? as usize;
-    let size = be32(bytes, 0x20)? as usize;
-    let fetch = d3d + 28;
-    let f: Vec<u32> = (0..6).map(|i| be32(bytes, fetch + 4 * i)).collect::<Result<_, _>>()?;
+/// DXT1 colour block (little endian after the swap): 4 colours, or 3
+/// and transparent when colour 0 <= colour 1.
+fn dxt1_block(b: &[u8]) -> [[u8; 4]; 16] {
+    let (r0, r1) = (u16::from_le_bytes([b[0], b[1]]), u16::from_le_bytes([b[2], b[3]]));
+    let (c0, c1) = (rgb565(r0), rgb565(r1));
+    let mix = |p: u32, q: u32, d: u32| -> [u8; 4] {
+        let f = |i: usize| ((c0[i] as u32 * p + c1[i] as u32 * q) / d) as u8;
+        [f(0), f(1), f(2), 255]
+    };
+    let colours = if r0 > r1 {
+        [[c0[0], c0[1], c0[2], 255], [c1[0], c1[1], c1[2], 255], mix(2, 1, 3), mix(1, 2, 3)]
+    } else {
+        [[c0[0], c0[1], c0[2], 255], [c1[0], c1[1], c1[2], 255], mix(1, 1, 2), [0, 0, 0, 0]]
+    };
+    let bits = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+    let mut out = [[0u8; 4]; 16];
+    for (i, px) in out.iter_mut().enumerate() {
+        *px = colours[(bits >> (2 * i) & 3) as usize];
+    }
+    out
+}
+
+/// Decode the base level described by a GPU texture fetch constant `f`
+/// (6 dwords) from `data` (starting at the texture's base address).
+pub fn decode_fetch(f: &[u32], data: &[u8]) -> Result<Rgba8, String> {
     let tiled = f[0] >> 31 != 0;
     let pitch_texels = ((f[0] >> 22) & 0x1FF) * 32;
     let format = f[1] & 0x3F;
@@ -120,30 +139,34 @@ pub fn decode_img(bytes: &[u8]) -> Result<Rgba8, String> {
     let width = (f[2] & 0x1FFF) + 1;
     let height = ((f[2] >> 13) & 0x1FFF) + 1;
     let packed = f[5] >> 11 & 1 != 0;
-    if format != 0x14 {
-        return Err(format!("texture format {format:#x} is not decoded yet (only DXT4/5)"));
-    }
+    // Block bytes: DXT1 (0x12) 8, DXT4/5 (0x14) 16.
+    let log2_bpp = match format {
+        0x12 => 3,
+        0x14 => 4,
+        _ => return Err(format!("texture format {format:#x} is not decoded yet (only DXT1, DXT4/5)")),
+    };
     if endian != 1 {
         return Err(format!("texture endian mode {endian} is not decoded yet"));
     }
     if !tiled {
         return Err("linear (untiled) textures are not decoded yet".into());
     }
-    let data = bytes.get(bytes.len().checked_sub(size).ok_or("texture data size past the file")?..).unwrap_or(&[]);
+    let block = 1usize << log2_bpp;
     let (ox, oy) = if packed { packed_offset(width, height) } else { (0, 0) };
     let (bw, bh) = (width.div_ceil(4), height.div_ceil(4));
     let pitch = pitch_texels.max(width) / 4;
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     for by in 0..bh {
         for bx in 0..bw {
-            let at = tiled_offset(bx + ox / 4, by + oy / 4, pitch, 4) as usize;
-            let raw = data.get(at..at + 16).ok_or("texture block past the data")?;
+            let at = tiled_offset(bx + ox / 4, by + oy / 4, pitch, log2_bpp) as usize;
+            let raw = data.get(at..at + block).ok_or("texture block past the data")?;
             let mut blk = [0u8; 16];
-            for i in (0..16).step_by(2) {
+            for i in (0..block).step_by(2) {
                 blk[i] = raw[i + 1];
                 blk[i + 1] = raw[i];
             }
-            for (i, px) in dxt5_block(&blk).iter().enumerate() {
+            let texels = if block == 8 { dxt1_block(&blk) } else { dxt5_block(&blk) };
+            for (i, px) in texels.iter().enumerate() {
                 let (x, y) = (bx * 4 + i as u32 % 4, by * 4 + i as u32 / 4);
                 if x < width && y < height {
                     let o = ((y * width + x) * 4) as usize;
@@ -153,6 +176,62 @@ pub fn decode_img(bytes: &[u8]) -> Result<Rgba8, String> {
         }
     }
     Ok(Rgba8 { width, height, pixels })
+}
+
+fn fetch_at(bytes: &[u8], d3d: usize) -> Result<Vec<u32>, String> {
+    (0..6).map(|i| be32(bytes, d3d + 28 + 4 * i)).collect()
+}
+
+/// Decode an `.img` file's base level.
+pub fn decode_img(bytes: &[u8]) -> Result<Rgba8, String> {
+    let d3d = be32(bytes, 0x1C)? as usize;
+    let size = be32(bytes, 0x20)? as usize;
+    let data = bytes.get(bytes.len().checked_sub(size).ok_or("texture data size past the file")?..).unwrap_or(&[]);
+    decode_fetch(&fetch_at(bytes, d3d)?, data)
+}
+
+/// One texture of a `.tex.xen` dictionary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DictTexture {
+    pub name: u32,
+    /// The entry's type byte: 0 colour, 1 normal map (DXN), 3 other
+    /// (small maps shared by materials). From the data: every type 1 is
+    /// DXN.
+    pub kind: u8,
+    pub image: Result<Rgba8, String>,
+}
+
+/// A `.tex.xen` texture dictionary (decompressed). Header: `0xFACECAA7`,
+/// u32 (low 16 bits = count), u32 offset of the entries. Entries are 0x28
+/// bytes laid out like an `.img` header: `+0` `0x0A2802tt` (tt = type),
+/// `+4` name, `+0x18` offset of the smaller mip levels, `+0x1C` Direct3D
+/// header offset, `+0x20` data size (all levels), `+0x24` data offset
+/// (base level). Normal maps (DXN) are not decoded yet.
+pub fn parse_dictionary(bytes: &[u8]) -> Result<Vec<DictTexture>, String> {
+    if be32(bytes, 0)? != 0xFACE_CAA7 {
+        return Err("not a texture dictionary".into());
+    }
+    let count = (be32(bytes, 4)? & 0xFFFF) as usize;
+    let entries = be32(bytes, 8)? as usize;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let e = entries + 0x28 * i;
+        let kind = (be32(bytes, e)? & 0xFF) as u8;
+        let name = be32(bytes, e + 4)?;
+        let (data, d3d, size) = (be32(bytes, e + 0x24)? as usize, be32(bytes, e + 0x1C)? as usize, be32(bytes, e + 0x20)? as usize);
+        let image = bytes
+            .get(data..data + size)
+            .ok_or_else(|| "texture data past the file".to_string())
+            .and_then(|d| decode_fetch(&fetch_at(bytes, d3d)?, d));
+        out.push(DictTexture { name, kind, image });
+    }
+    Ok(out)
+}
+
+/// Read and decompress a `.tex.xen` file.
+pub fn load_dictionary(path: &Path) -> Result<Vec<DictTexture>, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_dictionary(&pak::decompress(&raw)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Load the `.img` named `name` (its full-name checksum) from an archive.

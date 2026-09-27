@@ -5,6 +5,8 @@ pub mod checksum;
 pub mod havok;
 pub mod pak;
 pub mod qb;
+pub mod scene;
+pub mod skeleton;
 pub mod texture;
 pub mod zone;
 
