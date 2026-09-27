@@ -523,6 +523,22 @@ After that, in the user's order: grinds (rail grab's grind set-up
 meter's grind parts), manuals (`82190F58` manual meter is shared), then bails.
 The user may instead ask for models and animations; pushing depends on them.
 
+## 17b. How to check a feature is complete (the user asked for this)
+
+The user should not have to find missing pieces by playing. Twice in one
+session they did (the balance meter's cheese never wore off, and was never
+reset at the end of a combo), because only the functions on the direct call
+path were translated. For every feature, before calling it done:
+
+1. List every field it reads or writes (with retail offsets).
+2. Find **every** retail function that writes those fields (grep the
+   generated code for the offset on that object, e.g. `stfs f\d+,68\(r`
+   in `8219xxxx`/`820Cxxxx`, plus `callers.py`), and every script command
+   that leads there (`component_commands.tsv`, `script_commands.tsv`,
+   `qbscript.py all '.*' x` to see which scripts call it and when).
+3. Translate each one, or label it in code and here as not done, and why.
+4. Tell the user what is still missing, before they find it.
+
 ## 18. Do NOT change without understanding the consequences
 
 - **Do not replace translated code with approximations** or "improve" it by
