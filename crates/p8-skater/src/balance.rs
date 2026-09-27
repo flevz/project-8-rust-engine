@@ -88,11 +88,16 @@ impl Balance {
     /// Flatland), GrindParams (Grind, Slide), LipParams or SkitchParams;
     /// stat-scaled (`82199DD8`).
     pub fn param(&self, c: &BalanceCtx, name: &str) -> f32 {
+        self.param_for(c, 0, name)
+    }
+
+    /// `820CE9D0` with its type argument: `kind` 0 means the running type.
+    fn param_for(&self, c: &BalanceCtx, kind: u32, name: &str) -> f32 {
         let k = qb_key;
         let group = if let Some(p) = &self.params {
             Some(p.clone())
         } else {
-            let t = self.kind;
+            let t = if kind == 0 { self.kind } else { kind };
             let g = if t == k("Manual") || t == k("NoseManual") || t == k("Flatland") {
                 "ManualParams"
             } else if t == k("Grind") || t == k("Slide") {
@@ -210,6 +215,25 @@ impl Balance {
 
     /// Script command `StopBalanceTrick` (`820CF100` -> `820CEAE8`): every
     /// meter stops (`82190A60` clears its buttons) and no type runs.
+    /// Retail `820D4A20` (from `820FC990` every frame after the state
+    /// update, unless SkaterState `+24` is 8 or 9, states not translated):
+    /// `82190B10` on the Grind, Manual, Lip and Skitch meters. While a
+    /// meter's cheese (`+68`) is above 0.01 (82000D7C) it drops by
+    /// Cheese / CheeseFrames per 60th of a second (82001EB4), not below 0.
+    /// `dt` is retail's frame time `[826E6B98]`.
+    pub fn wear_off_cheese(&mut self, c: &BalanceCtx, dt: f32) {
+        let k = qb_key;
+        for kind in [k("Grind"), k("Manual"), k("Lip"), k("Skitch")] {
+            let cheese = self.meter_mut(kind).map_or(0.0, |m| m.cheese);
+            if cheese <= 0.01 {
+                continue;
+            }
+            let per_frame = self.param_for(c, kind, "Cheese") / self.param_for(c, kind, "CheeseFrames");
+            let m = self.meter_mut(kind).expect("a balance type with a meter");
+            m.cheese = (m.cheese - per_frame * dt * 60.0).max(0.0);
+        }
+    }
+
     /// `82190A60` also hides the meter on screen (both modes).
     pub fn stop(&mut self) {
         for m in [&mut self.manual, &mut self.grind, &mut self.lip, &mut self.skitch] {
@@ -381,6 +405,7 @@ mod tests {
         let stat = |v: f32| Value::Struct(vec![(0, Value::Pair(v, v))]);
         let lip = Value::Struct(vec![
             (k("cheese"), stat(3000.0)),
+            (k("cheeseframes"), stat(180.0)),
             (k("lean_gravity_stat"), stat(0.02)),
             (k("instable_rate"), stat(0.45)),
             (k("instable_base"), stat(1.0)),
@@ -449,6 +474,22 @@ mod tests {
         }
         assert_eq!(off, Some(OffMeter::Top));
         assert_eq!(bal.kind, 0);
+    }
+
+    #[test]
+    fn cheese_wears_off_over_cheese_frames() {
+        let s = scripts();
+        let stats = StatLevels::with_default(10.0);
+        let mut bal = Balance::default();
+        bal.lip.cheese = 3000.0;
+        let mut rnd = |_n: u32| 0;
+        let c = BalanceCtx { s: &s, stats: &stats, stat_context: StatContext::default(), on_bike: false, now_ms: 0, random: &mut rnd };
+        bal.wear_off_cheese(&c, 1.0 / 60.0);
+        assert!((bal.lip.cheese - (3000.0 - 3000.0 / 180.0)).abs() < 0.01);
+        for _ in 0..179 {
+            bal.wear_off_cheese(&c, 1.0 / 60.0);
+        }
+        assert!(bal.lip.cheese <= 0.01);
     }
 
     #[test]

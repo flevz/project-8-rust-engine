@@ -694,6 +694,14 @@ impl CorePhysics {
         self.rail_check(s, input, world);
         // 820FCDA8: the speed allowance after a transfer.
         self.post_transfer_speed(s);
+        // 820FCDD4 (after 820FAAA8, 820D7D78, 820D7E10, 820DE110, not
+        // translated): the balance meters' cheese wears off.
+        {
+            let (stats, ctx, on_bike, now) = (self.stats.clone(), self.stat_context, self.on_bike, self.time_ms);
+            let mut no_random = |_: u32| 0;
+            let c = crate::balance::BalanceCtx { s, stats: &stats, stat_context: ctx, on_bike, now_ms: now, random: &mut no_random };
+            self.balance.wear_off_cheese(&c, self.dt);
+        }
         if self.scripted {
             return events;
         }

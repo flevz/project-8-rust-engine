@@ -137,7 +137,7 @@ commands). Regenerate it before relying on the counts.
 |---|---|---|
 | **Lip tricks** | Rails loaded from the level; rail search; rail grab in the air with Y held; lip entry checks and snapping; lip state; balance meter; ollie out; falling off the meter; the `liptrick` → `InvertTrick` → `LipOut`/`OllieLipOut` scripts run for real | The **trick queue** (`SetQueueTricks`, `DoNextTrick`, button triggers) is not translated, so every lip is the default Invert (`DefaultLipTrick`); bails (`LipBail`); animations; score. |
 | Rails | Build (`82197138`, `821939F8`) and search (`821968F8`) for normal levels | Grinds (`820F8120` grind set-up, `820F4DE8`, `820F8CF0`), single-node rails (`820F4108`), moving-object rails, park-editor paths, `CreatedFromVariable`/`createdfromtod` rails |
-| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
+| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`), cheese wear-off (`820D4A20`, `82190B10`); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
 | Air update `820F2310` | See above | Wallride/wallplant (`820EDAA8`, `820E8618`, `820E80D8`), pitch bail (`820F31E4`), high ollie `820D79F8`, lip check `820EA788`, bikes, moving platforms, nose/tail contact feelers `820E5250` |
 | Air spin `820E9620` | Spin and lean | Vert auto-turn, SmoothSpin, Nail the Trick |
 | Ground update `820F6978` | See above | **Ground side collision `820EB9A0`**, manuals branch, skitching, high ollie, several animation/bookkeeping calls |
@@ -446,7 +446,7 @@ because of the Bevy test build; run the crates separately.
   `apt-get install libwayland-dev libudev-dev libasound2-dev libxkbcommon-dev`;
   it also runs there under `Xvfb :99` with `mesa-vulkan-drivers` and
   `libxkbcommon-x11-0` (screenshots with ImageMagick `import -window root`).
-- Tests: p8-skater 54 (2 new in `meter_display.rs`), p8-script 9,
+- Tests: p8-skater 55 (2 new in `meter_display.rs`, 1 cheese wear-off), p8-script 9,
   p8-formats 10 (2 new in `texture.rs`), p8-game 1 + 2.
 - Balance meter: `lip_ride` now prints the meter's on-screen state. On
   z_houses the meter appears when `DoBalanceTrick` runs, the arrow follows
@@ -457,6 +457,17 @@ because of the Bevy test build; run the crates separately.
   display forced on by a temporary local change, not committed) showed the
   arc, the lit half and the arrow in place. The `.img` decoder's output is
   byte-identical to the research tool's decode.
+- User report after playing: "the meter doesn't pop up immediately, and
+  when it does it's already to one side". (1) The delay is retail:
+  `InvertTrick` waits `<AnimData>.init_skip_time` (Invert 0.7667 s) before
+  `DoBalanceTrick`, while the invert's opening animation plays (animations
+  are not in yet, so nothing shows during it). (2) The off-centre start was
+  a missing translation: the cheese (`+68`, added to the lean at each start
+  by `82190C10`) never wore off. Fixed with `820D4A20` / `82190B10`
+  (`Balance::wear_off_cheese`, called from `step()` after the transfer
+  allowance): it drops by Cheese / CheeseFrames per 60th of a second (lip:
+  3 s to zero). A lip within ~3 s of the last still starts off-centre, as in
+  retail.
 - `transfer_ride` on z_houses: `spine` finds the spine at x ~ -65, flies
   over it and lands down the far side at 12.7 m/s with `LandedFromSpine`;
   `acid` rolls off a deck at 6 m/s, pops to 5 m/s, drops into the ramp
