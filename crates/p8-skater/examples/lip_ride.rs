@@ -1,4 +1,4 @@
-//! `cargo run -p p8-skater --example lip_ride -- <path to qb.pak.xen> [zone] [speed] [ollie]`
+//! `cargo run -p p8-skater --example lip_ride -- <path to qb.pak.xen> [zone] [speed] [ollie|left]`
 //! Like `vert_ride`, with the skater's scripts running and the level's
 //! rails: rolls at a vert wall holding "Triangle" (Xbox Y) and prints the
 //! ride, the running script and the lip balance.
@@ -82,13 +82,16 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
     // With "ollie": half a second into a lip, crouch for 10 frames then
     // let go (an ollie out of the lip).
     let ollie = std::env::args().nth(4).as_deref() == Some("ollie");
+    // With "left": hold left during lips (leans towards the meter's top).
+    let lean_left = std::env::args().nth(4).as_deref() == Some("left");
     let mut last = (State::Ground, 0u32);
     let mut lip_frames = 0;
     let mut was_rumbling = false;
     for i in 0..(8 * 60) {
         lip_frames = if k.physics.state == State::Lip { lip_frames + 1 } else { 0 };
         let crouch = ollie && (30..40).contains(&lip_frames);
-        let input = InputState { triangle: true, crouch, ..Default::default() };
+        let left = lean_left && k.physics.state == State::Lip;
+        let input = InputState { triangle: true, crouch, left, ..Default::default() };
         let events = k.step(s, &input, level);
         let p = &k.physics;
         let now = (p.state, k.script_name().unwrap_or(0));

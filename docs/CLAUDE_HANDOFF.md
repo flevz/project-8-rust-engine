@@ -580,6 +580,13 @@ command the lip scripts run on z_houses, was checked:
   stands in for "until changed").
 - On z_houses (`lip_ride`, which prints `rumble`): 25/255 when the lip
   balance starts, 255 just before falling off, 0 as the lip ends.
+- User report: falling off the red side keeps rumbling until the next
+  ollie. Cause (reproduced with `lip_ride ... left`): OffMeterTop ->
+  `LipBail` -> `GotoRandomScript [InvertBail]` is not translated, so the
+  script stops in LipBail; retail goes InvertBail -> Bail_NoInit ->
+  `GeneralBail`, which runs `VibrateOff` (line 134 of its 250) and then the
+  ragdoll bail. So the skater does not bail at all yet, and nothing stops
+  the rumble. Fix = the bail system (roadmap item 5), not a stand-in.
 - Not done: pause blocking (`82778B54`, object `+308` bit 0; no pause yet),
   `VibrationOn/Off/IsOn` (options menu, player index), `VibrateController`
   and `Vibrate_Controller_Safe` (menus, special level objects), physics
