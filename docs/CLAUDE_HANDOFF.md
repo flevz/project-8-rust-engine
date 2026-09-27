@@ -525,6 +525,30 @@ After that, in the user's order: grinds (rail grab's grind set-up
 meter's grind parts), manuals (`82190F58` manual meter is shared), then bails.
 The user may instead ask for models and animations; pushing depends on them.
 
+## 17-model. Skater model and animations (in progress; the user chose this before the trick queue)
+
+Plan agreed with the user: (1) skeleton, (2) model + textures in the game,
+(3) animation clips (decode `.ska`), (4) the animation system (script
+commands, anim tree, waits), then tricks on top, then the ragdoll bail.
+
+- Done (1)+(2): `p8-formats` `skeleton.rs` (`.ske`), `scene.rs`
+  (`.skin.xen`), `texture.rs` dictionaries + DXT1 (`.tex.xen`), example
+  `model_check`; `p8-game/src/skater_model.rs` shows the `Pro_Hawk` profile
+  (skeleton `Pros_Hawk_skel`, mesh from the `ped_body` table) as a skinned
+  mesh in bind pose instead of the capsule (the placeholder board stays).
+  Formats in `docs/formats.md`.
+- (3) in progress: `.ska` clips are in `PAK/perm_anims.pak.xen` (5255),
+  compressed; header at +0x20: 0x28, flags, duration (float), bone count
+  (u16), key counts, offsets. The quantisation tables come from
+  `DATA/ANIMS/standardkeyQ.bin.xen` / `standardkeyT.bin.xen` (script
+  `load_permanent_assets`: `InitAnimCompressTable ... q48 / t48` ->
+  `82296D70` -> tables at `82777000` / `82777800`). Decoders: `822EC118`
+  (893 instr.) and `822EDB00` (972), helpers `822EA2C8`, `822ED7C0`;
+  samplers `822ECF10` (from `82375AE0`) and `822EEA30` (from `822CA1E8`,
+  `823757A0`). Translate these; do not guess the bit packing.
+- Next after (3): the board model (`board_default`, own skeleton `board`
+  in global.pak) and the animation system.
+
 ## 17a. Audit of the balance meter and lip stalls (done with the 17b method)
 
 Every function of the balance component (vtable `820027F4`, commands in
