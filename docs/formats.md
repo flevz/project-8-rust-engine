@@ -63,6 +63,17 @@ binormal), and a second stream with colour and half-float UVs. See
 type byte (0 colour, 1 normal map, 3 other) and the data offset at `+0x24`.
 DXT1 and DXT5 decode; DXN normal maps not yet. See `texture.rs`.
 
+## `.ska` animation clips: CONFIRMED (keys match the retail decompressor)
+
+In `PAK/perm_anims.pak.xen`. `+0x0C` header offset, `+0x10` the clip's own
+key table, `+0x18` bone mask (bit count, then bits by skeleton bone). Header:
+`+4` flags (`0x00800000` compressed keys, `0x00080000` mask used), `+8`
+duration, `+0xD` bone count, `+0x18`/`+0x1C` rotation/position data,
+`+0x20`/`+0x24` u16 sizes per bone. Compressed rotations are 14-bit fixed
+point x, y, z (w rebuilt) with several packings, some through
+`DATA/ANIMS/standardkeyQ.bin.xen`; positions are floats. Frames at 60 per
+second. See `anim.rs` for every rule and its retail address.
+
 ## Everything else: UNKNOWN
 
 This covers scenes and levels, collision, textures, models, skeletons,

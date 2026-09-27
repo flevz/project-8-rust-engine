@@ -546,21 +546,29 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
   (893 instr.) and `822EDB00` (972), helpers `822EA2C8`, `822ED7C0`;
   samplers `822ECF10` (from `82375AE0`) and `822EEA30` (from `822CA1E8`,
   `823757A0`). Translate these; do not guess the bit packing.
-- (3) status: the retail decompressor `822EF058` runs in unicorn on real
-  clips (scratch harness, see NOTES section 24) and gives unit
-  quaternions; key layout, times (frames at 60/s), per-bone offsets,
-  byte-swapped standardkey tables, the present-bones bitmask (wrapper
-  `+0x18`, 101 bits, slot = skeleton bone index) are known.
-  **Not known yet: how sampled rotations/translations become bone
-  matrices.** Tried by drawing (do not repeat): replacing the rest pose
-  (as stored or conjugated), adding to it, rest*key and key*rest, and
-  keeping the root bones 0/1 from the rest pose; none gives a correct
-  riding idle (Sk8_Gnd_Stnd_Slow_Idle01_xDx). Next: read the Skeleton
-  component code that consumes the pose buffers filled by `822CA1E8`
-  (buffers at r30 / r30+2080, defaults copied from skeleton data +40/+44,
-  flags at r30+4160) and the quaternion-to-matrix / parent chain, then
-  translate. `_xx` single-pose clips (flags 0x16091040) are uncompressed
-  floats at +0x80 (rotations) / +0x700 (positions), sampler `822EA3D0`.
+- (3) done: `p8-formats/src/anim.rs` reads `.ska` clips: the compressed
+  keys (translation of `822EF058` + `822EEF98`, fullres cache mode 4),
+  single-pose `_xx` clips (`822EA3D0`), the bone mask, the key search
+  (`822E90B8` rotations, `822E9330` positions), the sampler (`822EB590`,
+  including its frame clamp that carries over to later bones) and the
+  quaternion blend (`822EAEB0`, nlerp with hemisphere flip). Verified: the
+  Rust keys equal the retail decompressor's output (run in unicorn) on all
+  28 reference clips (example `anim_dump`; references in the private repo
+  scratch notes, NOTES section 24).
+- Pose rules (read from code, not guessed): stored rotations are
+  conjugated before matrices (`82327678`), like the skeleton. `_xx` clips
+  replace; `_xDx` clips are differences applied by the ApplyDifference node
+  (`8237B1D8`/`82377058`/`823767C8`): rotation = nlerp(base, base ⊗ diff,
+  w), position = base + w·diff (`anim::apply_difference`). Add node
+  (`82376220`): q = qB⊗qA after nlerp from identity by weight; t = tA·wA +
+  tB·wB (not in Rust yet).
+- (4) first step done: the game plays the standing ride pose
+  (`Sk8_Gnd_Stnd_Base_xx` ApplyDifference `Sk8_Gnd_Stnd_Slow_Idle01_xDx`,
+  idle looping) on the model in every state (`skater_model::RidingPose`,
+  APPROXIMATE). Next: translate the anim tree from the scripts
+  (`OnGround_AnimBranch` etc.; generic node factory `82379F18`, skater
+  nodes `820A5E40`, lazy blend ops `82376AE8`), the anim script commands
+  (`PlayAnim`, `Skater_WaitAnimFinished`, ...), then stance.
 - User report (model shown): after landing a 180 the model snaps to face
   forward. The model is drawn from the physics matrix; retail keeps
   regular/goofy + fakie state (`flipped` +2024, `FlipAndRotate`
