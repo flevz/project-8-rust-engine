@@ -212,14 +212,14 @@ impl CorePhysics {
     /// the flat direction up leans toward: up moves toward straight up.
     ///
     /// Skipped as retail skips it: in a spine transfer (SkaterState `+136`,
-    /// read by `IsInSpineTransfer`; not translated, so never), when the
+    /// read by `IsInSpineTransfer`), when the
     /// ground normal is upside down (`+116` < -0.1), and when moving up
     /// while on a movable object (SkaterPhysicsControl `+2852`->`+24`,
     /// the pointer `HasMovableContact` tests; the level has none). Once it
     /// finds that ground it leaves vert air and sets SkaterState `+144`.
     pub fn air_recover(&mut self, s: &Scripts, world: &dyn World) {
         // -0.1 is the constant at 820029A0.
-        if self.ground_normal.y < -0.1 {
+        if self.transfer.active || self.ground_normal.y < -0.1 {
             return;
         }
         let pos = self.body.position;
@@ -229,8 +229,9 @@ impl CorePhysics {
         if hit.flags & 0x8 != 0 || hit.normal.y < 0.2 {
             return;
         }
-        // 820E4BE0: out of vert air (and +1380, untranslated), and +144.
+        // 820E4BE0: out of vert air (and +1380), and +144.
         self.vert.in_vert_air = false;
+        self.transfer.retry = false;
         self.vert.over_ground = true;
         if self.body.up().y > 0.975 {
             return;
@@ -250,10 +251,18 @@ impl CorePhysics {
     }
 
     /// Retail `820D76C0`: air gravity, `Physics_Air_Gravity / Physics_Air_hang_Stat`
-    /// (`Physics_Vert_hang_Stat` in vert air), times the `AdjustGravity`
-    /// multiplier when set. The moon cheat is not translated.
+    /// (`Physics_Vert_hang_Stat` in vert air or a spine transfer, SkaterState
+    /// `+56` or `+136`), times the `AdjustGravity` multiplier when set. The
+    /// moon cheat is not translated.
     pub fn air_gravity(&self, s: &Scripts) -> f32 {
-        let hang = if self.vert.in_vert_air { "Physics_Vert_hang_Stat" } else { "Physics_Air_hang_Stat" };
+        self.air_gravity_hang(s, self.transfer.active)
+    }
+
+    /// [`CorePhysics::air_gravity`] with `transfer` standing for SkaterState
+    /// `+136` (the transfer code sets it around its own calls).
+    pub(crate) fn air_gravity_hang(&self, s: &Scripts, transfer: bool) -> f32 {
+        let vert = self.vert.in_vert_air || transfer;
+        let hang = if vert { "Physics_Vert_hang_Stat" } else { "Physics_Air_hang_Stat" };
         let mut g = s.physics_float("Physics_Air_Gravity", self.on_bike) / s.global_float(hang);
         if self.gravity_multiplier != 0.0 {
             g *= self.gravity_multiplier;
@@ -301,6 +310,8 @@ impl CorePhysics {
         if self.vert.in_vert_air && self.body.velocity.y < 0.0 {
             self.body.velocity += self.vert.eased_normal * jump;
             self.vert.in_vert_air = false;
+            // 820F0D00: and +1380.
+            self.transfer.retry = false;
             jump = 0.0;
         } else if self.body.velocity.y < 0.0 {
             self.body.velocity.y = 0.0;
@@ -312,14 +323,15 @@ impl CorePhysics {
             self.body.position += self.body.up() * 0.3;
         }
         self.set_state(State::Air);
+        // 820F0EA8: the jump time +2540.
+        self.jump_ms = self.time_ms;
         vec![Event::SkaterJump]
     }
 
     /// Retail air update `820F2310`, for a plain ollie: gravity, the move,
     /// and landing on a skatable surface.
     ///
-    /// Not translated (absent): `820EA0D0` (runs only in a spine transfer or
-    /// with SkaterState `+152`, a state the bike commands set), `820EEB38`
+    /// Not translated (absent): `820EEB38`
     /// (bikes only), lip checks, bails on landing, moving platforms, and the
     /// nose/tail landing feelers (`820E5250`, which only record contact).
     pub fn air_update(&mut self, s: &Scripts, world: &dyn World) -> Vec<Event> {
@@ -330,6 +342,11 @@ impl CorePhysics {
         let g = Vec3::new(0.0, self.air_gravity(s), 0.0);
         // 820F2410: SkaterState +72 (on vert ground) is cleared.
         self.vert.on_vert_ground = false;
+        // 820F2424: no acid drop (+200) while in vert air, a transfer, +192
+        // or a bail.
+        if self.vert.in_vert_air || self.transfer.active || self.transfer.flag_192 || self.in_bail {
+            self.set_no_acid_drop(true);
+        }
         self.standing_kick_limit = 0.0;
         self.turn_amount = 0.0;
         self.flag_2637 = false;
@@ -338,21 +355,32 @@ impl CorePhysics {
         self.last_turn = None;
         let input = self.last_input;
         self.air_rotation(s, &input);
-        // `820EA0D0` runs here (not translated).
+        self.transfer_blend();
         // 820F24B4: the leveling is skipped in vert air, unless SkaterState
         // +144 is set or the spine button is held.
         if self.vert.over_ground || self.spine_button(&input) || !self.vert.in_vert_air {
             self.air_recover(s, world);
         }
         // `820D79F8` runs here (not translated). 820F2518: outside vert air
-        // (and spine transfers, the rotate component and bike state +152,
-        // none translated), the sideways uprighting.
-        if !self.vert.in_vert_air {
+        // and spine transfers (and the rotate component and bike state
+        // +152, not translated), the sideways uprighting.
+        if !self.vert.in_vert_air && !self.transfer.active {
             self.upright_sideways(s);
         }
 
         let dt = self.dt;
-        self.body.position += self.body.velocity * dt + g * (dt * dt * 0.5);
+        // 820F26DC: in a transfer the carry (SkaterState +272) is added to
+        // the move, except when falling below +2172: then it shrinks to
+        // length 0.1 (82000BF4) and is not added.
+        let mut mv = self.body.velocity;
+        if self.transfer.active {
+            if self.body.velocity.y < 0.0 && self.body.position.y < self.transfer.ref_height {
+                self.transfer.carry = self.transfer.carry.normalize_or_zero() * 0.1;
+            } else {
+                mv += self.transfer.carry;
+            }
+        }
+        self.body.position += mv * dt + g * (dt * dt * 0.5);
         self.body.velocity += g * dt;
         self.vert_air_update(s, world);
         // 820F3018: in vert air the normal easing runs; otherwise the
@@ -493,10 +521,13 @@ impl CorePhysics {
             let min = s.physics_float("Skater_Min_Distance_To_Wall", self.on_bike);
             self.body.position = hit.point - up * h + n * min;
             let v = self.body.velocity;
-            self.body.velocity = v - n * v.dot(n);
+            // 820EF918: in a transfer the length is kept (821EDB50).
+            self.body.velocity = if self.transfer.active { project_keep_length(v, n) } else { v - n * v.dot(n) };
             return false;
         }
 
+        // 820EF948: no acid drop after this (+200).
+        self.set_no_acid_drop(true);
         // Slide along the wall: drop the velocity into the wall, keeping
         // the vertical part unless the wall faces down (-0.1 at 820029A0),
         // then push off it by a tenth of the speed (0.1 at 82000BF4).
@@ -531,8 +562,9 @@ impl CorePhysics {
         orthonormalize_keep_at(&mut self.body.matrix);
         self.matrix_32 = self.body.matrix;
         self.body.position += n * s.physics_float("Skater_Min_Distance_To_Wall", self.on_bike);
-        // Retail also stamps SkaterState +200 (timer), then runs the lip and
-        // wall-ride checks (`820EA788`, `820E80D8`, ...), not translated.
+        // 820F3FC0: no acid drop after this (+200). Retail then runs the lip
+        // and wall-ride checks (`820EA788`, `820E80D8`, ...), not translated.
+        self.set_no_acid_drop(true);
     }
 
     /// The landing path of `820F2310`.
@@ -542,19 +574,46 @@ impl CorePhysics {
         // `820DBAA8(1)` runs here, before the landing velocity blend.
         self.flip_if_backwards(s);
         let v = self.body.velocity;
-        // 820F38A4: landing from vert air sets +2131 (`LandedFromVert`)
-        // and +2135; otherwise +2135 is cleared.
-        if self.vert.in_vert_air {
+        // 820F38A4: landing from vert air or a transfer sets +2131
+        // (`LandedFromVert`) and +2135; otherwise +2135 is cleared.
+        if self.vert.in_vert_air || self.transfer.active {
             self.vert.landed_from_vert = true;
             self.vert.landing_from_vert = true;
         } else {
             self.vert.landing_from_vert = false;
         }
+        // 820F38CC: onto a bank (+2616) sets `LandedOnBank`; otherwise
+        // `LandedFromSpine` takes +136. Then +2616 = 0, +2133 = +1618.
+        let tr = &mut self.transfer;
+        if tr.bank {
+            tr.landed_on_bank = true;
+            tr.landed_from_spine = false;
+        } else {
+            tr.landed_on_bank = false;
+            tr.landed_from_spine = tr.active;
+        }
+        tr.bank = false;
+        tr.landed_from_tiretap = tr.auto_drop;
         let still = v.x == 0.0 && v.z == 0.0 && !self.vert.landing_from_vert && !self.vert.landed_from_vert;
         let input = self.last_input;
         if still && self.stick_pulled_back(s, &input) {
             self.body.velocity.y = 0.0;
             self.body.velocity -= n * self.body.velocity.dot(n);
+        } else if self.transfer.active {
+            // 820F3C44: aim along the target's at (+2448), keeping the
+            // speed, onto the landing plane; if pointing the board along it
+            // would climb, the old velocity plainly projected instead. At
+            // least `Physics_Acid_Drop_Min_Land_Speed`.
+            let aimed = project_keep_length(self.transfer.target_at * v.length(), n);
+            self.body.velocity = aimed;
+            self.velocity_along_board();
+            if aimed.y > 0.0 {
+                self.body.velocity = v - n * v.dot(n);
+            }
+            let min = s.global_float("Physics_Acid_Drop_Min_Land_Speed");
+            if self.body.velocity.length_squared() < min * min {
+                self.body.velocity = self.body.velocity.normalize_or_zero() * min;
+            }
         } else {
             let dir = v.normalize_or_zero();
             let along = project_keep_length(v, n);
@@ -569,8 +628,10 @@ impl CorePhysics {
         if self.body.velocity.length_squared() < 0.064516 {
             self.body.velocity = Vec3::ZERO;
         }
-        // 820F3DD8: out of vert air; +96, +112 and +128 take the normal.
+        // 820F3DD8: out of vert air (and +1380, 820F3E00); +96, +112 and
+        // +128 take the normal.
         self.vert.in_vert_air = false;
+        self.transfer.retry = false;
         self.vert.eased_normal = n;
         self.vert.ease_from = n;
         self.ground_normal = n;
@@ -612,6 +673,8 @@ impl CorePhysics {
         }
         self.update_crouch(input);
         self.speed_limits(s);
+        // 820FCAB4: +1237 = SkaterState +136 before the state update.
+        self.transfer.was_active = self.transfer.active;
         let was_air = self.state == State::Air;
         let mut events = match self.state {
             State::Ground => self.ground_update(s, input, world),
@@ -620,11 +683,17 @@ impl CorePhysics {
         };
         // 820F4050: the air update ends with the ollie trigger `820D7AB0`
         // on every path that does not land.
-        if was_air && !events.contains(&Event::Landed) && self.ollie_trigger(input) {
-            events.push(Event::Ollied);
+        if was_air && !events.contains(&Event::Landed) {
+            if self.ollie_trigger(input) {
+                events.push(Event::Ollied);
+            }
+            // 820F4060: then the acid drop check.
+            self.air_acid_drop(s, world);
         }
         // 820FCD8C: rails, after the state update.
         self.rail_check(s, input, world);
+        // 820FCDA8: the speed allowance after a transfer.
+        self.post_transfer_speed(s);
         if self.scripted {
             return events;
         }

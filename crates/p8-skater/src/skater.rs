@@ -40,6 +40,11 @@ fn event_name(e: Event) -> Option<&'static str> {
 pub struct Skater {
     pub physics: CorePhysics,
     pub script: Option<Script>,
+    /// Scripts the physics started with `822265F8` that did not finish in
+    /// their first update. Retail keeps such a script alive on the object
+    /// (INFERRED from `82210860` creating it and only finished ones being
+    /// deleted); they are updated after the main script each frame.
+    pub spawned: Vec<Script>,
     /// Every command met that is not translated yet (checksums).
     pub untranslated: Vec<u32>,
     seed: u32,
@@ -65,7 +70,7 @@ impl Skater {
         let mut ctx =
             Ctx { p: &mut physics, s, input: InputState::default(), seed: &mut seed, events: Vec::new(), world: None };
         let script = Script::new(&mut ctx, qb_key("skaterinit"), &Params::new());
-        let mut me = Skater { physics, script, untranslated: Vec::new(), seed };
+        let mut me = Skater { physics, script, spawned: Vec::new(), untranslated: Vec::new(), seed };
         if me.script.is_none() {
             // Scripts without skaterinit: fall back to the stand-in handlers.
             me.physics.scripted = false;
@@ -87,19 +92,50 @@ impl Skater {
             script.goto(&mut ctx, name, &Params::new());
             script.update(&mut ctx);
         }
+        // Script work the transfer code asked for (retail does it inside
+        // the physics; here right after it, in the same order).
+        let actions = std::mem::take(&mut ctx.p.transfer.actions);
+        for a in actions {
+            match a {
+                crate::transfer::ScriptAction::Run(name, params) => {
+                    if let Some(mut run) = Script::new(&mut ctx, name, &params) {
+                        run.update(&mut ctx);
+                        Self::untranslated_from(&mut self.untranslated, &mut run);
+                        if !run.is_done() {
+                            self.spawned.push(run);
+                        }
+                    }
+                }
+                crate::transfer::ScriptAction::ClearHandler(event) => {
+                    script.handlers.retain(|h| h.event != event);
+                }
+            }
+        }
         for e in events.clone() {
             if let Some(name) = event_name(e) {
                 script.event(&mut ctx, qb_key(name), &Params::new());
             }
         }
         script.update(&mut ctx);
+        for run in &mut self.spawned {
+            run.update(&mut ctx);
+        }
         events.extend(ctx.events);
-        for k in script.untranslated.drain(..) {
+        for k in script.untranslated.drain(..).chain(self.spawned.iter_mut().flat_map(|r| r.untranslated.drain(..))) {
             if !self.untranslated.contains(&k) {
                 self.untranslated.push(k);
             }
         }
+        self.spawned.retain(|r| !r.is_done());
         events
+    }
+
+    fn untranslated_from(untranslated: &mut Vec<u32>, run: &mut Script) {
+        for k in run.untranslated.drain(..) {
+            if !untranslated.contains(&k) {
+                untranslated.push(k);
+            }
+        }
     }
 
     /// The running script's name.
@@ -295,7 +331,7 @@ impl Ctx<'_> {
                 o.timer = -2.0;
             }
             // Retail stores the timer; a stored 0 means inactive.
-            p.override_limits = if o.timer == 0.0 { None } else { Some(o) };
+            p.set_override(o);
             return Some(true);
         }
         if n == k("SkaterIsFlipping") {
@@ -320,7 +356,7 @@ impl Ctx<'_> {
         }
         if n == k("forcebreakvert") {
             // 820F1250: 820EC7B0(1), then 820DC5D0.
-            p.break_vert(self.s, true);
+            p.break_vert(self.s, self.world, true);
             p.upright_sideways(self.s);
             return Some(true);
         }
@@ -332,8 +368,25 @@ impl Ctx<'_> {
             return Some(true);
         }
         if n == k("ResetLandedFromVert") {
-            // 820D5AC8: also clears +2134 (spine landing, untranslated).
+            // 820D5AC8: +2131 and +2134 (`LandedOnBank`).
             p.vert.landed_from_vert = false;
+            p.transfer.landed_on_bank = false;
+            return Some(true);
+        }
+        if n == k("IsInSpineTransfer") {
+            return Some(p.transfer.active); // 820D6C70: SkaterState +136
+        }
+        if n == k("LandedFromSpine") {
+            return Some(p.transfer.landed_from_spine); // 820D5A50: +2130
+        }
+        if n == k("LandedOnBank") {
+            return Some(p.transfer.landed_on_bank); // 820D5A80: +2134
+        }
+        if n == k("landedfromtiretap") {
+            return Some(p.transfer.landed_from_tiretap); // 820D5A98: +2133
+        }
+        if n == k("DisallowAcidDrops") {
+            p.set_no_acid_drop(true); // 8211F9A8: SkaterState +200
             return Some(true);
         }
         if n == k("WasLastLandingVert") {
@@ -376,7 +429,11 @@ impl Ctx<'_> {
             return Some(true);
         }
         if n == k("SetSkaterVelocity") {
-            // 821DE168 (refused in a spine transfer, never here): an unnamed
+            // 821DE1AC: refused (false) in a spine transfer.
+            if p.transfer.active {
+                return Some(false);
+            }
+            // 821DE168: an unnamed
             // number sets the speed along the velocity; otherwise vel_x,
             // vel_y and vel_z (world axes, missing = 0).
             if let Some(speed) = params.unnamed_float() {
@@ -526,6 +583,11 @@ const COMMANDS: &[&str] = &[
     "LandedFromVert",
     "SetLandedFromVert",
     "ResetLandedFromVert",
+    "IsInSpineTransfer",
+    "LandedFromSpine",
+    "LandedOnBank",
+    "landedfromtiretap",
+    "DisallowAcidDrops",
     "WasLastLandingVert",
     "SetLastLandingVert",
     "SetLastLandingGround",

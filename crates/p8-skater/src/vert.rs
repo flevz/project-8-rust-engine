@@ -3,10 +3,9 @@
 //! eased normal these use. Surfaces with collision flag 0x8 are vert
 //! (`820E5048` copies it to `+1185`, the snap to SkaterState `+72`).
 //!
-//! Not translated: spine transfers (`820E68A8`, `820E1600`, SkaterState
-//! `+136`, which is therefore never set), the skater-rotate component's
-//! flags (`+2836`->`+40`/`+80`, never set), moving platforms, bikes, and
-//! `+1380` (only spine/lip code and bike code set it).
+//! Spine transfers are in `transfer.rs`. Not translated: the skater-rotate
+//! component's flags (`+2836`->`+40`/`+80`, never set), moving platforms
+//! and bikes.
 use crate::air::orthonormalize_keep_at;
 use crate::core_physics::{CorePhysics, project_keep_length};
 use crate::input::InputState;
@@ -120,9 +119,11 @@ impl CorePhysics {
 
     /// Retail `820EC7B0`: break out of vert air, over the lip. Happens when
     /// "Up" has been held longer than `Skater_vert_push_time` (and not
-    /// Left, Right, Square or Circle), with the spine button, or when
-    /// `force` is set (`forcebreakvert`).
-    pub(crate) fn break_vert(&mut self, s: &Scripts, force: bool) {
+    /// Left, Right, Square or Circle), with the spine button or `+1380`
+    /// (a transfer to retry), or when `force` is set (`forcebreakvert`).
+    /// `world` is `None` only when a script runs before the level is
+    /// given; the spine search is then skipped.
+    pub(crate) fn break_vert(&mut self, s: &Scripts, world: Option<&dyn World>, force: bool) {
         let input = self.last_input;
         let push_time = s.global_float("Skater_vert_push_time") as i32;
         let pushing = !self.on_bike
@@ -132,15 +133,21 @@ impl CorePhysics {
             && !input.right
             && !input.kick
             && !input.circle;
-        let spine = self.spine_button(&input);
+        let spine = self.spine_button(&input) || self.transfer.retry;
         if !pushing && !spine && !force {
             return;
         }
         let n = self.vert.eased_normal;
         if spine {
-            // 820ECC84: retail first looks for a spine to transfer to
-            // (`820E68A8`, not translated: as if none was found), then
-            // moves 0.6 (820024BC) toward the wall's far side.
+            // 820ECC84: first the spine transfer `820E68A8`; when it took
+            // over, only the matrix copy (820ECC38).
+            if let Some(world) = world
+                && self.spine_transfer(s, world)
+            {
+                self.matrix_32 = self.body.matrix;
+                return;
+            }
+            // No target: move 0.6 (820024BC) toward the wall's far side.
             self.body.velocity.x -= n.x * 0.6;
             self.body.velocity.z -= n.z * 0.6;
             let tilt = s.global_float("Skater_Break_Vert_forward_tilt");
@@ -161,8 +168,8 @@ impl CorePhysics {
         self.vert.in_vert_air = false;
         self.vert.tracking = false;
         self.set_break_window(false);
-        // Retail also clears SkaterState `+200` (a wall-hit timer read only
-        // by untranslated code).
+        // 820ECB18: acid drops allowed again (+200).
+        self.set_no_acid_drop(false);
         self.face_velocity();
         self.matrix_32 = self.body.matrix;
     }
@@ -214,7 +221,7 @@ impl CorePhysics {
                 let up = self.body.up();
                 let pos = self.body.position;
                 if world.feeler(pos + up * 0.0025, pos + up * -0.58, 0x10, 0).is_none() {
-                    self.break_vert(s, false);
+                    self.break_vert(s, Some(world), false);
                     let t = s.global_float("Skater_vert_active_up_time") as i32;
                     if input.up_released_ms > t && input.up_held_ms > t {
                         self.set_break_window(false);
@@ -225,8 +232,13 @@ impl CorePhysics {
             if self.time_ms - self.vert.break_window_ms > allow {
                 self.set_break_window(false);
             }
-        } else if self.vert.in_vert_air && self.spine_button(&input) && self.body.velocity.y > 0.0 {
-            self.break_vert(s, false);
+        } else if self.vert.in_vert_air
+            && (self.spine_button(&input) || self.transfer.retry)
+            && !self.transfer.active
+            && self.body.velocity.y > 0.0
+        {
+            // 820F2A74: the spine gate.
+            self.break_vert(s, Some(world), false);
         }
         if self.vert.tracking && self.vert.in_vert_air {
             self.follow_vert_wall(s, world);
@@ -415,10 +427,10 @@ mod tests {
         p.vert.eased_normal = Vec3::NEG_Z;
         p.body.velocity = Vec3::new(0.0, 5.0, 0.0);
         p.last_input = InputState { up: true, up_held_ms: 100, ..Default::default() };
-        p.break_vert(&s, false);
+        p.break_vert(&s, None, false);
         assert!(p.vert.in_vert_air, "not held long enough");
         p.last_input.up_held_ms = 200;
-        p.break_vert(&s, false);
+        p.break_vert(&s, None, false);
         assert!(!p.vert.in_vert_air);
         assert!((p.body.velocity - Vec3::new(0.0, 3.75, 3.75)).length() < 1e-5);
         // Tilted 45 degrees forward (nose down), then turned to the flat

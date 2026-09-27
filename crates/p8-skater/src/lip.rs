@@ -111,6 +111,8 @@ impl CorePhysics {
         }
         self.body.velocity = Vec3::ZERO;
         self.vert.in_vert_air = false;
+        // 820F4730: and +1380.
+        self.transfer.retry = false;
         self.vert.tracking = false;
         self.vert.on_vert_ground = false;
         self.set_break_window(false);
@@ -145,6 +147,9 @@ impl CorePhysics {
     /// scoring are not translated).
     pub(crate) fn lip_update(&mut self, s: &Scripts, input: &InputState) -> Vec<Event> {
         let mut events = Vec::new();
+        // 820F49D8 starts by clearing SkaterState +136, +192 and +144.
+        self.set_transfer(false);
+        self.set_flag_192(false);
         self.vert.over_ground = false;
         if self.balance.kind == qb_key("Lip") {
             let dt = self.dt;

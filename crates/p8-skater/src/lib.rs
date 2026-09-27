@@ -22,6 +22,7 @@ pub mod rails;
 pub mod script;
 pub mod skater;
 pub mod stats;
+pub mod transfer;
 pub mod vert;
 pub mod world;
 

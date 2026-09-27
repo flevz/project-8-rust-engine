@@ -18,7 +18,8 @@ Certainty labels used below:
 Code comments use `CONFIRMED` / `LIKELY` / `UNKNOWN` with the same meanings as
 the first, second and fourth labels.
 
-State as of commit `33b0f11` (engine repo, branch `main`).
+State as of the commit "Translate spine transfers, acid drops and bank drops"
+(engine repo, branch `main`).
 
 ---
 
@@ -93,7 +94,8 @@ There are two lists.
 
 1. Riding, ollie, air, landing, ground contact, level loading: **done**.
 2. Air pieces (leveling, wall collision, step-up, late ollie): **done**.
-3. Vert, quarter pipes and lips: **vert done; lips mostly done** (see §5).
+3. Vert, quarter pipes and lips: **vert done, spine transfers / acid drops /
+   bank drops done; lips mostly done** (see §5).
 4. Tricks: grinds, manuals, flip/grab tricks with double-tap variants:
    **not started** (only the shared pieces: rails, balance meter).
 5. Bails: **not started**.
@@ -123,6 +125,7 @@ commands). Regenerate it before relying on the counts.
 | Backwards flip on landing / riding backwards | `820DBAA8` (non-manual branch) | `core_physics.rs` |
 | Speed limits and `OverrideLimits` | `820E0188`, `820D5C68` | `core_physics.rs`, `skater.rs` |
 | Vert: takeoff, vert air, following the wall below, break-vert over the lip, jump out of vert air, vert landing flags, normal easing, sideways uprighting in normal air | `820DA3D0`, `820F2900..820F3014`, `820EC7B0`, `820DA1A8` (easing part), `820DC5D0`, `820D7648` | `vert.rs` |
+| Spine transfer (search over the coping `820E0AC8`, launch, retry `+1380`), acid drop / bank drop (search `820E1600` skating path, start `820DA7B0`), orientation blend `820EA0D0`, SkaterState `+136` effects (vert hang gravity, carry `+272` in the air move, no speed limits / leveling / uprighting, `SetSkaterVelocity` refused, wall projection keeping length), landing redirect along `+2448` with `Physics_Acid_Drop_Min_Land_Speed`, `LandedFromSpine`/`LandedOnBank`, post-transfer speed allowance `820DAFF0`, `+200` "no acid drop" bookkeeping | `820E68A8`, `820E0AC8`, `820E1600`, `820DA7B0`, `820EA0D0`, `820DAFF0`, `820D77F0`, `820F2310` (parts), `820EC7B0` (spine branch) | `transfer.rs`, `air.rs`, `vert.rs`, `ground.rs` |
 | Controller path (XInput → PS2-style pad → input records, dead zones) | `823A6420`, `8222A320`, `82229E58`, `8222A030`, `822D6C98` | `controller.rs`, `pad.rs` |
 | Script VM (tokens, if/else, loops, switch, random, calls/returns, goto, exceptions/event handlers, wait, expressions, struct includes) | `8220F8F0`, `8220F210`, `8220A228`, `82208CE8`, `8220EF50`, `8220E258`, `8220EE00`, `82224D78`, `822A6FB8`, `8220B878`, `82204838`, `82211BE0`, `82218210`, ... | `p8-script` |
 | Stat-scaled values | `82199D00`, `82199A28` | `script.rs`, `stats.rs` |
@@ -135,7 +138,7 @@ commands). Regenerate it before relying on the counts.
 | **Lip tricks** | Rails loaded from the level; rail search; rail grab in the air with Y held; lip entry checks and snapping; lip state; balance meter; ollie out; falling off the meter; the `liptrick` → `InvertTrick` → `LipOut`/`OllieLipOut` scripts run for real | The **trick queue** (`SetQueueTricks`, `DoNextTrick`, button triggers) is not translated, so every lip is the default Invert (`DefaultLipTrick`); bails (`LipBail`); animations; score. |
 | Rails | Build (`82197138`, `821939F8`) and search (`821968F8`) for normal levels | Grinds (`820F8120` grind set-up, `820F4DE8`, `820F8CF0`), single-node rails (`820F4108`), moving-object rails, park-editor paths, `CreatedFromVariable`/`createdfromtod` rails |
 | Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`) | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), display, cheats |
-| Air update `820F2310` | See above | Wallride/wallplant (`820EDAA8`, `820E8618`, `820E80D8`), pitch bail (`820F31E4`), high ollie `820D79F8`, spine transfer `820EA0D0`, bikes, moving platforms, nose/tail contact feelers `820E5250` |
+| Air update `820F2310` | See above | Wallride/wallplant (`820EDAA8`, `820E8618`, `820E80D8`), pitch bail (`820F31E4`), high ollie `820D79F8`, lip check `820EA788`, bikes, moving platforms, nose/tail contact feelers `820E5250` |
 | Air spin `820E9620` | Spin and lean | Vert auto-turn, SmoothSpin, Nail the Trick |
 | Ground update `820F6978` | See above | **Ground side collision `820EB9A0`**, manuals branch, skitching, high ollie, several animation/bookkeeping calls |
 | Script commands | 64 translated in `skater.rs` (list: `COMMANDS` const) plus VM built-ins in `vm.rs` (`is_vm_command`) | The rest remain: animation, sound, trick system, scoring, UI, goals, walking, ragdoll, bikes. Untranslated commands return "not handled" and are listed in the game's HUD. |
@@ -144,7 +147,7 @@ commands). Regenerate it before relying on the counts.
 
 Grinds, manuals, flip/grab tricks and the trick system (queue, triggers,
 double taps, trick names, scoring), bails and ragdoll, wallrides and
-wallplants, spine transfers, walking, skitching, special meter, Nail the
+wallplants, walking, skitching, special meter, Nail the
 Trick, skater model, animation system (anim tree, clips), pushing (depends on
 animations), retail camera, textured level rendering, audio, menus, stats menu.
 
@@ -156,6 +159,7 @@ animations), retail camera, textured level rendering, audio, menus, stats menu.
 | `crates/p8-skater/src/air.rs` | `set_state` (part of `820D71B0`), Jump, air update, air leveling, wall collision, landing, and `step()` (the per-frame dispatch). |
 | `crates/p8-skater/src/ground.rs` | Ground move loop, forward collision, wall response, wall push, ground snap, `orient_to_ground` (`820D7648`). |
 | `crates/p8-skater/src/vert.rs` | Vert takeoff/air/tracking/break-vert, normal easing, uprighting, `rotate_about_row0/at`. |
+| `crates/p8-skater/src/transfer.rs` | Spine transfer, acid/bank drop, orientation blend, post-transfer speed; the `Transfer` struct (SkaterState `+136`, `+192`, `+200`, `+272`, physics `+1380`, `+2130..+2134`, `+2172`, `+2224`, `+2304..+2464`, `+2546`, `+2616`); `ScriptAction` (scripts the physics asks to run). Tests with a synthetic spine. |
 | `crates/p8-skater/src/rails.rs` | `RailManager::build` and `search`. |
 | `crates/p8-skater/src/lip.rs` | Rail check (`820FAAA8`), may-take-rail (`820DCBE8`), grab (`820F8120` up to the lip), lip entry (`820F44C0`), lip update (`820F49D8`), `SkateInAble` (`820E55E0`), `random()`. |
 | `crates/p8-skater/src/balance.rs` | Balance component and meters. |
@@ -167,7 +171,7 @@ animations), retail camera, textured level rendering, audio, menus, stats menu.
 | `crates/p8-script/src/params.rs` | `Params` (retail `CStruct` semantics: AddComponent, lookups, `get_in` with struct includes, `resolve_alias`). |
 | `crates/p8-formats/src/zone.rs` | Zone loading: collision, restarts, rail nodes, compressed-node template expansion. |
 | `crates/p8-game/src/translated.rs` | Bevy play mode: level mesh from collision, placeholder skater and camera, HUD, input. |
-| `crates/p8-skater/examples/*.rs` | Headless test rides on the real level: `level_ride`, `script_ride` (real scripts), `vert_ride` (a halfpipe; `up` holds Up), `lip_ride` (holds Y; `ollie` ollies out). |
+| `crates/p8-skater/examples/*.rs` | Headless test rides on the real level: `level_ride`, `script_ride` (real scripts), `vert_ride` (a halfpipe; `up` holds Up), `lip_ride` (holds Y; `ollie` ollies out), `transfer_ride` (`spine` or `acid`, R2 held; physics only, the award scripts are printed). |
 | `crates/p8-script/examples/check_scripts.rs` | Walks every script in the player's `qb.pak.xen` (currently 7626, all clean). |
 | `project-8-data/research/NOTES.md` (private) | Sections 1–19: every finding with addresses. The detailed source for everything here. |
 | `project-8-data/research/tools/` (private) | `fn.py <addr>` (disassembly from generated code), `gen.py <addr>` (with switch cases), `callers.py`, `who.py <regex>` (functions matching an instruction), `qbscript.py <file|all> <regex>` (script printer), `qbdec.py` (QB globals), `pak.py` (extract paks), `toks.py`, `mini.py`, `physcov.py`, `reach2.py`. |
@@ -281,6 +285,14 @@ These appear in the code with their addresses, e.g. skin distance 0.0025
 - Terrain checksum → index uses the order of `terrain_types` (retail
   `8228E528` uses a hash table INFERRED to be built from that array).
 - `.ska +0x28` = clip length: INFERRED.
+- OverrideLimits friction `+2096` and gravity `+2100` before any
+  `OverrideLimits` call: UNKNOWN; no writer besides `820D5C68` was found, so
+  they start at 0 (INFERRED zero-filled memory). They matter only while the
+  post-transfer allowance (`820DAFF0`) runs, which turns the override on
+  with those values. Only the skitch scripts call `OverrideLimits`.
+- `820EA0D0`'s delta order (`last^-1 * m` in retail row order): INFERRED
+  (the only order that lands on the target when nothing else turns the
+  skater); the matrix slerp's near-parallel branch is glam's, not read.
 - `p8-sim` values (`tuning.rs`) are the old prototype's: TEMPORARY, not used
   in translated mode.
 
@@ -299,9 +311,17 @@ These appear in the code with their addresses, e.g. skin distance 0.0025
 - **Park editor state** (`[82731B2C]+64`) is assumed "OFF" (normal levels),
   which removes the rail clearance feelers `82194D20` and the corner-leave
   angle. INFERRED correct for normal levels.
-- **Spine button (RT)** in break-vert: retail first searches for a spine
-  (`820E68A8`, not translated); we behave as if none was found (small push
-  over the lip). APPROXIMATE.
+- **Scripts the physics runs** (`822265F8`: the transfer award scripts,
+  `SkaterAcidDropTriggered`) and its `ClearEventHandler Ollied` run right
+  after the physics step instead of inside it (APPROXIMATE timing). A run
+  script that does not finish is kept and updated each frame
+  (`Skater::spawned`, INFERRED).
+- **Transfers**: level objects are not loaded, so `+2546` (target on a
+  moving object) is always false; `+1618` `auto_drop` and `+1619`
+  `drop_backwards` are only set by untranslated code (ollie state
+  `820F01E8`, wheelies, bikes). The rail grab's use of `+192`/`+2768`
+  (`820F8454`) is not translated. The surface flag 0x100 ("bank") name
+  and the feeler mode word 0x4018 are UNKNOWN.
 - **Struct includes for host commands**: the VM's own lookups follow
   unnamed-name includes (retail `82211BE0`), but host commands in `skater.rs`
   read `Params` directly without includes. APPROXIMATE; fine for the
@@ -406,10 +426,19 @@ P8_TRACE=1 cargo run ...   # print every script command
 Note: `cargo test --workspace` in one go may exceed a 10-minute tool timeout
 because of the Bevy test build; run the crates separately.
 
-## 16. Current build status (commit `33b0f11`)
+## 16. Current build status
 
-- `cargo clippy --workspace --all-targets`: clean.
-- Tests: p8-skater 46, p8-script 9, p8-formats 8, p8-game 1 + 2: all pass.
+- `cargo clippy -p p8-skater --all-targets`: clean. p8-game could not be
+  built in this cloud container (the Bevy dependency `wayland-sys` needs a
+  system library that is missing); p8-game does not use anything that
+  changed.
+- Tests: p8-skater 52 (6 new in `transfer.rs`), p8-script 9, p8-formats 8,
+  p8-game 1 + 2 (last run at `33b0f11`).
+- `transfer_ride` on z_houses: `spine` finds the spine at x ~ -65, flies
+  over it and lands down the far side at 12.7 m/s with `LandedFromSpine`;
+  `acid` rolls off a deck at 6 m/s, pops to 5 m/s, drops into the ramp
+  below (DropHeight 1.65) and lands at 12.7 m/s. `vert_ride` and
+  `lip_ride` output is identical to before.
 - `check_scripts`: 7626 scripts walk cleanly.
 - Real-level rides: `vert_ride` (up and down a halfpipe, break-vert with Up),
   `lip_ride` (lip grab, ~1.7 s until the meter tips with no input, ollie out

@@ -246,15 +246,19 @@ impl CorePhysics {
             if self.vert.in_vert_air {
                 self.set_break_window(true);
                 if !self.spine_button(input) {
-                    self.break_vert(s, false);
+                    self.break_vert(s, Some(world), false);
                 }
                 let t = s.global_float("Skater_vert_active_up_time") as i32;
                 if input.up_released_ms > t && input.up_held_ms > t {
                     self.set_break_window(false);
                 }
+            } else if self.spine_button(input) {
+                // 820F1B7C: off an edge, not vert, with the spine button:
+                // an acid drop with the pop.
+                if let Some(drop) = self.acid_drop_search(s, world, true) {
+                    self.acid_drop_start(s, &drop);
+                }
             }
-            // Otherwise, with the spine button, retail looks for a spine to
-            // transfer to (`820E1600`): not translated.
         }
     }
 }

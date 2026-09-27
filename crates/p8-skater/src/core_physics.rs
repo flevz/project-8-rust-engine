@@ -231,6 +231,16 @@ pub struct CorePhysics {
     /// the goto and a script update in place, e.g. `LipTrick` from
     /// `820F44C0`); `skater.rs` does it right after the physics step.
     pub script_goto: Option<u32>,
+    /// Spine transfers and acid drops (`transfer.rs`).
+    pub transfer: crate::transfer::Transfer,
+    /// `+2540`: game time of the last `Jump` (820F0EA8).
+    pub jump_ms: i64,
+    /// `+2084`..`+2100` as last written. `override_limits` is these while
+    /// `+2084` is not 0; the rest stay in memory when it is 0, and
+    /// `820DAFF0` reuses them. Before any `OverrideLimits`, friction
+    /// `+2096` and gravity `+2100` are UNKNOWN: no writer other than
+    /// `820D5C68` was found, so they start at 0 (INFERRED zero-filled).
+    pub override_mem: OverrideLimits,
     /// State of the stand-in for retail's random numbers (`821E8508`; its
     /// generator is not read).
     pub rng: u32,
@@ -294,7 +304,7 @@ pub(crate) fn project_keep_length(v: Vec3, n: Vec3) -> Vec3 {
 
 /// Retail `821EE530`: signed angle from `a` to `b` around `axis`, after
 /// projecting both onto the plane of `axis`.
-fn signed_angle(a: Vec3, b: Vec3, axis: Vec3) -> f32 {
+pub(crate) fn signed_angle(a: Vec3, b: Vec3, axis: Vec3) -> f32 {
     let n = axis.normalize_or_zero();
     let a = (a - n * a.dot(n)).normalize_or_zero();
     let b = (b - n * b.dot(n)).normalize_or_zero();
@@ -379,6 +389,9 @@ impl CorePhysics {
             allow_lip_no_grind: false,
             balance: Default::default(),
             script_goto: None,
+            transfer: Default::default(),
+            jump_ms: 0,
+            override_mem: OverrideLimits { timer: 0.0, max: 0.0, max_max: 0.0, friction: 0.0, gravity: 0.0 },
             rng: 0x1234_5678,
         }
     }
@@ -399,6 +412,17 @@ impl CorePhysics {
 
     fn speed(&self) -> f32 {
         self.body.velocity.length()
+    }
+
+    /// The override fields `+2084`..`+2100` as they stand.
+    pub(crate) fn override_base(&self) -> OverrideLimits {
+        self.override_limits.unwrap_or(OverrideLimits { timer: 0.0, ..self.override_mem })
+    }
+
+    /// Write the override fields; a timer (`+2084`) of 0 means off.
+    pub(crate) fn set_override(&mut self, o: OverrideLimits) {
+        self.override_mem = o;
+        self.override_limits = if o.timer == 0.0 { None } else { Some(o) };
     }
 
     fn stat(&self, s: &Scripts, name: &str) -> f32 {
@@ -568,7 +592,10 @@ impl CorePhysics {
     /// Retail `820E0188`: the speed limits, run each frame after the
     /// crouch update and before the state update (`820FC990`).
     pub fn speed_limits(&mut self, s: &Scripts) {
-        // Skipped in a spine transfer (SkaterState `+136`, not translated).
+        // 820E01AC: skipped in a spine transfer (SkaterState `+136`).
+        if self.transfer.active {
+            return;
+        }
         let mut max_max = self.stat(s, "Skater_Max_Max_Speed_Stat");
         let mut max = self.stat(s, "Skater_Max_Speed_Stat");
         // Retail also reads Skater_Vert_Max_Speed_Time here and ignores it.
@@ -801,7 +828,7 @@ impl CorePhysics {
 
     /// Retail `820DB318`: point the velocity exactly along the board,
     /// forwards or backwards, keeping the speed.
-    fn velocity_along_board(&mut self) {
+    pub(crate) fn velocity_along_board(&mut self) {
         let speed = self.speed();
         // 1e-6 is the constant at 8200297C.
         if speed <= 1e-6 {
@@ -824,12 +851,17 @@ impl CorePhysics {
     /// until ground snapping is translated.
     pub fn ground_update(&mut self, s: &Scripts, input: &InputState, world: &dyn crate::world::World) -> Vec<Event> {
         let mut events = Vec::new();
-        // 820F6978 starts by clearing SkaterState +80, +56, +64 and +144
-        // (and +136, +152, +192, +200, +208, +1380, +1616: untranslated).
+        // 820F6978 starts by clearing SkaterState +80, +56, +64, +136,
+        // +192, +144, +200 and physics +1380 (and +152, +208, +1616:
+        // untranslated).
         self.set_break_window(false);
         self.vert.in_vert_air = false;
         self.vert.tracking = false;
+        self.set_transfer(false);
+        self.set_flag_192(false);
         self.vert.over_ground = false;
+        self.set_no_acid_drop(false);
+        self.transfer.retry = false;
         self.kick_flag = false;
         let speed = self.speed();
         if speed - self.last_speed >= s.physics_float("Physics_kick_accel_threshold", self.on_bike) {
