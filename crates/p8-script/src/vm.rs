@@ -962,6 +962,22 @@ impl Script {
             self.goto(host, target, &p);
             return Some(true);
         }
+        if name == k("GotoRandomScript") {
+            // 822A9078: the first unnamed array; if it is a non-empty array
+            // of checksums, go to one picked at random (821E8508) with no
+            // parameters (8220EE00 is given the object, not a struct).
+            // Returns TRUE either way.
+            if let Some(list) = params.unnamed_array()
+                && !list.is_empty()
+                && matches!(list[0], Value::Checksum(_))
+            {
+                let i = host.random(list.len() as u32) as usize;
+                if let Some(Value::Checksum(target)) = list.get(i) {
+                    self.goto(host, *target, &Params::new());
+                }
+            }
+            return Some(true);
+        }
         if name == k("SetException") || name == k("SetExceptionHandler") || name == k("SetEventHandler") {
             let exception = name != k("SetEventHandler") || params.flag(k("Exception"));
             let h = Handler {
@@ -1064,6 +1080,7 @@ fn is_vm_command(name: u32) -> bool {
         "GotParam",
         "StructureContains",
         "Goto",
+        "GotoRandomScript",
         "SetException",
         "SetExceptionHandler",
         "SetEventHandler",
@@ -1363,6 +1380,18 @@ mod tests {
         assert!(t.called().is_empty());
         assert!(s.event(&mut t, qb_key("ollied"), &Params::new()));
         assert_eq!(t.called(), ["a"]);
+        assert!(s.is_done());
+    }
+
+    #[test]
+    fn goto_random_script_goes_to_one_of_the_list() {
+        // main: GotoRandomScript [handler] / a   (the test host's random is 0)
+        let m = Asm::default().nl().name("GotoRandomScript").t(ARRAY_OPEN).name("handler").t(ARRAY_CLOSE).nl();
+        let m = m.name("a").nl().t(ENDSCRIPT);
+        let h = Asm::default().nl().name("b").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", m), ("handler", h)]);
+        let s = run(&mut t, "main");
+        assert_eq!(t.called(), ["b"]);
         assert!(s.is_done());
     }
 

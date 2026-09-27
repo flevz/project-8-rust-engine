@@ -587,6 +587,23 @@ command the lip scripts run on z_houses, was checked:
   `GeneralBail`, which runs `VibrateOff` (line 134 of its 250) and then the
   ragdoll bail. So the skater does not bail at all yet, and nothing stops
   the rumble. Fix = the bail system (roadmap item 5), not a stand-in.
+- Then (user chose "bails now"): `GotoRandomScript` (`822A9078`) is now a
+  VM command (first unnamed array of checksums, random pick via
+  `821E8508`, goto with no params). The bail scripts now run: LipBail ->
+  InvertBail -> Bail_NoInit -> GeneralBail (VibrateOff: rumble stops) ->
+  Baildone -> the skater lands and ends in `Stoppedstate` (standing still,
+  as retail ends a bail), and can get going again with stick/crouch. But the
+  whole bail passes in one frame: its waits (`WaitForRagdoll`,
+  `Bail_WaitAnim*`) and the ragdoll are not translated. Untranslated in
+  GeneralBail: PausePhysics, RagdollBailActivate, Ragdoll_* (SetState,
+  Anim_Set_State, FixMatrix, ...), WaitForRagdoll, Obj_SpawnScriptNow
+  (BailBoardControl), Obj_Get/SetPosition, Obj_GetBonePosition,
+  BailMoveAwayFromGeo, SetForcedBail, SetStandingBail, IsStandingBail,
+  InBail, PlaySkaterStream, SetTags/GetSingleTag, ... In Baildone:
+  UnPausePhysics, BailLerpToGround, BailOrientToBones, RagdollBailDeactivate,
+  Ragdoll_BlendToInactive, BashOn/Off, SetSloMo. The crash itself (how long
+  it lasts, where the skater ends up) comes from the ragdoll, which needs
+  the skater's skeleton (models/animations, not started).
 - Not done: pause blocking (`82778B54`, object `+308` bit 0; no pause yet),
   `VibrationOn/Off/IsOn` (options menu, player index), `VibrateController`
   and `Vibrate_Controller_Safe` (menus, special level objects), physics

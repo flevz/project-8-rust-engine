@@ -136,6 +136,14 @@ impl Params {
         })
     }
 
+    /// The first unnamed array (retail `82212AD0(params, 0, ...)`).
+    pub fn unnamed_array(&self) -> Option<&[Value]> {
+        self.0.iter().find_map(|(k, v)| match (k, v) {
+            (0, Value::Array(a)) => Some(a.as_slice()),
+            _ => None,
+        })
+    }
+
     /// The first unnamed number (retail `822128C8(params, 0, ...)`).
     pub fn unnamed_float(&self) -> Option<f32> {
         self.0.iter().find_map(|(k, v)| if *k == 0 { v.as_f32() } else { None })
