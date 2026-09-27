@@ -14,6 +14,7 @@ pub mod balance;
 pub mod body;
 pub mod controller;
 pub mod core_physics;
+mod events;
 pub mod ground;
 pub mod input;
 pub mod lip;

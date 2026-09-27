@@ -9,6 +9,7 @@
 //! translated command names its function. Commands not translated yet are
 //! recorded and answer false.
 use crate::core_physics::{CorePhysics, Event, OverrideLimits, State};
+use crate::events::{PhysicsEvents, ScriptAction};
 use crate::input::InputState;
 use crate::script::Scripts;
 use crate::world::World;
@@ -73,25 +74,40 @@ impl Skater {
         me
     }
 
-    /// One frame: physics, its events to the scripts, then the scripts'
-    /// own update (LIKELY order; the script update's place in the frame
-    /// is not read).
+    /// Physics delivers events synchronously at their call sites. The
+    /// regular script update still follows physics (INFERRED order; its
+    /// place in the retail component schedule has not been verified).
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
-        let mut events = self.physics.step(s, input, world);
-        let Some(script) = self.script.as_mut() else { return events };
-        let goto = self.physics.script_goto.take();
-        let mut ctx =
-            Ctx { p: &mut self.physics, s, input: *input, seed: &mut self.seed, events: Vec::new(), world: Some(world) };
-        if let Some(name) = goto {
-            // Retail goes to the script and updates it in place (820F4990).
-            script.goto(&mut ctx, name, &Params::new());
-            script.update(&mut ctx);
-        }
-        for e in events.clone() {
-            if let Some(name) = event_name(e) {
-                script.event(&mut ctx, qb_key(name), &Params::new());
+        let Some(script) = self.script.as_mut() else {
+            return self.physics.step(s, input, world);
+        };
+        let seed = &mut self.seed;
+        let mut dispatch = |p: &mut CorePhysics, action| {
+            let mut ctx = Ctx { p, s, input: *input, seed, events: Vec::new(), world: Some(world) };
+            match action {
+                ScriptAction::Event(e) => {
+                    if let Some(name) = event_name(e) {
+                        script.event(&mut ctx, qb_key(name), &Params::new());
+                    }
+                }
+                ScriptAction::Goto(name) => {
+                    script.goto(&mut ctx, name, &Params::new());
+                    script.update(&mut ctx);
+                }
             }
-        }
+            ctx.events
+        };
+        let mut events = PhysicsEvents::new(&mut dispatch);
+        self.physics.step_with_events(s, input, world, &mut events);
+        let mut events = events.log;
+        let mut ctx = Ctx {
+            p: &mut self.physics,
+            s,
+            input: *input,
+            seed: &mut self.seed,
+            events: Vec::new(),
+            world: Some(world),
+        };
         script.update(&mut ctx);
         events.extend(ctx.events);
         for k in script.untranslated.drain(..) {
@@ -286,7 +302,9 @@ impl Ctx<'_> {
                 max_max: params.float(k("max_max")).unwrap_or(max),
                 // 2e-6 is the constant at 82002990.
                 friction: params.float(k("friction")).unwrap_or(2e-6),
-                gravity: params.float(k("gravity")).unwrap_or(self.s.physics_float("Physics_Ground_Gravity", p.on_bike)),
+                gravity: params
+                    .float(k("gravity"))
+                    .unwrap_or(self.s.physics_float("Physics_Ground_Gravity", p.on_bike)),
             };
             if params.flag(k("notimelimit")) {
                 o.timer = -1.0;
@@ -558,3 +576,117 @@ const COMMANDS: &[&str] = &[
     "Held",
     "MakeSkaterGoto",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core_physics::tests::scripts;
+    use crate::world::{FlatFloor, Hit};
+    use p8_script::{Handler, code};
+    use std::cell::Cell;
+
+    /// Synthetic bytecode only; no extracted scripts or assets.
+    struct Asm(Vec<u8>);
+    impl Asm {
+        fn new() -> Self {
+            Self(vec![code::NEWLINE])
+        }
+        fn name(mut self, name: &str) -> Self {
+            self.0.push(code::NAME);
+            self.0.extend(qb_key(name).to_le_bytes());
+            self
+        }
+        fn int(mut self, n: i32) -> Self {
+            self.0.push(code::INT);
+            self.0.extend(n.to_le_bytes());
+            self
+        }
+        fn param(self, name: &str, n: i32) -> Self {
+            let mut a = self.name(name);
+            a.0.push(code::EQUALS);
+            a.int(n)
+        }
+        fn nl(mut self) -> Self {
+            self.0.push(code::NEWLINE);
+            self
+        }
+        fn finish(mut self) -> Value {
+            self.0.push(code::ENDSCRIPT);
+            Value::Script(self.0.into())
+        }
+    }
+
+    fn with_handler(event: &str, handler: Asm) -> (Scripts, Skater) {
+        let mut s = scripts();
+        s.globals.insert(qb_key("skaterinit"), Asm::new().name("Block").nl().finish());
+        s.globals.insert(qb_key("test_handler"), handler.finish());
+        let mut skater = Skater::new(&s, Vec3::ZERO, Vec3::ZERO);
+        skater.script.as_mut().unwrap().handlers.push(Handler {
+            event: qb_key(event),
+            script: qb_key("test_handler"),
+            group: 0,
+            exception: true,
+            params: Params::new(),
+        });
+        (s, skater)
+    }
+
+    #[test]
+    fn stopped_handler_changes_velocity_before_the_ground_move() {
+        let handler = Asm::new().name("SetSkaterVelocity").param("vel_z", 6).nl().name("Block").nl();
+        let (s, mut skater) = with_handler("Stopped", handler);
+        let events = skater.step(&s, &InputState::default(), &FlatFloor::default());
+        assert_eq!(events, [Event::Stopped]);
+        assert!((skater.physics.body.position.z - 6.0 * skater.physics.dt).abs() < 1e-6);
+        assert_eq!(skater.physics.body.velocity.z, 6.0);
+    }
+
+    struct NoFloor {
+        rail_queries: Cell<usize>,
+    }
+    impl World for NoFloor {
+        fn feeler(&self, _: Vec3, _: Vec3, _: u16, _: u16) -> Option<Hit> {
+            None
+        }
+        fn rails(&self) -> Option<&crate::rails::RailManager> {
+            self.rail_queries.set(self.rail_queries.get() + 1);
+            None
+        }
+    }
+
+    #[test]
+    fn groundgone_handler_can_disable_the_later_rail_search() {
+        let handler = Asm::new().name("NoRailTricks").nl().name("Block").nl();
+        let (s, mut skater) = with_handler("GroundGone", handler);
+        skater.physics.body.velocity = Vec3::Z * 3.0;
+        let world = NoFloor { rail_queries: Cell::new(0) };
+        let events = skater.step(&s, &InputState { triangle: true, ..Default::default() }, &world);
+        assert_eq!(events, [Event::SkaterOffEdge, Event::GroundGone]);
+        assert!(skater.physics.no_rail_tricks);
+        assert_eq!(world.rail_queries.get(), 0, "the handler must run before rail_check");
+    }
+
+    #[test]
+    fn ollied_handler_jumps_before_rail_search_and_logs_broadcast_once() {
+        let handler = Asm::new().name("Jump").nl().name("Block").nl();
+        let (s, mut skater) = with_handler("Ollied", handler);
+        skater.physics.crouched = true;
+        // A floor for the ground update; observe the post-update rail query.
+        struct FloorWithRails(Cell<usize>);
+        impl World for FloorWithRails {
+            fn feeler(&self, a: Vec3, b: Vec3, i: u16, j: u16) -> Option<Hit> {
+                FlatFloor::default().feeler(a, b, i, j)
+            }
+            fn rails(&self) -> Option<&crate::rails::RailManager> {
+                self.0.set(self.0.get() + 1);
+                None
+            }
+        }
+        let world = FloorWithRails(Cell::new(0));
+        let events = skater.step(&s, &InputState { triangle: true, ..Default::default() }, &world);
+        assert_eq!(skater.physics.state, State::Air);
+        assert_eq!(world.0.get(), 1, "Jump must make Air visible to rail_check in this tick");
+        let ollied = events.iter().position(|e| *e == Event::Ollied).unwrap();
+        assert_eq!(&events[ollied..], [Event::Ollied, Event::SkaterJump]);
+    }
+}

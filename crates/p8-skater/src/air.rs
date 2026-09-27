@@ -1,5 +1,6 @@
 //! Jumping, the air update and landing, plus the per-frame state dispatch.
 use crate::core_physics::{CorePhysics, Event, State};
+use crate::events::PhysicsEvents;
 use crate::input::InputState;
 use crate::script::Scripts;
 use crate::world::World;
@@ -171,7 +172,8 @@ impl CorePhysics {
         }
         if spin != 0.0 {
             let angle = self.dt * spin;
-            self.last_turn = Some(if angle > 0.0 { crate::core_physics::Turn::Left } else { crate::core_physics::Turn::Right });
+            self.last_turn =
+                Some(if angle > 0.0 { crate::core_physics::Turn::Left } else { crate::core_physics::Turn::Right });
             self.rotate(angle);
             self.spin_degrees += angle * 57.29578;
         }
@@ -323,7 +325,12 @@ impl CorePhysics {
     /// (bikes only), lip checks, bails on landing, moving platforms, and the
     /// nose/tail landing feelers (`820E5250`, which only record contact).
     pub fn air_update(&mut self, s: &Scripts, world: &dyn World) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = PhysicsEvents::default();
+        self.air_update_with_events(s, world, &mut events);
+        events.log
+    }
+
+    pub(crate) fn air_update_with_events(&mut self, s: &Scripts, world: &dyn World, events: &mut PhysicsEvents<'_>) {
         // Object +128: the position at the start of this frame (LIKELY: the
         // object update stores it before the physics runs).
         let old = self.old_position;
@@ -372,10 +379,10 @@ impl CorePhysics {
         // Landing: feeler from last position to this one, ignoring surfaces
         // with flag 0x10 (`820E5048(16, 0)` at 820F365C).
         let Some(hit) = world.feeler(old, self.body.position, 0x10, 0) else {
-            return events;
+            return;
         };
         if handled {
-            return events;
+            return;
         }
         // 820F36B4: a ledge to step onto instead (`820E4DB8`) wins when
         // rising faster than 0.25 (82000BEC) or the hit is steep (normal.y
@@ -383,24 +390,23 @@ impl CorePhysics {
         // `+116` (UNKNOWN; nothing translated sets it, so always).
         let steep = hit.normal.y < 0.1;
         if self.air_snap_up(s, old, world) && (self.body.velocity.y > 0.25 || steep) {
-            return events;
+            return;
         }
         let skatable = surface_skatable(s, &hit);
         if skatable && hit.normal.y < -0.01 {
             // Hitting a ceiling (-0.01 at 82001BA8): back off and fall.
             self.body.position = old;
             self.body.velocity.y = -0.254;
-            return events;
+            return;
         }
         // 0.0025 is the constant at 820027D0.
         self.body.position = hit.point + hit.normal * 0.0025;
         if !skatable {
-            self.air_hit_wall(s, hit.normal, &mut events);
-            return events;
+            self.air_hit_wall(s, hit.normal, events);
+            return;
         }
         self.terrain = hit.terrain;
-        self.land(s, hit.normal, &mut events);
-        events
+        self.land(s, hit.normal, events);
     }
 
     /// Retail `820E4DB8`: step up onto a ledge top the skater has just
@@ -521,9 +527,9 @@ impl CorePhysics {
     }
 
     /// `820F3EF8`: the air feeler hit a surface that can't be skated.
-    fn air_hit_wall(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
+    fn air_hit_wall(&mut self, s: &Scripts, n: Vec3, events: &mut PhysicsEvents<'_>) {
         if self.in_bail {
-            events.push(Event::BailCollision);
+            events.emit(self, Event::BailCollision);
             return;
         }
         self.body.velocity = project_keep_length(self.body.velocity, n);
@@ -536,7 +542,7 @@ impl CorePhysics {
     }
 
     /// The landing path of `820F2310`.
-    fn land(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
+    fn land(&mut self, s: &Scripts, n: Vec3, events: &mut PhysicsEvents<'_>) {
         self.set_state(State::Ground);
         self.last_speed = self.body.velocity.length();
         // `820DBAA8(1)` runs here, before the landing velocity blend.
@@ -578,7 +584,7 @@ impl CorePhysics {
         self.body.matrix.y_axis = n;
         orthonormalize_keep_up(&mut self.body.matrix);
         self.matrix_32 = self.body.matrix;
-        events.push(Event::Landed);
+        events.emit(self, Event::Landed);
     }
 
     /// Air time in milliseconds (retail `820D4CA8` while in the air).
@@ -596,6 +602,18 @@ impl CorePhysics {
     /// while [`CorePhysics::late_ollie`] is set (see there). With the
     /// scripts, `skater.rs` delivers the events to them instead.
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
+        let mut events = PhysicsEvents::default();
+        self.step_with_events(s, input, world, &mut events);
+        events.log
+    }
+
+    pub(crate) fn step_with_events(
+        &mut self,
+        s: &Scripts,
+        input: &InputState,
+        world: &dyn World,
+        events: &mut PhysicsEvents<'_>,
+    ) {
         self.time_frac_ms += self.dt * 1000.0;
         let whole = self.time_frac_ms.floor();
         self.time_ms += whole as i64;
@@ -613,34 +631,33 @@ impl CorePhysics {
         self.update_crouch(input);
         self.speed_limits(s);
         let was_air = self.state == State::Air;
-        let mut events = match self.state {
-            State::Ground => self.ground_update(s, input, world),
-            State::Air => self.air_update(s, world),
-            State::Lip => self.lip_update(s, input),
-        };
+        match self.state {
+            State::Ground => self.ground_update_with_events(s, input, world, events),
+            State::Air => self.air_update_with_events(s, world, events),
+            State::Lip => self.lip_update(s, input, events),
+        }
         // 820F4050: the air update ends with the ollie trigger `820D7AB0`
         // on every path that does not land.
-        if was_air && !events.contains(&Event::Landed) && self.ollie_trigger(input) {
-            events.push(Event::Ollied);
+        if was_air && !events.log.contains(&Event::Landed) && self.ollie_trigger(input) {
+            events.emit(self, Event::Ollied);
         }
         // 820FCD8C: rails, after the state update.
-        self.rail_check(s, input, world);
+        self.rail_check(s, input, world, events);
         if self.scripted {
-            return events;
+            return;
         }
-        if events.contains(&Event::GroundGone) {
+        if events.log.contains(&Event::GroundGone) {
             // Script `groundgone`: `SetException ex = ollied scr = ollie`.
             self.late_ollie = true;
         }
-        if events.contains(&Event::Landed) {
+        if events.log.contains(&Event::Landed) {
             self.late_ollie = false;
         }
-        if events.contains(&Event::Ollied) && (!was_air || self.late_ollie) {
-            events.extend(self.jump(s, None));
+        if events.log.contains(&Event::Ollied) && (!was_air || self.late_ollie) {
+            events.log.extend(self.jump(s, None));
             // `ollie` runs `InAirExceptions`, which drops the handler.
             self.late_ollie = false;
         }
-        events
     }
 }
 

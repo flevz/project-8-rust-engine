@@ -39,7 +39,8 @@ pub trait Host {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Wait {
     None,
-    /// Frames still to wait (retail wait type 1, `8221A270`).
+    /// Update ticks still to wait (retail GameFrame type 1, `8221A270`).
+    /// The issuing call ticks once; this is not a simulation-frame clock.
     Frames(u32),
     /// Until this game time (retail time waits, `8221A1A8`/`8221A2C0`).
     Until(f64),
@@ -86,7 +87,7 @@ pub struct Handler {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// Waiting for a later frame.
+    /// Waiting for a later update or for a timed/blocking condition.
     Waiting,
     /// Ran to the end.
     Done,
@@ -105,6 +106,10 @@ pub struct Script {
     loops: Vec<Loop>,
     cond: Option<Cond>,
     wait: Wait,
+    /// Retail script +196 bit 0x80: a nested update exited waiting. The
+    /// outer loop must not tick that wait again. Cleared on every entry,
+    /// so this is not a once-per-frame guard.
+    waiting_exit: bool,
     pub handlers: Vec<Handler>,
     on_exception_run: Option<u32>,
     on_exit: Option<(u32, Params)>,
@@ -168,6 +173,7 @@ impl Script {
             loops: Vec::new(),
             cond: None,
             wait: Wait::None,
+            waiting_exit: false,
             handlers: Vec::new(),
             on_exception_run: None,
             on_exit: None,
@@ -204,19 +210,26 @@ impl Script {
     /// Retail `8220F8F0`: run until the script waits or ends.
     pub fn update(&mut self, host: &mut dyn Host) -> Status {
         self.steps = 0;
+        // 8220F914..8220F924: clear +196 bit 0x80 on every call, including
+        // re-entry. Separate calls in one game frame each tick frame waits.
+        self.waiting_exit = false;
         loop {
             let Some(pc) = self.pc else { return Status::Done };
-            // 8221A568: count down or finish a wait.
-            match self.wait {
-                Wait::None => {}
-                Wait::Frames(n) if n > 0 => {
-                    self.wait = Wait::Frames(n - 1);
-                    return Status::Waiting;
+            // 8220F934..8220F948: skip 8221A568 if a command re-entered
+            // this script and the nested call exited waiting.
+            if !self.waiting_exit {
+                match self.wait {
+                    Wait::None => {}
+                    Wait::Frames(n) if n > 0 => self.wait = Wait::Frames(n - 1),
+                    Wait::Frames(_) => self.wait = Wait::None,
+                    Wait::Until(t) if host.now_ms() >= t => self.wait = Wait::None,
+                    Wait::Until(_) | Wait::Forever => {}
                 }
-                Wait::Frames(_) => self.wait = Wait::None,
-                Wait::Until(t) if host.now_ms() < t => return Status::Waiting,
-                Wait::Until(_) => self.wait = Wait::None,
-                Wait::Forever => return Status::Waiting,
+            }
+            if self.wait != Wait::None {
+                // 8220FC64/8220FC70: also visible to an enclosing update.
+                self.waiting_exit = true;
+                return Status::Waiting;
             }
             self.steps += 1;
             if self.steps > 100_000 {
@@ -925,8 +938,13 @@ impl Script {
             } else if frame_time {
                 // 16.6667 ms per frame (constant at 8200346C).
                 Wait::Until(host.now_ms() + (n * 16.666_666) as i32 as f64)
-            } else if params.flag(k("None")) {
-                Wait::Frames(n as u32)
+            } else if params.flag(0xECAA_3345) {
+                // 822A715C..822A718C -> 8221A220: type 14, NOT "None".
+                // Its global script-pass latch (8274DF88) is not hosted
+                // yet. Report and block this unsupported wait rather than
+                // silently treating it as milliseconds or game frames.
+                self.note_untranslated(name);
+                Wait::Forever
             } else {
                 Wait::Until(host.now_ms() + n as i64 as f64)
             };
@@ -1008,9 +1026,7 @@ impl Script {
             return Some(true);
         }
         if name == k("OnExitRun") {
-            self.on_exit = params
-                .unnamed_checksum()
-                .map(|n| (n, params.params(k("Params")).unwrap_or_default()));
+            self.on_exit = params.unnamed_checksum().map(|n| (n, params.params(k("Params")).unwrap_or_default()));
             return Some(true);
         }
         if name == k("Printf") {
@@ -1280,6 +1296,13 @@ mod tests {
             self.globals.get(&key).cloned()
         }
         fn command(&mut self, _s: &mut Script, name: u32, params: &Params) -> Option<bool> {
+            if name == qb_key("reenter") {
+                _s.update(self);
+                return Some(true);
+            }
+            if name == qb_key("raise_event") {
+                return Some(_s.event(self, qb_key("test_event"), &Params::new()));
+            }
             let n = NAMES.iter().find(|n| qb_key(n) == name)?;
             self.log.push((n.to_string(), params.clone()));
             Some(*self.answers.get(&name).unwrap_or(&true))
@@ -1327,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_one_gameframe_resumes_next_frame() {
+    fn wait_one_gameframe_resumes_next_update_even_at_the_same_time() {
         let s = Asm::default().nl().name("a").nl().name("Wait").int(1).name("gameframe").nl().name("b").nl();
         let s = s.t(ENDSCRIPT);
         let mut t = Test::new(&[("main", s)]);
@@ -1335,6 +1358,106 @@ mod tests {
         assert_eq!(t.called(), ["a"]);
         assert_eq!(sc.update(&mut t), Status::Done);
         assert_eq!(t.called(), ["a", "b"]);
+        assert_eq!(t.time, 0.0, "retail has no simulation-frame or timestamp guard here");
+    }
+
+    #[test]
+    fn zero_gameframe_wait_continues_and_two_waits_for_two_more_updates() {
+        let s = Asm::default().nl().name("Wait").int(0).name("GameFrame").nl().name("a").nl();
+        let s = s.name("Wait").int(2).name("game").nl().name("b").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        let mut sc = run(&mut t, "main");
+        assert_eq!(t.called(), ["a"]);
+        assert_eq!(sc.update(&mut t), Status::Waiting);
+        assert_eq!(t.called(), ["a"]);
+        assert_eq!(sc.update(&mut t), Status::Done);
+        assert_eq!(t.called(), ["a", "b"]);
+    }
+
+    #[test]
+    fn nested_update_waits_without_an_extra_tick_from_the_outer_update() {
+        let s = Asm::default().nl().name("reenter").nl().name("Wait").int(1).name("gameframe").nl();
+        let s = s.name("b").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        let mut sc = run(&mut t, "main");
+        assert!(t.called().is_empty());
+        assert_eq!(sc.wait, Wait::Frames(0));
+        assert_eq!(sc.update(&mut t), Status::Done);
+        assert_eq!(t.called(), ["b"]);
+    }
+
+    #[test]
+    fn event_reentry_propagates_waiting_through_multiple_update_levels() {
+        let main = Asm::default().nl().name("raise_event").nl().name("c").nl().t(ENDSCRIPT);
+        let handler = Asm::default().nl().name("reenter").nl().name("Wait").int(2).name("gameframe").nl();
+        let handler = handler.name("b").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", main), ("handler_script", handler)]);
+        let mut sc = Script::new(&mut t, qb_key("main"), &Params::new()).unwrap();
+        sc.handlers.push(Handler {
+            event: qb_key("test_event"),
+            script: qb_key("handler_script"),
+            group: 0,
+            exception: true,
+            params: Params::new(),
+        });
+        assert_eq!(sc.update(&mut t), Status::Waiting);
+        assert!(t.called().is_empty());
+        assert_eq!(sc.wait, Wait::Frames(1), "only the innermost update ticks the newly issued wait");
+        assert_eq!(sc.update(&mut t), Status::Waiting);
+        assert_eq!(sc.update(&mut t), Status::Done);
+        assert_eq!(t.called(), ["b"], "exception replacement must not resume the old script");
+    }
+
+    #[test]
+    fn top_level_event_wait_can_finish_in_a_separate_same_time_update() {
+        let main = Asm::default().nl().name("Block").nl().t(ENDSCRIPT);
+        let handler = Asm::default().nl().name("Wait").int(1).name("gameframe").nl().name("b").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", main), ("handler_script", handler)]);
+        let mut sc = run(&mut t, "main");
+        sc.handlers.push(Handler {
+            event: qb_key("test_event"),
+            script: qb_key("handler_script"),
+            group: 0,
+            exception: true,
+            params: Params::new(),
+        });
+        assert!(sc.event(&mut t, qb_key("test_event"), &Params::new()));
+        assert!(t.called().is_empty());
+        assert_eq!(sc.update(&mut t), Status::Done);
+        assert_eq!(t.called(), ["b"]);
+        assert_eq!(t.time, 0.0);
+    }
+
+    #[test]
+    fn bare_wait_and_unrecognized_none_flag_use_milliseconds() {
+        for flag in [None, Some("None")] {
+            let mut s = Asm::default().nl().name("Wait").int(1);
+            if let Some(flag) = flag {
+                s = s.name(flag);
+            }
+            s = s.nl().name("b").nl().t(ENDSCRIPT);
+            let mut t = Test::new(&[("main", s)]);
+            let mut sc = run(&mut t, "main");
+            for _ in 0..3 {
+                assert_eq!(sc.update(&mut t), Status::Waiting);
+                assert!(t.called().is_empty());
+            }
+            t.time = 1.0;
+            assert_eq!(sc.update(&mut t), Status::Done);
+            assert_eq!(t.called(), ["b"]);
+        }
+    }
+
+    #[test]
+    fn unhosted_type_fourteen_wait_is_reported_instead_of_running_early() {
+        let mut s = Asm::default().nl().name("Wait").int(0).t(NAME);
+        s.0.extend(0xECAA_3345_u32.to_le_bytes());
+        let s = s.nl().name("b").nl().t(ENDSCRIPT);
+        let mut t = Test::new(&[("main", s)]);
+        let mut sc = run(&mut t, "main");
+        assert_eq!(sc.untranslated, [qb_key("Wait")]);
+        assert_eq!(sc.update(&mut t), Status::Waiting);
+        assert!(t.called().is_empty());
     }
 
     #[test]

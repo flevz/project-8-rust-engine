@@ -20,6 +20,10 @@ the first, second and fourth labels.
 
 State as of commit `33b0f11` (engine repo, branch `main`).
 
+Subsequent `codex-audit` work: see [Physics-to-script event ordering](EVENT_DISPATCH.md).
+That follow-up supersedes the deferred event delivery and lip `script_goto`
+descriptions below for the scripted path, and records remaining verification limits.
+
 ---
 
 ## 1. Overall goal

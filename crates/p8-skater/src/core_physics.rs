@@ -4,6 +4,7 @@
 //! Steps that need level collision, animation or features not yet
 //! translated are listed in its docs and are absent, not approximated.
 use crate::body::{Body, rotate_about_up};
+use crate::events::PhysicsEvents;
 use crate::input::InputState;
 use crate::script::{Scripts, StatContext};
 use crate::stats::StatLevels;
@@ -550,18 +551,24 @@ impl CorePhysics {
     /// The drive section of retail `820F6978` (no balance trick active; the
     /// manual and skitch branches are not translated).
     pub fn drive(&mut self, s: &Scripts, input: &InputState) -> Option<Event> {
+        let mut events = PhysicsEvents::default();
+        self.drive_with_events(s, input, &mut events);
+        events.log.into_iter().next()
+    }
+
+    fn drive_with_events(&mut self, s: &Scripts, input: &InputState, events: &mut PhysicsEvents<'_>) {
         if self.is_braking(s, input) {
-            let event = self.brake(s, input);
+            if let Some(event) = self.brake(s, input) {
+                events.emit(self, event);
+            }
             self.standing_kick_limit = 0.0;
             self.kick_flag = false;
-            event
         } else {
             self.brake_amount = 0.0;
             self.braking = false;
             if self.can_kick(s, input) {
                 self.accelerate(s);
             }
-            None
         }
     }
 
@@ -726,7 +733,9 @@ impl CorePhysics {
             if t.abs() == 0.0 {
                 // Digital fallback. Retail multiplies the ramp by t, which is 0
                 // here, so a ramped turn stays 0 (kept as found).
-                for (held, ms, full) in [(input.left, input.left_held_ms, -1.0), (input.right, input.right_held_ms, 1.0)] {
+                for (held, ms, full) in
+                    [(input.left, input.left_held_ms, -1.0), (input.right, input.right_held_ms, 1.0)]
+                {
                     if held {
                         if speed < 0.25 && self.stick_pulled_back(s, input) && (ms as f32) < ramp_time {
                             ramped = true;
@@ -815,15 +824,23 @@ impl CorePhysics {
     /// Retail ground update `820F6978`, for a skater on the ground with no
     /// balance trick, skitch, bike or moving platform.
     ///
-    /// Not translated (absent): side and forward collision (`820EB9A0`,
-    /// `820EBD20`), ground snapping (`820F12C0`) and the re-move loop,
-    /// high-ollie checks (`820D79F8`), animation bookkeeping (`820DE230`,
-    /// heading `+2016`), and the steps after steering (`820DBEF0` onward).
-    /// The position is advanced by `velocity * dt` exactly as retail does
-    /// before collision; keeping the board on the ground is the caller's job
-    /// until ground snapping is translated.
+    /// Not translated: side collision (`820EB9A0`), high-ollie checks
+    /// (`820D79F8`), animation bookkeeping (`820DE230`, heading `+2016`),
+    /// and some steps after steering (`820DBEF0` onward). The standalone
+    /// entry point collects events; Skater uses the synchronous path below.
     pub fn ground_update(&mut self, s: &Scripts, input: &InputState, world: &dyn crate::world::World) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = PhysicsEvents::default();
+        self.ground_update_with_events(s, input, world, &mut events);
+        events.log
+    }
+
+    pub(crate) fn ground_update_with_events(
+        &mut self,
+        s: &Scripts,
+        input: &InputState,
+        world: &dyn crate::world::World,
+        events: &mut PhysicsEvents<'_>,
+    ) {
         // 820F6978 starts by clearing SkaterState +80, +56, +64 and +144
         // (and +136, +152, +192, +200, +208, +1380, +1616: untranslated).
         self.set_break_window(false);
@@ -843,7 +860,7 @@ impl CorePhysics {
         }
         self.previous_normal = self.ground_normal;
         if self.in_bail && self.ground_normal.y < s.global_float("bail_steep_ground") {
-            events.push(Event::SteepGround);
+            events.emit(self, Event::SteepGround);
         }
 
         // Gravity along the ground.
@@ -883,22 +900,20 @@ impl CorePhysics {
         }
         // The `+2025` block is skipped: every retail write to `+2025` stores 0.
 
-        if let Some(e) = self.drive(s, input) {
-            events.push(e);
-        }
+        self.drive_with_events(s, input, events);
         self.friction(s, gravity_cancelled);
         if self.body.velocity.y < 0.0 {
             self.flag_2637 = false;
         }
         // 0.1 and 0.9 are the constants at 82000BF4 and 82002A74.
         if self.speed() < 0.1 && self.ground_normal.y > 0.9 {
-            events.push(Event::Stopped);
+            events.emit(self, Event::Stopped);
         }
 
         // Move, collide with walls and stay on the ground.
-        self.ground_move(s, input, world, &mut events);
+        self.ground_move(s, input, world, events);
         if self.state != State::Ground {
-            return events;
+            return;
         }
 
         if !self.powerslide {
@@ -915,23 +930,20 @@ impl CorePhysics {
         if self.ollie_trigger(input) {
             // 820F80D0: the vert takeoff runs as soon as the trigger fires.
             self.vert_takeoff(s);
-            events.push(Event::Ollied);
+            events.emit(self, Event::Ollied);
         }
-        events
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use p8_formats::qb::Value;
     use p8_formats::qb_key as k;
 
     /// Synthetic scripts shaped like the retail ones (values are test data).
-    fn scripts() -> Scripts {
-        let stat = |lo, hi, which: &str| {
-            Value::Struct(vec![(0, Value::Pair(lo, hi)), (0, Value::Checksum(k(which)))])
-        };
+    pub(crate) fn scripts() -> Scripts {
+        let stat = |lo, hi, which: &str| Value::Struct(vec![(0, Value::Pair(lo, hi)), (0, Value::Checksum(k(which)))]);
         let f = |name: &str, v: f32| (k(name), Value::Float(v));
         let physics = Value::Struct(vec![
             (k("physics_standing_acceleration_stat"), stat(5.0, 5.0, "STATS_SPEED")),
@@ -1359,8 +1371,7 @@ mod tests {
     fn override_limits_count_down_then_end() {
         let s = scripts();
         let mut p = CorePhysics::new(&s);
-        p.override_limits =
-            Some(OverrideLimits { timer: 0.02, max: 5.0, max_max: 6.0, friction: 2e-6, gravity: -9.8 });
+        p.override_limits = Some(OverrideLimits { timer: 0.02, max: 5.0, max_max: 6.0, friction: 2e-6, gravity: -9.8 });
         p.body.velocity = Vec3::new(0.0, 0.0, 10.0);
         p.speed_limits(&s);
         assert!(p.body.velocity.length() < 6.0 && p.override_limits.is_some());
@@ -1371,5 +1382,4 @@ mod tests {
         p.speed_limits(&s);
         assert_eq!(p.body.velocity, Vec3::new(0.0, 0.0, 10.0));
     }
-
 }

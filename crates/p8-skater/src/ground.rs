@@ -4,6 +4,7 @@
 //! `820DB418` wall push) and ground snapping (`820F12C0`).
 use crate::air::{orthonormalize_keep_up, surface_skatable};
 use crate::core_physics::{CorePhysics, Event, State, project_keep_length};
+use crate::events::PhysicsEvents;
 use crate::input::InputState;
 use crate::script::Scripts;
 use crate::world::{Hit, World};
@@ -23,7 +24,13 @@ impl CorePhysics {
     /// Not translated: the skitch and bike branches, and `820E5158` (sets a
     /// box of ±3.5 x, -150..12 y around the skater; LIKELY the collision
     /// cache region, which the translated [`World`] does not need).
-    pub(crate) fn ground_move(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut Vec<Event>) {
+    pub(crate) fn ground_move(
+        &mut self,
+        s: &Scripts,
+        input: &InputState,
+        world: &dyn World,
+        events: &mut PhysicsEvents<'_>,
+    ) {
         let mut step = self.body.velocity * self.dt;
         let mut second = false;
         loop {
@@ -45,7 +52,13 @@ impl CorePhysics {
 
     /// Retail `820EBD20`: a feeler ahead of the move, `Skater_First_Forward_
     /// Collision_Height` above the board and `..._Length` past it.
-    fn forward_collision(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut Vec<Event>) {
+    fn forward_collision(
+        &mut self,
+        s: &Scripts,
+        input: &InputState,
+        world: &dyn World,
+        events: &mut PhysicsEvents<'_>,
+    ) {
         let old = self.old_position;
         if self.body.position == old {
             return;
@@ -72,7 +85,7 @@ impl CorePhysics {
     /// Not translated: the bonk sound (`82115D00`), and the second feeler
     /// and turn-around that only run when the hit object's `+224` flag is
     /// set (its meaning is UNKNOWN; level geometry is treated as unset).
-    fn wall_response(&mut self, s: &Scripts, input: &InputState, hit: &Hit, events: &mut Vec<Event>) {
+    fn wall_response(&mut self, s: &Scripts, input: &InputState, hit: &Hit, events: &mut PhysicsEvents<'_>) {
         let n = hit.normal;
         if self.wall_push(s, input, n, events) {
             return;
@@ -86,7 +99,7 @@ impl CorePhysics {
             let slow = 1.0 - (a.abs() - dont_slow) / (std::f32::consts::FRAC_PI_2 - dont_slow);
             self.body.velocity *= slow;
             if speed_before > s.global_float("Wall_Bounce_Dont_Flail_Speed") {
-                events.push(if (a < 0.0) != self.state_40 { Event::FlailLeft } else { Event::FlailRight });
+                events.emit(self, if (a < 0.0) != self.state_40 { Event::FlailLeft } else { Event::FlailRight });
             }
         }
         // 0.15 is the constant at 820029DC.
@@ -96,9 +109,9 @@ impl CorePhysics {
     /// Retail `820DB858`: turn the skater and velocity away from a wall.
     /// Returns the angle between the board's row 0 and the wall, folded
     /// into -pi/2..pi/2.
-    fn bounce(&mut self, s: &Scripts, scale: f32, n: Vec3, events: &mut Vec<Event>) -> f32 {
+    fn bounce(&mut self, s: &Scripts, scale: f32, n: Vec3, events: &mut PhysicsEvents<'_>) -> f32 {
         if self.in_bail {
-            events.push(Event::BailCollision);
+            events.emit(self, Event::BailCollision);
             return 0.0;
         }
         let d = self.body.row0().dot(n).clamp(-1.0, 1.0);
@@ -116,7 +129,7 @@ impl CorePhysics {
 
     /// Retail `820DB418`: with Triangle held (Xbox Y), facing into the wall,
     /// push off it. Returns whether the skater pushed.
-    fn wall_push(&mut self, s: &Scripts, input: &InputState, n: Vec3, events: &mut Vec<Event>) -> bool {
+    fn wall_push(&mut self, s: &Scripts, input: &InputState, n: Vec3, events: &mut PhysicsEvents<'_>) -> bool {
         if !input.triangle {
             return false;
         }
@@ -130,7 +143,7 @@ impl CorePhysics {
         }
         // Retail also requires `now - +2528 >= disallow`; nothing translated
         // writes `+2528` (UNKNOWN), so it never blocks here.
-        events.push(Event::WallPush);
+        events.emit(self, Event::WallPush);
         if self.state_216 {
             // Retail clears SkaterState +216 (with a timestamp) instead.
             self.state_216 = false;
@@ -178,7 +191,7 @@ impl CorePhysics {
     /// flags (read by animation code), `820E0A50` and trigger handling after
     /// a snap, the display-matrix part of `820DA1A8`, and after going off an
     /// edge the spine-transfer search (`820E1600`, `820DA7B0`).
-    fn ground_snap(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut Vec<Event>) {
+    fn ground_snap(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut PhysicsEvents<'_>) {
         let up = self.body.up();
         let start = self.body.position + up * s.physics_float("Physics_Ground_Snap_Up", self.on_bike);
         // -5 is the constant at 82002A7C.
@@ -240,8 +253,8 @@ impl CorePhysics {
         }
         if !stick {
             self.set_state(State::Air);
-            events.push(Event::SkaterOffEdge);
-            events.push(Event::GroundGone);
+            events.emit(self, Event::SkaterOffEdge);
+            events.emit(self, Event::GroundGone);
             self.vert_takeoff(s);
             if self.vert.in_vert_air {
                 self.set_break_window(true);
@@ -331,9 +344,9 @@ mod tests {
 
     fn frame(p: &mut CorePhysics, s: &Scripts, input: &InputState, w: &dyn World) -> Vec<Event> {
         p.old_position = p.body.position;
-        let mut events = Vec::new();
+        let mut events = crate::events::PhysicsEvents::default();
         p.ground_move(s, input, w, &mut events);
-        events
+        events.log
     }
 
     #[test]
