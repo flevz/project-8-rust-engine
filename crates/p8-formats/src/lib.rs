@@ -5,6 +5,7 @@ pub mod checksum;
 pub mod havok;
 pub mod pak;
 pub mod qb;
+pub mod texture;
 pub mod zone;
 
 pub use checksum::qb_key;

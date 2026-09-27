@@ -17,6 +17,7 @@ pub mod core_physics;
 pub mod ground;
 pub mod input;
 pub mod lip;
+pub mod meter_display;
 pub mod pad;
 pub mod rails;
 pub mod script;

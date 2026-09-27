@@ -4,6 +4,7 @@
 //! runs the translated skater (`p8-skater`, see `translated.rs`) with the
 //! original scripts. Otherwise it falls back to the earlier `p8-sim`
 //! prototype in an original test park.
+mod balance_meter;
 #[cfg(test)]
 mod original;
 mod park;
@@ -34,12 +35,13 @@ fn load_scripts() -> Result<(p8_skater::Scripts, String, std::path::PathBuf), St
 /// The player's own zone pak, next to their scripts:
 /// `DATA/COMPRESSED/PAK/qb.pak.xen` -> `DATA/COMPRESSED/ZONES/<ZONE>.pak.xen`.
 fn load_zone(scripts: &std::path::Path) -> Result<p8_formats::zone::Zone, String> {
-    let zones = scripts
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.join("ZONES"))
-        .ok_or("no ZONES folder next to the scripts")?;
+    let zones = zones_dir(scripts).ok_or("no ZONES folder next to the scripts")?;
     p8_formats::zone::load(&zones, ZONE)
+}
+
+/// `DATA/COMPRESSED/PAK/qb.pak.xen` -> `DATA/COMPRESSED/ZONES`.
+fn zones_dir(scripts: &std::path::Path) -> Option<std::path::PathBuf> {
+    scripts.parent().and_then(|p| p.parent()).map(|p| p.join("ZONES"))
 }
 
 fn main() {
@@ -56,7 +58,8 @@ fn main() {
     match scripts {
         Ok((scripts, source, path)) => {
             let zone = load_zone(&path);
-            app.add_plugins(translated::TranslatedPlugin { scripts, source, zone_name: ZONE, zone });
+            let zones_dir = zones_dir(&path);
+            app.add_plugins(translated::TranslatedPlugin { scripts, source, zone_name: ZONE, zone, zones_dir });
         }
         Err(why) => {
             app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))

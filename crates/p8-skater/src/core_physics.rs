@@ -227,6 +227,9 @@ pub struct CorePhysics {
     pub allow_lip_no_grind: bool,
     /// The balance component (`+2844`).
     pub balance: crate::balance::Balance,
+    /// `+1908`, `+1909`: which way off the balance meter is safe (the
+    /// meter's colours), set by `820E5988` ([`Self::update_balance_sides`]).
+    pub balance_sides: [bool; 2],
     /// A script the physics starts on the skater's script now (retail does
     /// the goto and a script update in place, e.g. `LipTrick` from
     /// `820F44C0`); `skater.rs` does it right after the physics step.
@@ -388,6 +391,7 @@ impl CorePhysics {
             no_rail_tricks: false,
             allow_lip_no_grind: false,
             balance: Default::default(),
+            balance_sides: [false; 2],
             script_goto: None,
             transfer: Default::default(),
             jump_ms: 0,

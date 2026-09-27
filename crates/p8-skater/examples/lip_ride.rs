@@ -93,7 +93,7 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
         let now = (p.state, k.script_name().unwrap_or(0));
         if i % 10 == 9 || !events.is_empty() || now != last {
             println!(
-                "t={:4.2}s pos {:7.2?} vel {:6.2?} {:?}{} lean {:7.1} script {} {events:?}",
+                "t={:4.2}s pos {:7.2?} vel {:6.2?} {:?}{} lean {:7.1} script {} {events:?}{}",
                 (i + 1) as f32 / 60.0,
                 p.body.position.to_array(),
                 p.body.velocity.to_array(),
@@ -101,8 +101,26 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
                 if p.vert.in_vert_air { " VERT" } else { "" },
                 p.balance.lip.lean,
                 name(k.script_name()),
+                meter(&p.balance.display),
             );
         }
         last = now;
     }
+}
+
+/// The balance meter on screen, if shown.
+fn meter(d: &p8_skater::meter_display::MeterDisplay) -> String {
+    if !d.turned_on {
+        return String::new();
+    }
+    format!(
+        "\n      meter at {:?} arrow {:5.1?} turned {:5.1} left {} right {} alpha {:.2}/{:.2}",
+        d.container_pos.to_array(),
+        d.arrow_pos.to_array(),
+        d.arrow_rot,
+        if d.left { "safe" } else { "danger" },
+        if d.right { "safe" } else { "danger" },
+        d.alpha1,
+        d.alpha2
+    )
 }

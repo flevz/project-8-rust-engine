@@ -18,7 +18,7 @@ Certainty labels used below:
 Code comments use `CONFIRMED` / `LIKELY` / `UNKNOWN` with the same meanings as
 the first, second and fourth labels.
 
-State as of the commit "Translate spine transfers, acid drops and bank drops"
+State as of the commit "Show the balance meter on screen (lips)"
 (engine repo, branch `main`).
 
 ---
@@ -62,10 +62,10 @@ Cargo workspace (`Cargo.toml`), edition 2024, Bevy 0.18.1, glam 0.30.
 
 | Crate | Role | Status |
 |---|---|---|
-| `crates/p8-formats` | Readers for the game's files: `.pak.xen`/`.pab.xen` archives (`pak.rs`), QB scripts and globals incl. LZSS (`qb.rs`), QB checksum (`checksum.rs`), Havok level collision (`havok.rs`), zones: collision + restart nodes + rail nodes (`zone.rs`). Bin `p8-inspect`. | Active |
+| `crates/p8-formats` | Readers for the game's files: `.pak.xen`/`.pab.xen` archives (`pak.rs`), QB scripts and globals incl. LZSS (`qb.rs`), QB checksum (`checksum.rs`), Havok level collision (`havok.rs`), zones: collision + restart nodes + rail nodes (`zone.rs`), `.img` textures (DXT5 only, `texture.rs`). Bin `p8-inspect`. | Active |
 | `crates/p8-script` | The QB **script VM**, translated from the retail CScript code: tokens (`code.rs`), parameter lists (`params.rs`), interpreter (`vm.rs`) behind a `Host` trait. | Active |
-| `crates/p8-skater` | The **translated skater**: physics (`core_physics.rs`, `ground.rs`, `air.rs`, `vert.rs`, `lip.rs`), rails (`rails.rs`), balance meter (`balance.rs`), controller path (`controller.rs`, `pad.rs`, `input.rs`), stats (`stats.rs`), script globals access (`script.rs`), level feelers (`world.rs`), and the script host that runs the skater's scripts on the physics (`skater.rs`). | Active, main work |
-| `crates/p8-game` | The Bevy app. `translated.rs` = play mode for the translated skater with the player's scripts and level. `main.rs` falls back to the old prototype if the scripts are not set up. Bin `p8-setup` (reads the player's install, writes `scripts-location.txt` and `tuning.json`). | Active |
+| `crates/p8-skater` | The **translated skater**: physics (`core_physics.rs`, `ground.rs`, `air.rs`, `vert.rs`, `lip.rs`), rails (`rails.rs`), balance meter (`balance.rs`) and its on-screen state (`meter_display.rs`), controller path (`controller.rs`, `pad.rs`, `input.rs`), stats (`stats.rs`), script globals access (`script.rs`), level feelers (`world.rs`), and the script host that runs the skater's scripts on the physics (`skater.rs`). | Active, main work |
+| `crates/p8-game` | The Bevy app. `translated.rs` = play mode for the translated skater with the player's scripts and level; `balance_meter.rs` draws the balance meter with the game's own HUD textures. `main.rs` falls back to the old prototype if the scripts are not set up. Bin `p8-setup` (reads the player's install, writes `scripts-location.txt` and `tuning.json`). | Active |
 | `crates/p8-sim` | **Old prototype** simulation (not a translation; approximations with hand-tuned values). Only used when `scripts-location.txt` is missing. | Legacy; do not extend |
 
 Frame flow (translated mode), 60 Hz `FixedUpdate`:
@@ -137,7 +137,7 @@ commands). Regenerate it before relying on the counts.
 |---|---|---|
 | **Lip tricks** | Rails loaded from the level; rail search; rail grab in the air with Y held; lip entry checks and snapping; lip state; balance meter; ollie out; falling off the meter; the `liptrick` → `InvertTrick` → `LipOut`/`OllieLipOut` scripts run for real | The **trick queue** (`SetQueueTricks`, `DoNextTrick`, button triggers) is not translated, so every lip is the default Invert (`DefaultLipTrick`); bails (`LipBail`); animations; score. |
 | Rails | Build (`82197138`, `821939F8`) and search (`821968F8`) for normal levels | Grinds (`820F8120` grind set-up, `820F4DE8`, `820F8CF0`), single-node rails (`820F4108`), moving-object rails, park-editor paths, `CreatedFromVariable`/`createdfromtod` rails |
-| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`) | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), display, cheats |
+| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
 | Air update `820F2310` | See above | Wallride/wallplant (`820EDAA8`, `820E8618`, `820E80D8`), pitch bail (`820F31E4`), high ollie `820D79F8`, lip check `820EA788`, bikes, moving platforms, nose/tail contact feelers `820E5250` |
 | Air spin `820E9620` | Spin and lean | Vert auto-turn, SmoothSpin, Nail the Trick |
 | Ground update `820F6978` | See above | **Ground side collision `820EB9A0`**, manuals branch, skitching, high ollie, several animation/bookkeeping calls |
@@ -162,7 +162,9 @@ animations), retail camera, textured level rendering, audio, menus, stats menu.
 | `crates/p8-skater/src/transfer.rs` | Spine transfer, acid/bank drop, orientation blend, post-transfer speed; the `Transfer` struct (SkaterState `+136`, `+192`, `+200`, `+272`, physics `+1380`, `+2130..+2134`, `+2172`, `+2224`, `+2304..+2464`, `+2546`, `+2616`); `ScriptAction` (scripts the physics asks to run). Tests with a synthetic spine. |
 | `crates/p8-skater/src/rails.rs` | `RailManager::build` and `search`. |
 | `crates/p8-skater/src/lip.rs` | Rail check (`820FAAA8`), may-take-rail (`820DCBE8`), grab (`820F8120` up to the lip), lip entry (`820F44C0`), lip update (`820F49D8`), `SkateInAble` (`820E55E0`), `random()`. |
-| `crates/p8-skater/src/balance.rs` | Balance component and meters. |
+| `crates/p8-skater/src/balance.rs` | Balance component and meters; `show_on_screen` = end of `82190F58`. |
+| `crates/p8-skater/src/meter_display.rs` | The meter on screen: `MeterLayout` (`82175D08`, `balance_meter_info`), `MeterDisplay::set` (`82178D78`), `sprites()` (what `create_panel_stuff` / `do_show_balance_meter` / `update_balance_meter_colors` leave on the four sprites). |
+| `crates/p8-formats/src/texture.rs` | `.img` decoder (Xbox 360 tiled DXT5, packed-mip offset) and `load_img(pak, name)`. |
 | `crates/p8-skater/src/skater.rs` | `Skater` (physics + running script), the script host `Ctx` with all translated skater commands, event name mapping, `COMMANDS` list. `P8_TRACE=1` prints every command the scripts run. |
 | `crates/p8-skater/src/script.rs` | `Scripts`: globals, `physics_float`, `global_float`, `stat`, `stat_value_of`, terrain lookups. |
 | `crates/p8-skater/src/controller.rs`, `input.rs`, `pad.rs` | Controller path and `InputState`. |
@@ -171,6 +173,7 @@ animations), retail camera, textured level rendering, audio, menus, stats menu.
 | `crates/p8-script/src/params.rs` | `Params` (retail `CStruct` semantics: AddComponent, lookups, `get_in` with struct includes, `resolve_alias`). |
 | `crates/p8-formats/src/zone.rs` | Zone loading: collision, restarts, rail nodes, compressed-node template expansion. |
 | `crates/p8-game/src/translated.rs` | Bevy play mode: level mesh from collision, placeholder skater and camera, HUD, input. |
+| `crates/p8-game/src/balance_meter.rs` | Loads `balancemeter_bg`, `balancemeter`, `balancemeter_2`, `balancearrow_glow` from `ZONES/global.pak.xen`; places them as UI images each frame. |
 | `crates/p8-skater/examples/*.rs` | Headless test rides on the real level: `level_ride`, `script_ride` (real scripts), `vert_ride` (a halfpipe; `up` holds Up), `lip_ride` (holds Y; `ollie` ollies out), `transfer_ride` (`spine` or `acid`, R2 held; physics only, the award scripts are printed). |
 | `crates/p8-script/examples/check_scripts.rs` | Walks every script in the player's `qb.pak.xen` (currently 7626, all clean). |
 | `project-8-data/research/NOTES.md` (private) | Sections 1–19: every finding with addresses. The detailed source for everything here. |
@@ -295,6 +298,16 @@ These appear in the code with their addresses, e.g. skin distance 0.0025
   skater); the matrix slerp's near-parallel branch is glam's, not read.
 - `p8-sim` values (`tuning.rs`) are the old prototype's: TEMPORARY, not used
   in translated mode.
+- **Balance meter drawing** (`p8-game/src/balance_meter.rs`): the retail
+  screen element system is not translated. The 640 x 480 HUD is scaled by
+  the window height and centred: APPROXIMATE. Colours: RGBA / 128 (INFERRED
+  from the scripts using [128 128 128] as untinted; the draw-time
+  conversion was not found). Retail angles turn clockwise on screen
+  (INFERRED: the arrow then leans the way the arc drops). The container has
+  no dims, so its size is 0 (LIKELY). Global flag `NO_DISPLAY_BALANCE` is
+  taken as clear (global flags not translated) and
+  `FLAG_SKATER_LIPTRICK_CAM_REVERSED` as clear (set only by the retail
+  camera `820D1238`).
 
 ## 10. Systems that are currently approximate or stand-ins
 
@@ -428,12 +441,22 @@ because of the Bevy test build; run the crates separately.
 
 ## 16. Current build status
 
-- `cargo clippy -p p8-skater --all-targets`: clean. p8-game could not be
-  built in this cloud container (the Bevy dependency `wayland-sys` needs a
-  system library that is missing); p8-game does not use anything that
-  changed.
-- Tests: p8-skater 52 (6 new in `transfer.rs`), p8-script 9, p8-formats 8,
-  p8-game 1 + 2 (last run at `33b0f11`).
+- `cargo clippy -p p8-formats -p p8-skater -p p8-game --all-targets`: clean.
+  p8-game now builds in the cloud container after
+  `apt-get install libwayland-dev libudev-dev libasound2-dev libxkbcommon-dev`;
+  it also runs there under `Xvfb :99` with `mesa-vulkan-drivers` and
+  `libxkbcommon-x11-0` (screenshots with ImageMagick `import -window root`).
+- Tests: p8-skater 54 (2 new in `meter_display.rs`), p8-script 9,
+  p8-formats 10 (2 new in `texture.rs`), p8-game 1 + 2.
+- Balance meter: `lip_ride` now prints the meter's on-screen state. On
+  z_houses the meter appears when `DoBalanceTrick` runs, the arrow follows
+  `arrow_positions` to (80, 5) turned 43.5 degrees just before
+  `OffMeterBottom`, and it hides when the lip-out script stops the balance.
+  Left = danger, right = safe on that lip (matches `InvertTrick`: Top ->
+  LipBail unless `SkateInAble Lip`). Screenshots of the real game (with the
+  display forced on by a temporary local change, not committed) showed the
+  arc, the lit half and the arrow in place. The `.img` decoder's output is
+  byte-identical to the research tool's decode.
 - `transfer_ride` on z_houses: `spine` finds the spine at x ~ -65, flies
   over it and lands down the far side at 12.7 m/s with `LandedFromSpine`;
   `acid` rolls off a deck at 6 m/s, pops to 5 m/s, drops into the ramp
@@ -447,6 +470,11 @@ because of the Bevy test build; run the crates separately.
   feel right; the lip build has not been played by the user yet.
 
 ## 17. The exact next item and what I intended to do
+
+The on-screen balance meter (asked for by the user) is done for lips; it
+needs no extra work for grinds and manuals beyond translating their meter
+updates (call `Balance::show_on_screen` after them, as `lip_update` does).
+The next item is unchanged:
 
 **Next: the trick queue** (task "Trick queue: SetQueueTricks, DoNextTrick,
 button triggers"). It is what picks the lip trick from direction + Y, and the

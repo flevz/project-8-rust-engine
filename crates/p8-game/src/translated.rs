@@ -23,6 +23,8 @@ pub struct TranslatedPlugin {
     pub zone_name: &'static str,
     /// The player's zone, or why it could not be read.
     pub zone: Result<Zone, String>,
+    /// The player's `ZONES` folder (HUD textures), if known.
+    pub zones_dir: Option<std::path::PathBuf>,
 }
 
 impl Plugin for TranslatedPlugin {
@@ -63,18 +65,19 @@ impl Plugin for TranslatedPlugin {
                 cam_dir,
             })
             .insert_resource(ground)
-            .add_systems(Startup, setup)
+            .insert_resource(crate::balance_meter::ZonesDir(self.zones_dir.clone()))
+            .add_systems(Startup, (setup, crate::balance_meter::setup))
             .add_systems(FixedUpdate, step)
-            .add_systems(Update, (present, hud));
+            .add_systems(Update, (present, hud, crate::balance_meter::draw));
     }
 }
 
 #[derive(Resource)]
-struct Skater {
-    scripts: Scripts,
+pub(crate) struct Skater {
+    pub(crate) scripts: Scripts,
     source: String,
     /// The translated skater: physics plus the player's own scripts.
-    object: p8_skater::Skater,
+    pub(crate) object: p8_skater::Skater,
     previous: Frame,
     current: Frame,
     /// The translated retail controller path (records and hold times).
@@ -391,7 +394,12 @@ fn present(
     }
 }
 
-fn hud(skater: Res<Skater>, ground: Res<Ground>, mut text: Query<&mut Text, With<StatusText>>) {
+fn hud(
+    skater: Res<Skater>,
+    ground: Res<Ground>,
+    meter: Option<Res<crate::balance_meter::MeterTextures>>,
+    mut text: Query<&mut Text, With<StatusText>>,
+) {
     let p = &skater.object.physics;
     let turn = match p.last_turn {
         Some(Turn::Left) => "left",
@@ -399,7 +407,7 @@ fn hud(skater: Res<Skater>, ground: Res<Ground>, mut text: Query<&mut Text, With
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]  [{}]",
         p.body.velocity.length(),
         p.body.position.y,
         p.state,
@@ -414,6 +422,7 @@ fn hud(skater: Res<Skater>, ground: Res<Ground>, mut text: Query<&mut Text, With
             String::new()
         },
         ground.note,
+        meter.as_ref().map_or("balance meter textures not loaded yet", |m| m.note.as_str()),
     );
     if let Ok(mut t) = text.single_mut()
         && **t != line

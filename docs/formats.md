@@ -29,6 +29,19 @@ u32 value-or-offset, u32 next`. The type's second byte gives the kind:
 13 checksum. Struct members carry the kind in bits 16-22. Script bytecode
 is not yet decoded.
 
+## `.img` textures (Xbox 360): CONFIRMED for DXT5 HUD sprites
+
+Checked on the balance meter's four textures in
+`ZONES/global.pak.xen`. `+0x1C` (u32) is the offset of the Direct3D header
+(0x28) and `+0x20` the pixel data size; the data is the file's last that
+many bytes (both LIKELY: true for every file seen). The Direct3D header is
+7 dwords then the 6-dword GPU texture fetch constant (tiled flag, pitch,
+format, endian swap, width, height, packed mips). Pixels are tiled with the
+standard Xbox 360 tiling, blocks byte-swapped in 16-bit words. A texture 16
+texels or less on a side with packed mips starts 16 texels into its tile
+(CONFIRMED for a taller-than-wide texture). Only format 0x14 (DXT4/5) is
+decoded so far. See `crates/p8-formats/src/texture.rs`.
+
 ## Everything else: UNKNOWN
 
 This covers scenes and levels, collision, textures, models, skeletons,

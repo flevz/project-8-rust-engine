@@ -679,7 +679,7 @@ impl CorePhysics {
         let mut events = match self.state {
             State::Ground => self.ground_update(s, input, world),
             State::Air => self.air_update(s, world),
-            State::Lip => self.lip_update(s, input),
+            State::Lip => self.lip_update(s, input, world),
         };
         // 820F4050: the air update ends with the ollie trigger `820D7AB0`
         // on every path that does not land.

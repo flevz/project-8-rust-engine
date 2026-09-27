@@ -4,10 +4,14 @@
 //! (`82190C10`) and its update (`82190F58`), which fires "OffMeterTop" /
 //! "OffMeterBottom" when the lean passes `Lean_Bail_Angle`.
 //!
+//! The display call at the end of the update is [`Balance::show_on_screen`]
+//! (see `meter_display.rs`).
+//!
 //! Not translated: the grind-only parts (same/new rail timing, robot rail),
-//! scoring and display, the perfect-balance cheats, the network hook and
-//! the animation calls.
+//! scoring, pausing the meter (`820CE618`, `+97`), the perfect-balance
+//! cheats, the network hook and the animation calls.
 use crate::input::InputState;
+use crate::meter_display::{MeterDisplay, MeterLayout};
 use crate::script::Scripts;
 use crate::script::StatContext;
 use crate::stats::StatLevels;
@@ -55,6 +59,9 @@ pub struct Balance {
     pub grind: Meter,
     pub lip: Meter,
     pub skitch: Meter,
+    /// The meter on screen (kept by the score component in retail; the
+    /// meter is what drives it).
+    pub display: MeterDisplay,
 }
 
 /// What the meter update reports.
@@ -203,12 +210,40 @@ impl Balance {
 
     /// Script command `StopBalanceTrick` (`820CF100` -> `820CEAE8`): every
     /// meter stops (`82190A60` clears its buttons) and no type runs.
+    /// `82190A60` also hides the meter on screen (both modes).
     pub fn stop(&mut self) {
         for m in [&mut self.manual, &mut self.grind, &mut self.lip, &mut self.skitch] {
             m.button_a = 0;
             m.button_b = 0;
         }
+        self.display.hide();
         self.kind = 0;
+    }
+
+    /// The end of `82190F58` (from `8219179C`), after an update that did
+    /// not fall off: while a type runs and the meter is not paused (`+97`,
+    /// never set here: pausing is not translated), show the meter with
+    /// value lean * -1/4096 (82004E3C); the manual (up/down) mode when both
+    /// of the meter's buttons are Up or Down. `sides` is physics `+1908`,
+    /// `+1909` ([`crate::CorePhysics::balance_sides`]).
+    pub fn show_on_screen(&mut self, s: &Scripts, sides: [bool; 2]) {
+        let k = qb_key;
+        let kind = self.kind;
+        let Some(m) = self.meter_mut(kind) else {
+            return;
+        };
+        if m.button_a == 0 || m.button_b == 0 {
+            return;
+        }
+        let up_down = [k("Up"), k("Down")];
+        let manual = up_down.contains(&m.button_a) && up_down.contains(&m.button_b);
+        let lean = m.lean;
+        let Some(layout) = MeterLayout::from_scripts(s) else {
+            return;
+        };
+        // FLAG_SKATER_LIPTRICK_CAM_REVERSED is set only by the retail
+        // camera (820D1238), not translated: clear.
+        self.display.set(&layout, true, lean * (-1.0 / 4096.0), manual, sides, false, lean);
     }
 
     /// Retail `82190F58` on the lip meter (`820F49D8` calls it while the

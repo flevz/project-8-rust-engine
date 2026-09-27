@@ -145,12 +145,14 @@ impl CorePhysics {
 
     /// Retail `820F49D8`, the lip state's update (moving platforms and
     /// scoring are not translated).
-    pub(crate) fn lip_update(&mut self, s: &Scripts, input: &InputState) -> Vec<Event> {
+    pub(crate) fn lip_update(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
         let mut events = Vec::new();
         // 820F49D8 starts by clearing SkaterState +136, +192 and +144.
         self.set_transfer(false);
         self.set_flag_192(false);
         self.vert.over_ground = false;
+        // 820F4A90.
+        self.update_balance_sides(s, world);
         if self.balance.kind == qb_key("Lip") {
             let dt = self.dt;
             let (stats, ctx, on_bike, now) = (self.stats.clone(), self.stat_context, self.on_bike, self.time_ms);
@@ -165,7 +167,7 @@ impl CorePhysics {
             match off {
                 Some(OffMeter::Top) => events.push(Event::OffMeterTop),
                 Some(OffMeter::Bottom) => events.push(Event::OffMeterBottom),
-                None => {}
+                None => self.balance.show_on_screen(s, self.balance_sides),
             }
         }
         self.update_crouch(input);
@@ -174,6 +176,30 @@ impl CorePhysics {
             events.push(Event::Ollied);
         }
         events
+    }
+
+    /// Retail `820E5988` (called by the lip, grind, rail and ground
+    /// updates): physics `+1908` / `+1909`, the meter's safe sides, by the
+    /// running balance type. Manual: (1, 0); NoseManual: (0, 1); Flatland:
+    /// (0, 0); Lip: (1, SkateInAble Lip); Grind/Slide: (SkateInAble,
+    /// SkateInAble Left). Any other type: both set if SkaterState `+160`
+    /// (not translated; left unchanged here).
+    pub(crate) fn update_balance_sides(&mut self, s: &Scripts, world: &dyn World) {
+        let k = qb_key;
+        let t = self.balance.kind;
+        self.balance_sides = if t == k("Manual") {
+            [true, false]
+        } else if t == k("NoseManual") {
+            [false, true]
+        } else if t == k("Flatland") {
+            [false, false]
+        } else if t == k("Lip") {
+            [true, self.skate_in_able(s, world, false, true)]
+        } else if t == k("Grind") || t == k("Slide") {
+            [self.skate_in_able(s, world, false, false), self.skate_in_able(s, world, true, false)]
+        } else {
+            return;
+        };
     }
 
     /// Script command `SkateInAble` (`820EB538` -> `820E55E0`): is there vert
