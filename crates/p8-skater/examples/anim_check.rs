@@ -251,7 +251,8 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         k.anim.update(1.0 / 60.0, inputs);
         let _ = k.anim.sample(inputs);
         if std::env::var_os("P8_TREE").is_some()
-            && (air_frames == 20 || (ground.is_some() && i == std::env::var("P8_TREE_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(200)))
+            && (air_frames == std::env::var("P8_AIR_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(20)
+                || (ground.is_some() && i == std::env::var("P8_TREE_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(200)))
         {
             let mut t = String::new();
             if let Some(b) = &k.anim.body {

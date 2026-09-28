@@ -657,6 +657,7 @@ impl CorePhysics {
             rotated: self.rotated,
             balance_lean: self.balance.anim_lean(),
             board_rotated: self.board_rotated,
+            grab: self.last_input.circle || self.last_input.kick,
             crouched: self.crouched,
             in_air: self.state == State::Air,
             in_vert_air: self.vert.in_vert_air,

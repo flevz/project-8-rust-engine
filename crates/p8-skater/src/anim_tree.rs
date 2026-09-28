@@ -864,17 +864,23 @@ impl BalanceAdd {
     }
 }
 
-/// The object's tags `grindlandaddblend` / `grindlandaddtime`, shared by
-/// its grindlandadd nodes (a mutex so the tree can move between threads).
+/// The skater object's float tags (a list at object `+68`: read by
+/// `822458F8`, 0 when missing; written by `82245CA8`), shared by the nodes
+/// that use them: `grindlandaddblend` / `grindlandaddtime`, and each named
+/// skater timer's progress (a mutex so the tree can move between threads).
 #[derive(Clone, Debug, Default)]
-pub struct Tags(std::sync::Arc<std::sync::Mutex<(f32, f32)>>);
+pub struct Tags(std::sync::Arc<std::sync::Mutex<Vec<(u32, f32)>>>);
 
 impl Tags {
-    fn get(&self) -> (f32, f32) {
-        *self.0.lock().unwrap()
+    fn get(&self, id: u32) -> f32 {
+        self.0.lock().unwrap().iter().find(|(n, _)| *n == id).map_or(0.0, |(_, v)| *v)
     }
-    fn set(&self, v: (f32, f32)) {
-        *self.0.lock().unwrap() = v;
+    fn set(&self, id: u32, v: f32) {
+        let mut m = self.0.lock().unwrap();
+        match m.iter_mut().find(|(n, _)| *n == id) {
+            Some(e) => e.1 = v,
+            None => m.push((id, v)),
+        }
     }
 }
 
@@ -918,7 +924,8 @@ impl GrindLandAdd {
         if self.t > 1.0 {
             self.t = 1.0;
         }
-        self.tags.set((self.t, self.time));
+        self.tags.set(qb_key("grindlandaddblend"), self.t);
+        self.tags.set(qb_key("grindlandaddtime"), self.time);
         self.wb = self.func.eval(self.t);
     }
 }
@@ -1097,6 +1104,10 @@ impl SkaterModulate {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkaterTimer {
     timertype: u32,
+    /// `+16`: the node id; its progress goes to the object tag of that
+    /// name at the end of each update (`82245CA8`), unless `unnamed`.
+    id: u32,
+    tags: Tags,
     /// `+20`
     time: f32,
     /// `+28`
@@ -1137,6 +1148,15 @@ impl SkaterTimer {
             }
         } else if t == k("cycle") || t == k("play") {
             self.time += *dt;
+        } else if t == k("grabout") {
+            // 40E4: plays once started (`+86`); starts when the object tag
+            // `grabtrickintimer` is at least 1 and neither circle nor
+            // square is held (animinfo `+156`).
+            if self.started {
+                self.time += *dt;
+            } else if self.tags.get(k("grabtrickintimer")) >= 1.0 && !i.grab {
+                self.started = true;
+            }
         } else if t == k("jump") {
             // 41A8: starts when the crouch is released, runs while in the
             // air (SkaterState +24 == 1).
@@ -1165,6 +1185,10 @@ impl SkaterTimer {
                 self.time = self.end;
                 self.finished = true;
             }
+        }
+        // 45A4: the progress (time / `+36`) as the tag named by the id.
+        if self.id != 0 && self.id != k("unnamed") {
+            self.tags.set(self.id, self.time / self.end);
         }
     }
 }
@@ -1573,6 +1597,17 @@ pub enum Kind {
     /// `boardrotateoverlay` (vtable `82001220`): the child; on the board,
     /// turned round when `rotated` (sample `820A32C8` -> op 823772D0 ->
     /// `820A2FA8`).
+    /// `skateridleswitch` (vtable `820017C4`: init `82385978`, update
+    /// `823859F0`, sample the two-child blend `8237B978`): child 0 until
+    /// `weight` (`+20`) turns 1. Input `grab`: once the object tag
+    /// `grabtrickintimer` is at least 1 and neither circle nor square is
+    /// held (animinfo `+156`), for good. Input `brake`: 0 while braking
+    /// (animinfo `+132`), else 1. Other inputs: no change.
+    IdleSwitch {
+        input: u32,
+        weight: f32,
+        tags: Tags,
+    },
     BoardRotate {
         rotated: bool,
     },
@@ -1743,6 +1778,8 @@ impl Build<'_> {
             Kind::DegenerateBlend(DegenerateBlend { records: Vec::new(), duration: 0.0, next_duration: -1.0 })
         } else if ty == k("ik") {
             Kind::Ik { chains: self.ik_chains(&items) }
+        } else if ty == k("skateridleswitch") {
+            Kind::IdleSwitch { input: self.checksum(&items, "input", scope).unwrap_or(0), weight: 0.0, tags: self.tags.clone() }
         } else if ty == k("skatertimer") {
             Kind::SkaterTimer(self.skater_timer(&items, scope))
         } else if ty == k("speedblend") {
@@ -1869,9 +1906,11 @@ impl Build<'_> {
             };
             if let Some(v) = lookup(&items, k("sync")).map(|v| self.resolve(v, scope)) {
                 if matches!(v, Value::Int(0)) {
-                    self.tags.set((0.0, 0.0));
+                    self.tags.set(k("grindlandaddblend"), 0.0);
+                    self.tags.set(k("grindlandaddtime"), 0.0);
                 } else {
-                    (g.t, g.time) = self.tags.get();
+                    g.t = self.tags.get(k("grindlandaddblend"));
+                    g.time = self.tags.get(k("grindlandaddtime"));
                 }
             }
             if let Some(a) = self.checksum(&items, "anim", scope) {
@@ -2016,6 +2055,8 @@ impl Build<'_> {
         let timertype = self.checksum(items, "timertype", scope).unwrap_or(0);
         let mut t = SkaterTimer {
             timertype,
+            id: self.checksum(items, "id", scope).unwrap_or(0),
+            tags: self.tags.clone(),
             time: 0.0,
             speed: lookup(items, 0xF0D9_0109).map(|v| self.resolve(v, scope)).and_then(|v| v.as_f32()).unwrap_or(1.0),
             duration,
@@ -2133,6 +2174,10 @@ pub struct SkaterInputs {
     pub turn: f32,
     /// `820D7570` (animinfo `+132`).
     pub brake_input: bool,
+    /// Circle or square held (animinfo `+156`, `820B8EA0`: Input
+    /// component records `+352` circle / `+384` square; a flag `+592`
+    /// that forces it off once is not translated).
+    pub grab: bool,
     /// Physics `+1656` (animinfo `+100`).
     pub brake_amount: f32,
     /// Physics `+2112`, cleared while the brake input is held (animinfo
@@ -2164,6 +2209,14 @@ impl Node {
             Kind::BalanceAdd(b) => b.update(i),
             Kind::GrindLandAdd(g) => g.update(dt),
             Kind::SkaterTimer(t) => t.update(&mut dt, i),
+            Kind::IdleSwitch { input, weight, tags } => {
+                let k = qb_key;
+                if *input == k("brake") {
+                    *weight = if i.brake_input { 0.0 } else { 1.0 };
+                } else if *input == k("grab") && *weight == 0.0 && tags.get(k("grabtrickintimer")) >= 1.0 && !i.grab {
+                    *weight = 1.0;
+                }
+            }
             Kind::Modulate(m) => m.update(dt),
             Kind::SkaterModulate(m) => m.update(dt, i),
             Kind::CrouchBlend(c) => c.update(dt, i),
@@ -2479,6 +2532,10 @@ impl Node {
                 let w = *w;
                 two_child_blend(&mut self.children, w, phase, cx)
             }
+            Kind::IdleSwitch { weight, .. } => {
+                let w = *weight;
+                two_child_blend(&mut self.children, w, phase, cx)
+            }
             Kind::UberCrouch(u) => {
                 let v = cx.inputs.velocity;
                 let s = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -2631,6 +2688,7 @@ impl Node {
             Kind::Wobble(w) => format!("wobble time={:.3}/{:.3}", w.time, w.duration),
             Kind::Mirror => "mirror".into(),
             Kind::BoardRotate { rotated } => format!("boardrotateoverlay rotated={rotated}"),
+            Kind::IdleSwitch { weight, .. } => format!("skateridleswitch w={weight}"),
             Kind::BalanceAdd(b) => format!("balanceadd {:.2} {:.2}", b.wa, b.wb),
             Kind::GrindLandAdd(g) => format!("grindlandadd {:.2} {:.2} t={:.2}", g.wa, g.wb, g.time),
             Kind::Untranslated(t) => format!("UNTRANSLATED {}", name_of(*t).unwrap_or("?")),
@@ -3122,6 +3180,46 @@ mod tests {
             assert!(same_rotation(p.q[b], [e[0], e[1], e[2], e[3]]), "bone {b} {:?}", p.q[b]);
             assert!((0..3).all(|k| (p.t[b][k] - e[4 + k]).abs() < 1e-4), "bone {b} {:?}", p.t[b]);
         }
+    }
+
+    #[test]
+    fn grab_out_timer_starts_once_the_in_timer_is_done_and_the_grab_is_let_go() {
+        // 820B4038 (grabout) with the tag the in timer writes (45A4).
+        let tags = Tags::default();
+        let timer = |timertype: &str, id: &str| SkaterTimer {
+            timertype: qb_key(timertype),
+            id: qb_key(id),
+            tags: tags.clone(),
+            time: 0.0,
+            speed: 1.0,
+            duration: 0.4,
+            end: 0.4,
+            end_frac: 1.0,
+            finished: false,
+            cycle: false,
+            crouched: false,
+            started: false,
+            delay: 0.0,
+        };
+        let (mut tin, mut tout) = (timer("play", "grabtrickintimer"), timer("grabout", "GrabtrickTimer"));
+        let mut i = SkaterInputs { grab: false, ..Default::default() };
+        let step = |t: &mut SkaterTimer, i: &SkaterInputs| t.update(&mut (0.1f32), i);
+        for _ in 0..3 {
+            step(&mut tin, &i);
+            step(&mut tout, &i);
+        }
+        assert_eq!(tout.time, 0.0, "waits for the in timer");
+        i.grab = true;
+        step(&mut tin, &i);
+        step(&mut tin, &i);
+        step(&mut tout, &i);
+        assert!(tags.get(qb_key("grabtrickintimer")) >= 1.0);
+        assert_eq!(tout.time, 0.0, "waits while the grab is held");
+        i.grab = false;
+        step(&mut tout, &i);
+        step(&mut tout, &i);
+        assert!((tout.time - 0.1).abs() < 1e-6);
+        assert!((tags.get(qb_key("GrabtrickTimer")) - 0.25).abs() < 1e-6);
     }
 
     #[test]
