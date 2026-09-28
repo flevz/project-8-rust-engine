@@ -171,6 +171,21 @@ pub struct CorePhysics {
     pub previous_lean_degrees: f32,
     /// `+1542`: the lean angle is between 41 and 319 degrees (upside down).
     pub flipping: bool,
+    /// SkaterState `+264`: doing a trick (`DoingTrick`; set when a trick
+    /// runs, `82122E10`, cleared by each `DoNextTrick`, `821230D8`).
+    pub doing_trick: bool,
+    /// flipandrotate `+24`: the board is rotated (toggled by every flip,
+    /// `820FD8E8` -> `820FD838`; the board model's turn is not
+    /// translated).
+    pub board_rotated: bool,
+    /// flipandrotate `+25` / `+26` / `+27`: `FlipAfter`, `RotateAfter`,
+    /// `BoardRotateAfter` pending.
+    pub flip_after: bool,
+    pub rotate_after: bool,
+    pub board_rotate_after: bool,
+    /// skatermatrixqueries `+32..+80`: the display matrix as it was when
+    /// that component updated (before the core physics, `82108848`).
+    pub queries_matrix: Mat3,
     /// Trick component `+5360`: degrees spun this air (for trick names).
     pub spin_degrees: f32,
     /// The input of the current frame (retail reads the Input component).
@@ -304,7 +319,7 @@ pub struct Vert {
 
 /// Retail `8262BE78`, cosine (its neighbour `8262BDA0` is sine: CONFIRMED by
 /// its series coefficients; together they build rotation matrices).
-fn retail_cos(x: f64) -> f32 {
+pub(crate) fn retail_cos(x: f64) -> f32 {
     x.cos() as f32
 }
 
@@ -387,6 +402,12 @@ impl CorePhysics {
             old_position: Vec3::ZERO,
             flipped: false,
             goofy: false,
+            doing_trick: false,
+            board_rotated: false,
+            flip_after: false,
+            rotate_after: false,
+            board_rotate_after: false,
+            queries_matrix: Mat3::IDENTITY,
             state_216: false,
             last_wallpush_ms: i64::MIN / 2,
             air_start_ms: 0,
@@ -571,6 +592,48 @@ impl CorePhysics {
             i.time_to_land_slice = k;
         }
         i
+    }
+
+    /// `820FD8E8` (skaterflipandrotate's flip): toggle the stance flag
+    /// (SkaterState `+40`, time `+44` not kept) and the board-rotated flag
+    /// (`820FD838`).
+    pub fn flip_stance(&mut self) {
+        self.flipped = !self.flipped;
+        self.board_rotated = !self.board_rotated;
+    }
+
+    /// `820D9008` (FlipAndRotate's turn): the object matrix turned round
+    /// about up (x and z rows negated), copied to the display matrix, core
+    /// `+2024` (not kept here) and SkaterState `+48` toggled.
+    pub fn turn_round(&mut self) {
+        self.body.matrix.x_axis = -self.body.matrix.x_axis;
+        self.body.matrix.z_axis = -self.body.matrix.z_axis;
+        self.matrix_32 = self.body.matrix;
+        self.rotated = !self.rotated;
+    }
+
+    /// `HandleFlipOrBoardRotateAfter` (`820FDCE0` -> `820FDBE0`): do what
+    /// `FlipAfter` / `RotateAfter` / `BoardRotateAfter` left pending;
+    /// whether anything was.
+    pub fn handle_flip_or_rotate_after(&mut self) -> bool {
+        let mut any = false;
+        if self.flip_after {
+            self.flip_stance();
+            self.flip_after = false;
+            any = true;
+        }
+        if self.rotate_after {
+            self.turn_round();
+            self.rotate_after = false;
+            any = true;
+        }
+        if self.board_rotate_after {
+            // 820FD838 with the board object: the board-rotated flag.
+            self.board_rotated = !self.board_rotated;
+            self.board_rotate_after = false;
+            any = true;
+        }
+        any
     }
 
     /// Riding switch (animinfo `+164`, `820B8220`): flipped, inverted for a
@@ -958,7 +1021,7 @@ impl CorePhysics {
         // `flip_backwards_dont_blend` (0 in the retail scripts) skips this:
         // the flip `820FD8E8` (+40) and `820D45F0` (+48).
         if s.global_float("flip_backwards_dont_blend") == 0.0 {
-            self.flipped = !self.flipped;
+            self.flip_stance();
             self.rotated = !self.rotated;
         }
         true

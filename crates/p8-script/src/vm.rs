@@ -955,6 +955,37 @@ impl Script {
             let key = params.unnamed_checksum().unwrap_or(0);
             return Some(self.locals.got(key));
         }
+        if name == k("GetArraySize") {
+            // 822A7A00: the unnamed array (822A6EF0), then `index1`..`index3`
+            // into nested arrays; `array_size` = its length.
+            let mut a = match params.0.iter().find(|(n, v)| *n == 0 && matches!(v, Value::Array(_))) {
+                Some((_, Value::Array(a))) => a.clone(),
+                _ => return None,
+            };
+            for key in ["index1", "index2", "index3"] {
+                let Some(i) = params.int(k(key)) else { break };
+                a = match a.get(i as usize) {
+                    Some(Value::Array(x)) => x.clone(),
+                    _ => return None,
+                };
+            }
+            self.locals.add(k("array_size"), Value::Int(a.len() as i32));
+            return Some(true);
+        }
+        if name == k("SetArrayElement") && !params.flag(k("globalarray")) {
+            // 822ADE48: element `index` of the script's array `arrayname`
+            // becomes `newvalue` (the `globalarray` form is not translated).
+            let array = params.checksum(k("arrayname")).unwrap_or(0);
+            let index = params.int(k("index")).unwrap_or(0) as usize;
+            let value = params.get(k("newvalue")).cloned()?;
+            let mut a = match self.locals.get(array) {
+                Some(Value::Array(a)) => a.clone(),
+                _ => return None,
+            };
+            *a.get_mut(index)? = value;
+            self.locals.add(array, Value::Array(a));
+            return Some(true);
+        }
         if name == k("StructureContains") {
             // 822ACAD0: `Structure` (a struct, or a name of a struct among
             // the script's locals); `Name` or the first unnamed checksum;
@@ -1093,6 +1124,8 @@ fn is_vm_command(name: u32) -> bool {
         "Wait",
         "Block",
         "GotParam",
+        "GetArraySize",
+        "SetArrayElement",
         "StructureContains",
         "Goto",
         "GotoRandomScript",

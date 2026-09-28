@@ -123,11 +123,8 @@ impl CorePhysics {
                 // `FlipAndRotate` (820FDAF0 -> 820D9008): turn round about
                 // up, toggle SkaterState +48, then the flip `820FD8E8`
                 // toggles +40. Retail also toggles core +2024.
-                self.body.matrix.z_axis = -self.body.matrix.z_axis;
-                self.body.matrix.x_axis = -self.body.matrix.x_axis;
-                self.matrix_32 = self.body.matrix;
-                self.rotated = !self.rotated;
-                self.flipped = !self.flipped;
+                self.turn_round();
+                self.flip_stance();
             }
             // 821163E0: out of nollie (retail sends SkaterExitNollie).
             self.nollie = false;

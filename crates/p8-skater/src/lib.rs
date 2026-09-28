@@ -20,6 +20,7 @@ pub mod input;
 pub mod lip;
 pub mod meter_display;
 pub mod pad;
+pub mod queries;
 pub mod rails;
 pub mod script;
 pub mod skater;

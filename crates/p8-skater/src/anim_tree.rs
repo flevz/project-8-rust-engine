@@ -2705,6 +2705,13 @@ impl AnimTree {
         if t.speed < 0.0 { progress <= target } else { progress >= target }
     }
 
+    /// A clip's length (`Anim_GetAnimLength`, `8228F098`); `None` without
+    /// clips or when the clip is missing.
+    pub fn clip_length(&mut self, anim: u32) -> Option<f32> {
+        let lib = self.lib.as_mut()?;
+        lib.get(anim).map(|c| c.duration)
+    }
+
     /// `Skater_AnimNodeExists`.
     pub fn node_exists(&self, id: u32) -> bool {
         self.body.as_ref().is_some_and(|b| b.contains(id))

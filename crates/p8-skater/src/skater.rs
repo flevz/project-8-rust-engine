@@ -103,8 +103,10 @@ impl Skater {
     /// own update (LIKELY order; the script update's place in the frame
     /// is not read).
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
-        // The trick component updates before the core physics (the skater's
-        // components are added in that order, 8219C3C8).
+        // skatermatrixqueries (82108848) and the trick component update
+        // before the core physics (the skater's components are added in
+        // that order, 8219C3C8).
+        self.physics.queries_matrix = self.physics.matrix_32;
         self.update_tricks(s, input, world);
         let mut events = self.physics.step(s, input, world);
         let Some(script) = self.script.as_mut() else { return events };
@@ -190,6 +192,7 @@ impl Skater {
                     if let Some(trick) = self.physics.tricks.resolve(entry, &s.globals)
                         && let Some(run) = self.physics.tricks.run(&trick, Some(qb_key("isextra")), None)
                     {
+                        self.physics.doing_trick = true;
                         self.goto_trick(s, world, run);
                     }
                     if !self.physics.tricks.extra_on {
@@ -660,6 +663,109 @@ impl Ctx<'_> {
         if n == k("pressed") {
             return Some(p.tricks.pressed(params, now));
         }
+        if n == k("ClearTricksFrom") {
+            // 8211F808 -> 8211E9C0 for each unnamed list: dropped from the
+            // queue lists, its queued entries emptied.
+            for (key, v) in &params.0 {
+                if *key == 0
+                    && let Value::Checksum(list) = v
+                {
+                    p.tricks.lists.retain(|l| l != list);
+                    for q in p.tricks.queue.iter_mut().filter(|q| q.list == *list) {
+                        q.list = 0;
+                    }
+                }
+            }
+            return Some(true);
+        }
+        // --- SkaterState / skaterflipandrotate / animinfo flags ---
+        if n == k("Flipped") {
+            return Some(p.flipped); // 820B8688: SkaterState +40
+        }
+        if n == k("DoingFlip") {
+            return Some(p.flipping); // 820D6738: +1542
+        }
+        if n == k("DoingTrick") {
+            return Some(p.doing_trick); // 82116AC0: SkaterState +264
+        }
+        if n == k("setdoingtrick") || n == k("unsetdoingtrick") {
+            p.doing_trick = n == k("setdoingtrick"); // 82116AD8 / 82116AF0
+            return Some(true);
+        }
+        if n == k("Flip") {
+            p.flip_stance(); // 820FDA80 -> 820FD8E8
+            return Some(true);
+        }
+        if n == k("FlipAfter") || n == k("UnsetFlipAfter") {
+            p.flip_after = n == k("FlipAfter"); // 820FD738 / 820FD750: +25
+            return Some(true);
+        }
+        if n == k("IsFlipAfterSet") {
+            return Some(p.flip_after); // 820FD7C8
+        }
+        if n == k("RotateAfter") || n == k("UnsetRotateAfter") {
+            p.rotate_after = n == k("RotateAfter"); // 820FD768 / 820FD780: +26
+            return Some(true);
+        }
+        if n == k("IsRotateAfterSet") {
+            return Some(p.rotate_after); // 820FD7E0
+        }
+        if n == k("BoardRotateAfter") || n == k("UnsetBoardRotateAfter") {
+            p.board_rotate_after = n == k("BoardRotateAfter"); // 820FD798 / 820FD7B0: +27
+            return Some(true);
+        }
+        if n == k("IsBoardRotateAfterSet") {
+            return Some(p.board_rotate_after); // 820FD7F8
+        }
+        if n == k("HandleFlipOrBoardRotateAfter") {
+            return Some(p.handle_flip_or_rotate_after()); // 820FDCE0 -> 820FDBE0
+        }
+        if n == k("Backwards") {
+            // 8221E068: velocity . at < 0.
+            return Some(p.body.velocity.dot(p.body.at()) < 0.0);
+        }
+        if n == k("ProfileEquals") {
+            // 8210E4D8 (only `stance` translated: the profile's goofy flag
+            // +36 against goofy / regular).
+            if let Some(st) = params.checksum(k("stance")) {
+                let mine = if p.goofy { k("goofy") } else { k("regular") };
+                return Some(st == mine);
+            }
+            return None;
+        }
+        // --- skatermatrixqueries (its matrix: `queries_matrix`) ---
+        if n == k("PitchGreaterThan") {
+            let d = params.unnamed_float().unwrap_or(0.0);
+            return Some(crate::queries::pitch_greater(&p.queries_matrix, p.vert.ease_from, d));
+        }
+        if n == k("AbsolutePitchGreaterThan") {
+            let d = params.unnamed_float().unwrap_or(0.0);
+            return Some(crate::queries::absolute_pitch_greater(&p.queries_matrix, d));
+        }
+        if n == k("RollGreaterThan") {
+            let d = params.unnamed_float().unwrap_or(0.0);
+            return Some(crate::queries::roll_greater(&p.queries_matrix, p.vert.ease_from, d));
+        }
+        if n == k("YawBetween") {
+            // 82213370: the unnamed pair.
+            let (a, b) = params.0.iter().find_map(|(key, v)| if *key == 0 { if let Value::Pair(a, b) = v { Some((*a, *b)) } else { None } } else { None })?;
+            return Some(crate::queries::yaw_between(&p.queries_matrix, p.body.velocity, a, b));
+        }
+        // --- script helpers ---
+        if n == k("Anim_GetAnimLength") {
+            // 8228F098: `length` = the clip's length.
+            let anim = params.checksum(k("anim")).unwrap_or(0);
+            let length = self.anim.clip_length(anim)?;
+            script.locals.add(k("length"), Value::Float(length));
+            return Some(true);
+        }
+        if n == k("GetScriptedStat") {
+            // 8219B390 -> 82199A28 on the unnamed stat struct: `stat_value`.
+            let def = params.0.iter().find(|(key, v)| *key == 0 && matches!(v, Value::Struct(_))).map(|(_, v)| v.clone())?;
+            let v = self.s.stat_value_of(&def, &p.stats, p.stat_context);
+            script.locals.add(k("stat_value"), Value::Float(v));
+            return Some(true);
+        }
         if n == k("Released") {
             return Some(p.tricks.released(params));
         }
@@ -718,6 +824,10 @@ impl Ctx<'_> {
             }
             let p = &mut *self.p;
             let g = &self.s.globals;
+            // 821230D8 clears SkaterState +264 first.
+            if n == k("DoNextTrick") {
+                p.doing_trick = false;
+            }
             let trick = if n == k("DoNextTrick") { p.tricks.next_queued(now, g) } else { p.tricks.next_manual(g) };
             let Some(trick) = trick else { return Some(true) };
             let extra = params.params(k("trickparams"));
@@ -730,7 +840,9 @@ impl Ctx<'_> {
                 }
             }
             // 82226588: the skater's script goes to the trick (here the
-            // script running the command; INFERRED the same one).
+            // script running the command; INFERRED the same one); 82122E10
+            // sets SkaterState +264.
+            self.p.doing_trick = true;
             script.goto(self, run.script, &std::mem::take(&mut run.params));
             return Some(true);
         }
@@ -828,5 +940,30 @@ const COMMANDS: &[&str] = &[
     "SetTrickScore",
     "DoNextTrick",
     "DoNextManualTrick",
+    "ClearTricksFrom",
+    "Flipped",
+    "DoingFlip",
+    "DoingTrick",
+    "setdoingtrick",
+    "unsetdoingtrick",
+    "Flip",
+    "FlipAfter",
+    "UnsetFlipAfter",
+    "IsFlipAfterSet",
+    "RotateAfter",
+    "UnsetRotateAfter",
+    "IsRotateAfterSet",
+    "BoardRotateAfter",
+    "UnsetBoardRotateAfter",
+    "IsBoardRotateAfterSet",
+    "HandleFlipOrBoardRotateAfter",
+    "Backwards",
+    "ProfileEquals",
+    "PitchGreaterThan",
+    "AbsolutePitchGreaterThan",
+    "RollGreaterThan",
+    "YawBetween",
+    "Anim_GetAnimLength",
+    "GetScriptedStat",
     "MakeSkaterGoto",
 ];
