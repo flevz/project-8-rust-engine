@@ -186,7 +186,7 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         let t = i as f32 / 60.0;
         let in_air = k.physics.state == p8_skater::core_physics::State::Air;
         air_frames = if in_air { air_frames + 1 } else { 0 };
-        let f = i as i32;
+        let f = i;
         let mut input = if let Some(g) = ground {
             let mut x = InputState { up: t < 2.0, ..Default::default() };
             match g {
