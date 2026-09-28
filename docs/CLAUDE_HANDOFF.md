@@ -545,6 +545,24 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   translated), handplant bail never got up (anim_command /
   Skater_AnimComplete, timer_wait now blocks scripts), board rode
   backwards after a backwards landing (820B0E20 board part).
+- Fixed next from the user's videos (NOTES 30): stance after a 180
+  (Skater_Anim_Command refreshes the inputs before building a branch;
+  boardrotateoverlay + Pose::board_rotate); manual trick transitions
+  (Manual -> One Foot Manual / Truckstand / Anti Casper play their
+  Exit/Entr clips: FormatText, AppendSuffixToChecksum, GlobalExists in
+  the VM, Doing/StartBalanceTrick, Set/GetLastAnimData; SetExtraTricks
+  ignore is text); a tapped grab on vert lasted until landing (grabout
+  timer, skateridleswitch, object tags); bail falls looped each second
+  (differencetoggle stand-in; now a pass-through). The game build broke
+  once from an Rc in the anim tree: run `cargo check -p p8-game` after
+  touching anim_tree.rs (the tree must stay Send + Sync).
+  More anim_check modes: `ground:manual:<s|c|t...>` (buttons during a
+  manual), `hold` (grab held to the ground: a landing bail), `spin:<deg>`,
+  `P8_TREE_AT=<frame>` / `P8_AIR_AT=<air frame>` for the tree dump.
+- Still untranslated nodes the HUD lists: overlay, walkmonitor, walkspeed
+  (pass-through stand-ins), differencetoggle's "on" difference (walking
+  only). Ragdoll is not translated: after a bail the skater slides on the
+  physics until the get-up.
 - TOOL: `research/tools/harness` (private repo) compiles recompiled retail
   functions and runs them on test inputs. Use it to check a translation or
   to find what a long function does. README there.
@@ -560,7 +578,7 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   time, same unpaused); DoNextTrick goes to the calling script (retail
   the skater's main script); scripttorunfirst run at once; stick-direction
   buttons (ids 19-34), L3/R3 never held (no records); PLAYER_SKATER =
-  hawk; 8211EDF8 (extra tricks' ignore) compares trick names.
+  hawk.
 
 ## 17-model. Skater model and animations (in progress; the user chose this before the trick queue)
 
