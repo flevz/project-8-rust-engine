@@ -136,6 +136,15 @@ fn spin_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wor
         let m = ik::model_space(&locals, &rig.parents);
         let d = k.physics.body.matrix * (Vec3::from(m[l].translation) - Vec3::from(m[r].translation));
         let yaw = d.x.atan2(d.z).to_degrees();
+        // Board: truck bone 4 to truck bone 6 (the board skeleton), in world.
+        let board_yaw = k.anim.sample_board().map_or(f32::NAN, |bp| {
+            let parents = k.anim.board_rig.as_ref().unwrap().parents.clone();
+            let locals: Vec<ik::Local> =
+                bp.q.iter().zip(&bp.t).map(|(q, t)| ik::Local { rotation: [-q[0], -q[1], -q[2], q[3]], translation: *t }).collect();
+            let m = ik::model_space(&locals, &parents);
+            let v = k.physics.body.matrix * (Vec3::from(m[4].translation) - Vec3::from(m[6].translation));
+            v.x.atan2(v.z).to_degrees()
+        });
         let jump = prev_yaw.map_or(0.0, |y| ((yaw - y + 540.0) % 360.0) - 180.0);
         prev_yaw = Some(yaw);
         if air_seen && !in_air {
@@ -143,7 +152,7 @@ fn spin_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wor
         }
         if air_seen && after < 240 && (after > 0 || in_air) {
             println!(
-                "t={t:5.2} air={in_air} spin={:6.1} flipped={} rotated={} feet L-R yaw {yaw:7.1} (change {jump:+6.1}) branches {}",
+                "t={t:5.2} air={in_air} spin={:6.1} flipped={} rotated={} feet L-R yaw {yaw:7.1} (change {jump:+6.1}) board yaw {board_yaw:7.1} branches {}",
                 k.physics.spin_degrees,
                 k.physics.flipped,
                 k.physics.rotated,

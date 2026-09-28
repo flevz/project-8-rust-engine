@@ -25,8 +25,8 @@
 //! - `ik` (`8237F5D8`, see `p8_formats::ik`).
 //! - `skaterflip` (`820B2638`): passes the pose through; mirrors it
 //!   (`82377178` -> `823835D0`) when the skater was flipped as the branch was
-//!   built (`820B04F8`). The board-rotate part (`820B0E20`, node `+21`/`+22`
-//!   from SkaterState `+48`) is not translated.
+//!   built (`820B04F8`), then turns the pose round if SkaterState `+48`
+//!   changed since (`820B0E20`, node `+21`/`+22`; skater and board parts).
 //! - `boardrotateoverlay` (`820A32C8`): passes the skater's pose through.
 //! - `skaterposecapture` (`820B37F0`): live pass-through; after
 //!   `posecapture_capture` it returns the captured pose (LIKELY: the
@@ -352,6 +352,18 @@ impl Pose {
         let q0 = self.q[0];
         let r = qmul(p, conj(qmul(q0, self.q[b])));
         self.q[b] = conj(qmul(r, q0));
+        self.turn_round_position(b);
+    }
+
+    /// The translation part of `820B0560` alone (its rotation flag off, as
+    /// the board's skaterflip calls it on bone 1): the bone's model position
+    /// half a turn about the model's up axis through the model origin.
+    pub fn turn_round_position(&mut self, b: usize) {
+        if b == 0 || b >= self.q.len() {
+            return;
+        }
+        let conj = |q: [f32; 4]| [-q[0], -q[1], -q[2], q[3]];
+        let q0 = self.q[0];
         let t0 = self.t[0];
         let tb = self.t[b];
         let w = qmul(qmul(conj(q0), [tb[0], tb[1], tb[2], 0.0]), q0);
@@ -359,6 +371,34 @@ impl Pose {
         let d = [-pos[0] - t0[0], pos[1] - t0[1], -pos[2] - t0[2]];
         let n = qmul(qmul(q0, [d[0], d[1], d[2], 0.0]), conj(q0));
         self.t[b] = [n[0], n[1], n[2]];
+    }
+
+    /// The rest of the board's skaterflip turn (`820B0E20` after its
+    /// `820B0560` call; long matrix code): bone `b`'s model rotation turned
+    /// half a turn about the model's up axis, in place (its position and
+    /// the other bones' local transforms kept). Found by running the
+    /// recompiled retail code on 50 random board poses: it matches to
+    /// 4e-6 with `b` = 3 (the quaternion's sign differs, which no blend
+    /// sees: they all flip to one hemisphere first).
+    pub fn turn_round_in_place(&mut self, b: usize, parents: &[Option<usize>]) {
+        if b >= self.q.len() {
+            return;
+        }
+        // Renderer convention: the conjugates of what the pose stores.
+        let conj = |q: [f32; 4]| [-q[0], -q[1], -q[2], q[3]];
+        let mut parent_model = [0.0, 0.0, 0.0, 1.0];
+        let mut chain = Vec::new();
+        let mut at = parents.get(b).copied().flatten();
+        while let Some(i) = at {
+            chain.push(i);
+            at = parents.get(i).copied().flatten();
+        }
+        for &i in chain.iter().rev() {
+            parent_model = qmul(parent_model, conj(self.q[i]));
+        }
+        let model = qmul(parent_model, conj(self.q[b]));
+        let turned = qmul([0.0, 1.0, 0.0, 0.0], model);
+        self.q[b] = conj(qmul(conj(parent_model), turned));
     }
 
     /// The skaterflip mirror (`82377178`, op run `823764B8` ->
@@ -1979,12 +2019,10 @@ impl Node {
                 }
                 if turned {
                     if cx.board {
-                        // The board's part (820B0560 on bone 1 without the
-                        // rotation, then its own matrix work) is not
-                        // translated.
-                        if !cx.untranslated.contains(&qb_key("skaterflip")) {
-                            cx.untranslated.push(qb_key("skaterflip"));
-                        }
+                        // Other objects (820B0E20): 820B0560 on bone 1
+                        // without its rotation, then bone 3 turned in place.
+                        p.turn_round_position(1);
+                        p.turn_round_in_place(3, &rig.parents);
                     } else {
                         // The children of control_root (the skeleton's
                         // bones 1, 89 and 91, named here as retail passes
@@ -2537,6 +2575,36 @@ mod tests {
         for b in 0..3 {
             assert!(same_rotation(p.q[b], before.q[b]), "{b}");
             assert!((0..3).all(|k| (p.t[b][k] - before.t[b][k]).abs() < 1e-6), "{b}");
+        }
+    }
+
+    /// Expected values from the recompiled retail `820B0E20` (board object)
+    /// run on this pose; board skeleton parents.
+    #[test]
+    fn board_turn_round_matches_retail() {
+        let input = [
+            [-0.719503, 0.221944, 0.584855, -0.301662, 0.00784127, 0.0873848, -0.31534],
+            [-0.95103, -0.0712932, 0.0802323, -0.289865, -0.196599, -0.409329, 0.309645],
+            [-0.0390988, -0.105346, 0.987454, -0.110942, 0.153923, 0.115563, -0.342506],
+            [0.879716, 0.0831618, 0.435779, 0.171117, -0.258057, -0.469917, -0.0360655],
+        ];
+        let expected = [
+            [-0.719503, 0.221944, 0.584855, -0.301662, 0.00784127, 0.0873848, -0.31534],
+            [-0.95103, -0.0712932, 0.0802323, -0.289865, -0.388387, -0.413574, 0.314498],
+            [-0.0390988, -0.105346, 0.987454, -0.110942, 0.153923, 0.115563, -0.342506],
+            [-0.0563983, 0.972081, -0.141682, 0.178338, -0.258057, -0.469917, -0.0360655],
+        ];
+        let mut p = Pose {
+            q: input.iter().map(|v| [v[0], v[1], v[2], v[3]]).collect(),
+            t: input.iter().map(|v| [v[4], v[5], v[6]]).collect(),
+            w: vec![1.0; 4],
+            strength: 1.0,
+        };
+        p.turn_round_position(1);
+        p.turn_round_in_place(3, &[None, Some(0), Some(1), Some(2)]);
+        for (b, e) in expected.iter().enumerate() {
+            assert!(same_rotation(p.q[b], [e[0], e[1], e[2], e[3]]), "bone {b} {:?}", p.q[b]);
+            assert!((0..3).all(|k| (p.t[b][k] - e[4 + k]).abs() < 1e-4), "bone {b} {:?}", p.t[b]);
         }
     }
 
