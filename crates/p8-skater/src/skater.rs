@@ -220,6 +220,10 @@ impl Host for Ctx<'_> {
         self.p.time_ms as f64 + self.p.time_frac_ms as f64
     }
 
+    fn wait_done(&mut self, token: u64, target: f32) -> bool {
+        self.anim.timer_wait_done(token, target)
+    }
+
     fn command(&mut self, script: &mut Script, name: u32, params: &Params) -> Option<bool> {
         let r = self.run(script, name, params);
         if std::env::var_os("P8_TRACE").is_some() {
@@ -511,7 +515,9 @@ impl Ctx<'_> {
             p.allow_lip_no_grind = n == k("AllowLipNoGrind"); // 820D5C08 / 820D5C20: +2137
             return Some(true);
         }
-        if n == k("Skater_Anim_Command") {
+        // `anim_command` is the anim tree component's command (82244CF0),
+        // the same one `Skater_Anim_Command` (820B8558) forwards to.
+        if n == k("Skater_Anim_Command") || n == k("Anim_Command") {
             // The anim component's command (see anim_tree.rs): `target` node
             // id, `command`, `params`.
             let target = params.checksum(k("target")).unwrap_or(0);
@@ -520,6 +526,16 @@ impl Ctx<'_> {
             let g = |c: u32| self.s.globals.get(&c).cloned();
             let globals = &self.s.globals;
             let named = |v: &Value| globals.iter().find(|(_, x)| *x == v).map(|(k, _)| *k);
+            if command == k("timer_wait") {
+                // 823866C8 -> 82386620: the script waits on the timer.
+                return Some(match self.anim.timer_wait(target, &inner) {
+                    Some((serial, f)) => {
+                        script.wait_on_host(serial, f);
+                        true
+                    }
+                    None => false,
+                });
+            }
             return Some(self.anim.command_named(&target, command, &inner, &g, Some(&named)));
         }
         if n == k("Skater_AnimNodeExists") {
@@ -614,6 +630,7 @@ impl Ctx<'_> {
 /// Commands this host translates (so expressions call them).
 const COMMANDS: &[&str] = &[
     "Skater_Anim_Command",
+    "Anim_Command",
     "Skater_AnimNodeExists",
     "Vibrate",
     "ClearPanel_Landed",

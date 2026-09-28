@@ -34,6 +34,11 @@ pub trait Host {
     fn random(&mut self, n: u32) -> u32;
     /// Game time in milliseconds (for timed waits).
     fn now_ms(&self) -> f64;
+    /// Whether a wait the host set with [`Script::wait_on_host`] is over
+    /// (e.g. an animation timer reaching a point).
+    fn wait_done(&mut self, _token: u64, _target: f32) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,6 +50,9 @@ enum Wait {
     Until(f64),
     /// `Block`: until something else moves the script on.
     Forever,
+    /// Until the host says so (a script blocked on an object, e.g. an
+    /// animation timer's wait list, `82386620`).
+    Host(u64, f32),
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +187,11 @@ impl Script {
         Some(s)
     }
 
+    /// Block until the host's [`Host::wait_done`] answers true.
+    pub fn wait_on_host(&mut self, token: u64, target: f32) {
+        self.wait = Wait::Host(token, target);
+    }
+
     pub fn is_done(&self) -> bool {
         self.pc.is_none()
     }
@@ -217,6 +230,8 @@ impl Script {
                 Wait::Until(t) if host.now_ms() < t => return Status::Waiting,
                 Wait::Until(_) => self.wait = Wait::None,
                 Wait::Forever => return Status::Waiting,
+                Wait::Host(token, target) if !host.wait_done(token, target) => return Status::Waiting,
+                Wait::Host(..) => self.wait = Wait::None,
             }
             self.steps += 1;
             if self.steps > 100_000 {

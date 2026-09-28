@@ -117,6 +117,24 @@ impl Balance {
         }
     }
 
+    /// The running balance's lean for the animation (`820CEB80`, which
+    /// picks the meter the same way), `None` when none runs.
+    pub fn anim_lean(&self) -> Option<f32> {
+        let k = qb_key;
+        let kind = self.kind;
+        if kind == k("Manual") || kind == k("NoseManual") || kind == k("Flatland") {
+            Some(self.manual.lean)
+        } else if kind == k("Grind") || kind == k("Slide") {
+            Some(self.grind.lean)
+        } else if kind == k("Lip") {
+            Some(self.lip.lean)
+        } else if kind == k("Skitch") {
+            Some(self.skitch.lean)
+        } else {
+            None
+        }
+    }
+
     fn meter_mut(&mut self, kind: u32) -> Option<&mut Meter> {
         let k = qb_key;
         if kind == k("Manual") || kind == k("NoseManual") || kind == k("Flatland") {

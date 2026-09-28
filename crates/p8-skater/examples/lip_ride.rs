@@ -1,12 +1,14 @@
 //! `cargo run -p p8-skater --example lip_ride -- <path to qb.pak.xen> [zone] [speed] [ollie|left]`
 //! Like `vert_ride`, with the skater's scripts running and the level's
 //! rails: rolls at a vert wall holding "Triangle" (Xbox Y) and prints the
-//! ride, the running script and the lip balance.
+//! ride, the running script and the lip balance. With
+//! `P8_ANIMS=<DATA/COMPRESSED>` it also runs the animation tree and prints
+//! the branches and, during a lip, the tree's node values.
 use glam::Vec3;
 use p8_formats::havok::{Solid, split_material};
 use p8_formats::{qb_key, zone};
-use p8_skater::world::{Level, World};
 use p8_skater::core_physics::State;
+use p8_skater::world::{Level, World};
 use p8_skater::{InputState, Scripts, Skater};
 
 fn main() {
@@ -74,6 +76,14 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
     p.body.matrix.y_axis = Vec3::Y;
     p.matrix_32 = p.body.matrix;
     p.body.velocity = at * speed;
+    if let Ok(root) = std::env::var("P8_ANIMS") {
+        let root = std::path::PathBuf::from(root);
+        let sk = p8_formats::skeleton::Skeleton::load(&root.join("ZONES/global.pak.xen"), qb_key("Pros_Hawk_skel")).expect("skeleton");
+        let lib = p8_skater::anim_tree::ClipLib::open(&root.join("PAK/perm_anims.pak.xen"), &root.join("../ANIMS/standardkeyQ.bin.xen"))
+            .expect("clips");
+        let g = |c: u32| s.globals.get(&c).cloned();
+        k.anim.attach(lib, p8_skater::anim_tree::Rig::from_skeleton(&sk), &g);
+    }
     println!("start {:?} rolling {:?} at {speed}", floor.to_array(), at.to_array());
     let names: std::collections::HashMap<u32, String> = std::fs::read_to_string("/home/user/p8work/extra_names.txt")
         .map(|t| t.lines().map(|n| (p8_formats::qb_key(n), n.to_string())).collect())
@@ -85,6 +95,7 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
     // With "left": hold left during lips (leans towards the meter's top).
     let lean_left = std::env::args().nth(4).as_deref() == Some("left");
     let mut last = (State::Ground, 0u32);
+    let mut last_branches = Vec::new();
     let mut lip_frames = 0;
     let mut was_rumbling = false;
     for i in 0..(8 * 60) {
@@ -93,6 +104,22 @@ fn ride(s: &Scripts, level: &Level, floor: Vec3, flat: Vec3, speed: f32) {
         let left = lean_left && k.physics.state == State::Lip;
         let input = InputState { triangle: true, crouch, left, ..Default::default() };
         let events = k.step(s, &input, level);
+        let inputs = k.physics.anim_inputs_in(s, Some(level));
+        k.anim.update(1.0 / 60.0, inputs);
+        let _ = k.anim.sample(inputs);
+        if std::env::var_os("P8_ANIMS").is_some() && k.anim.branches != last_branches {
+            last_branches = k.anim.branches.clone();
+            println!("      branches: {}", last_branches.iter().map(|&b| name(Some(b))).collect::<Vec<_>>().join(" > "));
+        }
+        if std::env::var_os("P8_ANIMS").is_some() && k.physics.state == State::Lip && lip_frames % 15 == 1 {
+            let mut t = String::new();
+            if let Some(b) = &k.anim.body {
+                b.describe(0, &mut t);
+            }
+            for l in t.lines().filter(|l| l.contains("wobble") || l.contains("UNTRANSLATED") || l.contains("modulate")) {
+                println!("      {}", l.trim());
+            }
+        }
         let p = &k.physics;
         let now = (p.state, k.script_name().unwrap_or(0));
         if i % 10 == 9 || !events.is_empty() || now != last || (k.physics.vibration.levels != [0, 0]) != was_rumbling {

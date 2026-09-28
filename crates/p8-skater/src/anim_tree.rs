@@ -632,6 +632,8 @@ pub struct Timer {
     pub duration: f32,
     /// `+36`
     pub end: f32,
+    /// `+40`: see [`TimerState::end_frac`].
+    pub end_frac: f32,
     /// `+44`
     pub finished: bool,
 }
@@ -728,6 +730,57 @@ pub struct SkaterModulate {
     func: Option<BlendFn>,
     /// `+28`
     pub strength: f32,
+}
+
+/// `wobble` (vtable `82001100`; a timer: init `82386028` then `820B7F78`,
+/// update `820B8158`, sample `823864B0`): the clip's time follows the
+/// balance meter instead of the clock (lip, grind, manual, skitch range
+/// animations).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wobble {
+    /// `+20`.
+    pub time: f32,
+    /// `+32`: the clip's length (`anim`, `822448D0`).
+    pub duration: f32,
+    /// `+76`: the balance value, kept between frames.
+    pub value: f32,
+    /// `+84`: `reverse`.
+    pub reverse: bool,
+    /// `+44`: set when the time bounces off either end.
+    pub finished: bool,
+}
+
+impl Wobble {
+    /// `820B8158` (anim events `8237C380` between the old and new time are
+    /// not fired: events are not translated).
+    fn update(&mut self, i: &SkaterInputs) {
+        // 820B8040: with a balance running (animinfo +60), its lean
+        // (animinfo +36) / 4096 (82001D5C) * 0.5 + 0.5; then clamped to 0..1,
+        // reversed and scaled by the length, every frame (also when no
+        // balance runs, on the kept value).
+        if let Some(lean) = i.balance_lean {
+            self.value = lean * (1.0 / 4096.0) * 0.5 + 0.5;
+        }
+        self.value = self.value.clamp(0.0, 1.0);
+        if self.reverse {
+            self.value = 1.0 - self.value;
+        }
+        self.value *= self.duration;
+        // 820B80D0: the time is that value clamped to 0..1 (in seconds, as
+        // retail does).
+        self.time = self.value.clamp(0.0, 1.0);
+        loop {
+            if self.time < 0.0 {
+                self.finished = true;
+                self.time = -self.time;
+            } else if self.time > self.duration {
+                self.finished = true;
+                self.time = self.duration * 2.0 - self.time;
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 /// Angle in degrees between two directions (`821ED9E8`).
@@ -912,6 +965,10 @@ pub struct SkaterTimer {
     duration: f32,
     /// `+36`
     end: f32,
+    /// `+40`
+    end_frac: f32,
+    /// `+44`
+    finished: bool,
     /// `+84` (cycle)
     cycle: bool,
     /// `+85`: crouched when last seen
@@ -956,10 +1013,18 @@ impl SkaterTimer {
             }
         }
         // Other timer types (turn, spin, brake, grab...): not translated.
+        // 4590: below 0 -> finished, 0; past the end -> the end and
+        // finished, or 0 (not finished) for a cycle.
         if self.time < 0.0 {
+            self.finished = true;
             self.time = 0.0;
         } else if self.time > self.end {
-            self.time = if t == k("cycle") || self.cycle { 0.0 } else { self.end };
+            if t == k("cycle") || self.cycle {
+                self.time = 0.0;
+            } else {
+                self.time = self.end;
+                self.finished = true;
+            }
         }
     }
 }
@@ -1361,14 +1426,41 @@ pub enum Kind {
         chains: Vec<ik::Chain>,
     },
     /// Not translated: the node type.
+    Wobble(Wobble),
     Untranslated(u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     pub id: u32,
+    /// Unique per built node (what a waiting script is tied to; retail
+    /// ties it to the node object, `82386620`).
+    pub serial: u64,
     pub kind: Kind,
     pub children: Vec<Node>,
+}
+
+fn next_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A timer's fields as the timer commands read them (`823866C8`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimerState {
+    /// `+20`
+    pub time: f32,
+    /// `+28`
+    pub speed: f32,
+    /// `+32`
+    pub duration: f32,
+    /// `+36`
+    pub end: f32,
+    /// `+40`: `end` as a fraction minus 0.001 when given, else 1
+    /// (`82386028`).
+    pub end_frac: f32,
+    /// `+44`
+    pub finished: bool,
 }
 
 /// Expand unnamed references to global structs (the search `82211BE0`
@@ -1577,6 +1669,17 @@ impl Build<'_> {
                 induration: self.float(&items, "induration", scope).unwrap_or(1.0),
                 outduration: self.float(&items, "outduration", scope).unwrap_or(1.0),
             }
+        } else if ty == k("wobble") {
+            // 820B7F78 after the timer init: length of `anim`, `reverse`.
+            let anim = self.checksum(&items, "anim", scope).unwrap_or(0);
+            let duration = self.lib.duration(anim);
+            Kind::Wobble(Wobble {
+                time: 0.0,
+                duration,
+                value: 0.0,
+                reverse: matches!(lookup(&items, k("reverse")).map(|v| self.resolve(v, scope)), Some(Value::Int(n)) if n != 0),
+                finished: false,
+            })
         } else if ty == k("skatertimedswitch") {
             let anim = self.checksum(&items, if self.crouched0 { "crouchanim" } else { "standanim" }, scope).unwrap_or(0);
             Kind::TimedSwitch { w: self.float(&items, "start", scope).unwrap_or(0.0), length: self.lib.duration(anim), time: 0.0 }
@@ -1598,7 +1701,7 @@ impl Build<'_> {
             }
             other => other,
         };
-        Node { id, kind, children }
+        Node { id, serial: next_serial(), kind, children }
     }
 
     fn timer(&mut self, items: &[(u32, Value)], scope: &Params, looping: bool) -> Timer {
@@ -1616,8 +1719,10 @@ impl Build<'_> {
             duration = 1.0;
         }
         let time = self.float(items, "start", scope).map_or(0.0, |s| duration * s);
-        let end = self.float(items, "end", scope).map_or(duration, |e| duration * e);
-        Timer { looping, time, speed, duration, end, finished: false }
+        let end_param = self.float(items, "end", scope);
+        let end = end_param.map_or(duration, |e| duration * e);
+        let end_frac = end_param.map_or(1.0, |e| e - 0.001);
+        Timer { looping, time, speed, duration, end, end_frac, finished: false }
     }
 
     fn modulate(&mut self, items: &[(u32, Value)], scope: &Params) -> Modulate {
@@ -1696,6 +1801,8 @@ impl Build<'_> {
             speed: lookup(items, 0xF0D9_0109).map(|v| self.resolve(v, scope)).and_then(|v| v.as_f32()).unwrap_or(1.0),
             duration,
             end: duration,
+            end_frac: 1.0,
+            finished: false,
             cycle: lookup(items, k("cycle")).is_some(),
             crouched: self.crouched0,
             started: false,
@@ -1788,6 +1895,9 @@ pub struct SkaterInputs {
     pub flipped: bool,
     /// SkaterState `+48`: toggled with every turn-around.
     pub rotated: bool,
+    /// The running balance's lean (animinfo `+36`, `820B9400` ->
+    /// `820CEB80`), `None` when no balance runs (animinfo `+60` null).
+    pub balance_lean: Option<f32>,
     /// SkaterState `+32`.
     pub crouched: bool,
     /// SkaterState `+24` == 1 (the air state).
@@ -1828,6 +1938,7 @@ impl Node {
         match &mut self.kind {
             Kind::Timer(t) => t.update(&mut dt),
             Kind::Flip { rotated, .. } => *rotated = i.rotated,
+            Kind::Wobble(w) => w.update(i),
             Kind::SkaterTimer(t) => t.update(&mut dt, i),
             Kind::Modulate(m) => m.update(dt),
             Kind::SkaterModulate(m) => m.update(dt, i),
@@ -2071,6 +2182,14 @@ impl Node {
                 }
                 p
             }
+            Kind::Wobble(w) => {
+                // 823864B0: the child at time / length.
+                let p = w.time / w.duration;
+                match self.children.first_mut() {
+                    Some(c) => c.sample(p, cx),
+                    None => Pose::zero(rig),
+                }
+            }
             Kind::SkaterTimer(t) => {
                 let p = if t.duration > 0.0 { t.time / t.duration } else { 0.0 };
                 match self.children.first_mut() {
@@ -2251,6 +2370,7 @@ impl Node {
             Kind::OllieLand(o) => format!("ollielandblend w={:.2} to_land={:.2}", o.w, o.to_land),
             Kind::SpinTimer { time, duration } => format!("spintimer t={time:.2}/{duration:.2}"),
             Kind::SpinAdd { wl, wr, .. } => format!("spinadd {wl:.2} {wr:.2}"),
+            Kind::Wobble(w) => format!("wobble time={:.3}/{:.3}", w.time, w.duration),
             Kind::Untranslated(t) => format!("UNTRANSLATED {}", name_of(*t).unwrap_or("?")),
         };
         let _ = writeln!(out, "{}{}{}", "  ".repeat(depth), if self.id != 0 { format!("[{:08x}] ", self.id) } else { String::new() }, v);
@@ -2259,11 +2379,48 @@ impl Node {
         }
     }
 
+    /// The node with this id that was built last: retail keeps an id table
+    /// in build order and searches it from the end (`82244CF0`); a parent
+    /// is registered before its children, older branches before newer.
     pub fn find_mut(&mut self, id: u32) -> Option<&mut Node> {
-        if self.id == id {
+        if self.children.iter().any(|c| c.contains(id)) {
+            return self.children.iter_mut().rev().find_map(|c| c.find_mut(id));
+        }
+        if self.id == id { Some(self) } else { None }
+    }
+
+    fn find_serial(&self, serial: u64) -> Option<&Node> {
+        if self.serial == serial {
             return Some(self);
         }
-        self.children.iter_mut().find_map(|c| c.find_mut(id))
+        self.children.iter().find_map(|c| c.find_serial(serial))
+    }
+
+    /// The timer fields of the node types that use the timer commands
+    /// (`823866C8`; those translated here).
+    fn timer_state(&self) -> Option<TimerState> {
+        match &self.kind {
+            Kind::Timer(t) => Some(TimerState {
+                time: t.time,
+                speed: t.speed,
+                duration: t.duration,
+                end: t.end,
+                end_frac: t.end_frac,
+                finished: t.finished,
+            }),
+            Kind::SkaterTimer(t) => Some(TimerState {
+                time: t.time,
+                speed: t.speed,
+                duration: t.duration,
+                end: t.end,
+                end_frac: t.end_frac,
+                finished: t.finished,
+            }),
+            Kind::Wobble(w) => {
+                Some(TimerState { time: w.time, speed: 1.0, duration: w.duration, end: w.duration, end_frac: 1.0, finished: w.finished })
+            }
+            _ => None,
+        }
     }
 
     pub fn contains(&self, id: u32) -> bool {
@@ -2309,7 +2466,6 @@ struct Sampler<'a> {
     rig: &'a Rig,
     lib: &'a mut ClipLib,
     inputs: SkaterInputs,
-    untranslated: &'a mut Vec<u32>,
 }
 
 /// Finds which global a value is (see [`AnimTree::command_named`]).
@@ -2350,6 +2506,7 @@ impl AnimTree {
         self.rig = rig;
         self.body = Some(Node {
             id: qb_key("body"),
+            serial: next_serial(),
             kind: Kind::DegenerateBlend(DegenerateBlend { records: Vec::new(), duration: 0.0, next_duration: -1.0 }),
             children: Vec::new(),
         });
@@ -2380,6 +2537,33 @@ impl AnimTree {
         };
         let k = qb_key;
         let Some(node) = body.find_mut(*target) else { return false };
+        // The timer commands (823866C8) on the node types sharing them.
+        if let Some(t) = node.timer_state() {
+            if command == k("timer_isanimcomplete") {
+                return t.finished;
+            }
+            if command == k("timer_reset") {
+                // 693C: time 0, not finished.
+                match &mut node.kind {
+                    Kind::Timer(x) => (x.time, x.finished) = (0.0, false),
+                    Kind::SkaterTimer(x) => (x.time, x.finished) = (0.0, false),
+                    Kind::Wobble(x) => (x.time, x.finished) = (0.0, false),
+                    _ => {}
+                }
+                return true;
+            }
+            if command == k("timer_setspeed") {
+                // 6728: `speed` into +28.
+                if let Some(v) = params.float(k("speed")) {
+                    match &mut node.kind {
+                        Kind::Timer(x) => x.speed = v,
+                        Kind::SkaterTimer(x) => x.speed = v,
+                        _ => {}
+                    }
+                }
+                return true;
+            }
+        }
         match &mut node.kind {
             Kind::DegenerateBlend(d) if command == k("degenerateblend_addbranch") => {
                 // 8237CFB8 reads `tree`, `params`, `blendduration`,
@@ -2487,6 +2671,40 @@ impl AnimTree {
         }
     }
 
+    /// `timer_wait` (823866C8, 6758): the timer node to wait on and the
+    /// progress (time / length) to wait for: `percent` of the end,
+    /// `secondsfromend`, `framesfromend`, else the end (`+40`); mirrored
+    /// for a negative speed. `None` when there is no such timer.
+    pub fn timer_wait(&mut self, target: u32, params: &Params) -> Option<(u64, f32)> {
+        let k = qb_key;
+        let node = self.body.as_mut()?.find_mut(target)?;
+        let t = node.timer_state()?;
+        let mut f = t.end_frac;
+        if !params.0.is_empty() {
+            if let Some(p) = params.float(k("percent")) {
+                f = t.end_frac * p * 0.01;
+            } else if let Some(s) = params.float(k("secondsfromend")) {
+                f = (t.end - s) / t.duration;
+            } else if let Some(n) = params.float(k("framesfromend")) {
+                f = (t.end - n * 0.016_666_668) / t.duration;
+            }
+        }
+        if t.speed < 0.0 {
+            f = 1.0 - f;
+        }
+        Some((node.serial, f))
+    }
+
+    /// Whether a script waiting with [`AnimTree::timer_wait`] may go on
+    /// (`82385FC0`): progress at or past the target (at or before it when
+    /// the speed is negative). A timer no longer in the tree lets the script
+    /// go (INFERRED: its wait list goes with it).
+    pub fn timer_wait_done(&self, serial: u64, target: f32) -> bool {
+        let Some(t) = self.body.as_ref().and_then(|b| b.find_serial(serial)).and_then(Node::timer_state) else { return true };
+        let progress = t.time / t.duration;
+        if t.speed < 0.0 { progress <= target } else { progress >= target }
+    }
+
     /// `Skater_AnimNodeExists`.
     pub fn node_exists(&self, id: u32) -> bool {
         self.body.as_ref().is_some_and(|b| b.contains(id))
@@ -2507,7 +2725,7 @@ impl AnimTree {
         if body.children.is_empty() {
             return None;
         }
-        let mut cx = Sampler { board: false, rig: &self.rig, lib, inputs, untranslated: &mut self.untranslated };
+        let mut cx = Sampler { board: false, rig: &self.rig, lib, inputs };
         let mut p = body.sample(0.0, &mut cx);
         p.flush(&self.rig);
         Some(p)
@@ -2521,7 +2739,7 @@ impl AnimTree {
         if body.children.is_empty() {
             return None;
         }
-        let mut cx = Sampler { board: true, rig, lib, inputs: self.inputs, untranslated: &mut self.untranslated };
+        let mut cx = Sampler { board: true, rig, lib, inputs: self.inputs };
         let mut p = body.sample(0.0, &mut cx);
         p.flush(rig);
         Some(p)
@@ -2561,6 +2779,26 @@ mod tests {
             w: vec![1.0, 0.5, 0.25],
             strength: 1.0,
         }
+    }
+
+    /// 820B8040 / 820B80D0: lean -4096..4096 -> 0..length, reversed with
+    /// `reverse`, the time capped at 1 s; kept when no balance runs.
+    #[test]
+    fn wobble_follows_the_lean() {
+        let mut w = Wobble { time: 0.0, duration: 0.7, value: 0.0, reverse: false, finished: false };
+        let at = |lean: Option<f32>| SkaterInputs { balance_lean: lean, ..Default::default() };
+        w.update(&at(Some(-4096.0)));
+        assert_eq!(w.time, 0.0);
+        w.update(&at(Some(0.0)));
+        assert!((w.time - 0.35).abs() < 1e-6);
+        w.update(&at(Some(4096.0)));
+        assert!((w.time - 0.7).abs() < 1e-6);
+        w.reverse = true;
+        w.update(&at(Some(4096.0)));
+        assert_eq!(w.time, 0.0);
+        // No balance: the kept value (0 here) goes through the same steps.
+        w.update(&at(None));
+        assert!((w.time - 0.7).abs() < 1e-6);
     }
 
     #[test]
@@ -2677,7 +2915,7 @@ mod tests {
 
     #[test]
     fn timers_loop_or_clamp() {
-        let mut t = Timer { looping: true, time: 0.9, speed: 1.0, duration: 1.0, end: 1.0, finished: false };
+        let mut t = Timer { looping: true, time: 0.9, speed: 1.0, duration: 1.0, end: 1.0, end_frac: 1.0, finished: false };
         let mut dt = 0.2;
         t.update(&mut dt);
         assert!((t.time - 0.1).abs() < 1e-6 && t.finished);
