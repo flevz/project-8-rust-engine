@@ -379,6 +379,14 @@ impl Balance {
         self.update(c, qb_key("Lip"), input, dt)
     }
 
+    /// Retail `82190F58` on the meter of the running type (the ground update
+    /// `820F6978` calls it for Manual / NoseManual / Flatland on the manual
+    /// meter).
+    pub fn update_running(&mut self, c: &mut BalanceCtx, input: &InputState, dt: f32) -> Option<OffMeter> {
+        let kind = self.kind;
+        self.update(c, kind, input, dt)
+    }
+
     fn update(&mut self, c: &mut BalanceCtx, kind: u32, input: &InputState, dt: f32) -> Option<OffMeter> {
         let k = qb_key;
         let mut dt = dt;

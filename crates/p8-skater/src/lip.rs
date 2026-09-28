@@ -153,21 +153,7 @@ impl CorePhysics {
         // 820F4A90.
         self.update_balance_sides(s, world);
         if self.balance.kind == qb_key("Lip") {
-            let dt = self.dt;
-            let (stats, ctx, on_bike, now) = (self.stats.clone(), self.stat_context, self.on_bike, self.time_ms);
-            let mut rng = self.rng;
-            let mut random = |n: u32| {
-                rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                (rng >> 8) % n.max(1)
-            };
-            let mut c = BalanceCtx { s, stats: &stats, stat_context: ctx, on_bike, now_ms: now, random: &mut random };
-            let off = self.balance.update_lip(&mut c, input, dt);
-            self.rng = rng;
-            match off {
-                Some(OffMeter::Top) => events.push(Event::OffMeterTop),
-                Some(OffMeter::Bottom) => events.push(Event::OffMeterBottom),
-                None => self.balance.show_on_screen(s, self.balance_sides),
-            }
+            self.run_balance_meter(s, input, &mut events);
         }
         self.update_crouch(input);
         if self.ollie_trigger(input) {
@@ -175,6 +161,26 @@ impl CorePhysics {
             events.push(Event::Ollied);
         }
         events
+    }
+
+    /// `82190F58` on the running balance's meter, then its events
+    /// (OffMeterTop / OffMeterBottom) or the meter display.
+    pub(crate) fn run_balance_meter(&mut self, s: &Scripts, input: &InputState, events: &mut Vec<Event>) {
+        let dt = self.dt;
+        let (stats, ctx, on_bike, now) = (self.stats.clone(), self.stat_context, self.on_bike, self.time_ms);
+        let mut rng = self.rng;
+        let mut random = |n: u32| {
+            rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (rng >> 8) % n.max(1)
+        };
+        let mut c = BalanceCtx { s, stats: &stats, stat_context: ctx, on_bike, now_ms: now, random: &mut random };
+        let off = self.balance.update_running(&mut c, input, dt);
+        self.rng = rng;
+        match off {
+            Some(OffMeter::Top) => events.push(Event::OffMeterTop),
+            Some(OffMeter::Bottom) => events.push(Event::OffMeterBottom),
+            None => self.balance.show_on_screen(s, self.balance_sides),
+        }
     }
 
     /// Retail `820E5988` (called by the lip, grind, rail and ground

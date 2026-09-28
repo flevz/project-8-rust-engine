@@ -178,20 +178,34 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         Some(d) => (true, d),
         None => (false, which),
     };
+    // ground:r2 (stance switch) / ground:manual (up then down): no ollie.
+    let ground = which.strip_prefix("ground:");
     let mut air_frames = 0;
     let (mut last_script, mut last_branches) = (0, Vec::new());
     for i in 0..60 * 8 {
         let t = i as f32 / 60.0;
         let in_air = k.physics.state == p8_skater::core_physics::State::Air;
         air_frames = if in_air { air_frames + 1 } else { 0 };
-        let mut input = if t < 3.0 {
+        let f = i as i32;
+        let mut input = if let Some(g) = ground {
+            let mut x = InputState { up: t < 2.0, ..Default::default() };
+            match g {
+                "r2" => x.r2 = (150..153).contains(&f),
+                "manual" => {
+                    x.up = x.up || (150..153).contains(&f);
+                    x.down = (156..159).contains(&f);
+                }
+                _ => {}
+            }
+            x
+        } else if t < 3.0 {
             InputState { up: true, ..Default::default() }
         } else if t < 3.5 {
             InputState { crouch: true, ..Default::default() }
         } else {
             InputState::default()
         };
-        if (6..10).contains(&air_frames) {
+        if ground.is_none() && (6..10).contains(&air_frames) {
             match dir {
                 "left" => input.left = true,
                 "right" => input.right = true,
@@ -217,9 +231,11 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
             println!("{t}");
         }
         let sc = k.script_name().unwrap_or(0);
-        if sc != last_script || k.anim.branches != last_branches || !events.is_empty() {
+        if sc != last_script || k.anim.branches != last_branches || !events.is_empty() || (ground.is_some() && i % 20 == 0) {
             println!(
-                "t={t:5.2} air={in_air} script {} {events:?} branches {}",
+                "t={t:5.2} air={in_air} flipped={} lean={:.0} script {} {events:?} branches {}",
+                k.physics.flipped,
+                k.physics.balance.manual.lean,
                 name(sc),
                 k.anim.branches.iter().map(|&b| name(b)).collect::<Vec<_>>().join(" > ")
             );

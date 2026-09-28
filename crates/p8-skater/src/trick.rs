@@ -700,6 +700,7 @@ impl Tricks {
         let Some(Value::Array(entries)) = g.global(list).cloned() else { return };
         let ignore = !self.flags & !4;
         for (index, entry) in entries.iter().enumerate() {
+            let entry = &Value::Struct(expand_struct(entry, g));
             if !self.valid(entry, g) {
                 continue;
             }
@@ -779,6 +780,7 @@ impl Tricks {
     fn match_pending(&mut self, list: u32, special: bool, use_mask: u32, ignore: u32, grind: bool, now: u32, g: &dyn Globals) {
         let Some(Value::Array(entries)) = g.global(list).cloned() else { return };
         for (index, entry) in entries.iter().enumerate() {
+            let entry = &Value::Struct(expand_struct(entry, g));
             if !self.valid(entry, g) {
                 continue;
             }
@@ -827,6 +829,7 @@ impl Tricks {
     /// `alt_trigger`) matches (use bit 2, ignoring events used by bits
     /// other than 4).
     pub fn extra_hit(&mut self, entry: &Value, index: usize, skip: u32, now: u32, g: &dyn Globals) -> bool {
+        let entry = &Value::Struct(expand_struct(entry, g));
         if index < 32 && skip & (1 << index) != 0 {
             return false;
         }
@@ -838,7 +841,9 @@ impl Tricks {
 
     /// The trick struct an entry stands for: itself when it has a script,
     /// else its `trickslot` through the mapping (`821230D8`, `3220`).
-    pub fn resolve<'a>(&'a self, entry: &'a Value, g: &'a dyn Globals) -> Option<Value> {
+    pub fn resolve(&self, entry: &Value, g: &dyn Globals) -> Option<Value> {
+        // Unnamed global structs in an entry are included (82211BE0).
+        let entry = &Value::Struct(expand_struct(entry, g));
         if struct_member(entry, "scr").is_some() {
             return Some(entry.clone());
         }

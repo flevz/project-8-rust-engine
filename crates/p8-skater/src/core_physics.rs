@@ -1116,8 +1116,21 @@ impl CorePhysics {
         }
         // The `+2025` block is skipped: every retail write to `+2025` stores 0.
 
-        if let Some(e) = self.drive(s, input) {
-            events.push(e);
+        // 75A0: by the running balance type (balance +24): none -> the
+        // drive section; Manual / NoseManual / Flatland -> not braking
+        // (+1980), the meter's safe sides (820E5988) and the manual meter
+        // (82190F58; the trick component's balance scoring 821248A8 is not
+        // translated); Skitch (not translated) and other types -> nothing.
+        let kind = self.balance.kind;
+        let k = qb_key;
+        if kind == 0 {
+            if let Some(e) = self.drive(s, input) {
+                events.push(e);
+            }
+        } else if kind == k("Manual") || kind == k("NoseManual") || kind == k("Flatland") {
+            self.braking = false;
+            self.update_balance_sides(s, world);
+            self.run_balance_meter(s, input, &mut events);
         }
         self.friction(s, gravity_cancelled);
         if self.body.velocity.y < 0.0 {
