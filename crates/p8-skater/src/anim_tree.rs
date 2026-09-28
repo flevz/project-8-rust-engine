@@ -448,6 +448,9 @@ pub enum BlendFn {
     Smooth,
     /// `8237BC08`: 0 below 0.5, else 1.
     Step,
+    /// `8237BC40` (init `8237BD20`): (e^(kt) - 1) / (e^k - 1), k =
+    /// `blendcurvature` (default 5).
+    Exponential(f32),
     /// `8237BD70` stores 1 - each value; `8237BFE8` interpolates them.
     Curve(Vec<f32>),
 }
@@ -464,8 +467,10 @@ impl BlendFn {
                 _ => Vec::new(),
             };
             BlendFn::Curve(v)
+        } else if name == qb_key("exponential") {
+            BlendFn::Exponential(5.0)
         } else {
-            // 0 and `linear`; `exponential` (8237BC40) is not read.
+            // 0 and `linear`.
             BlendFn::Linear
         }
     }
@@ -474,6 +479,7 @@ impl BlendFn {
         match self {
             BlendFn::Linear => t,
             BlendFn::Smooth => (t - 1.5) * t * t * -2.0,
+            BlendFn::Exponential(k) => ((t * k).exp() - 1.0) / (k.exp() - 1.0),
             BlendFn::Step => {
                 if t >= 0.5 {
                     1.0
@@ -976,6 +982,7 @@ pub struct Catch {
     /// `+44`
     done: bool,
     captured: Option<Pose>,
+    captured_board: Option<Pose>,
 }
 
 impl Catch {
@@ -1030,7 +1037,12 @@ impl OllieLand {
         if !i.in_air {
             return;
         }
-        let land = if i.time_to_land >= 0.0 && i.time_to_land <= self.blendintime + 0.05 { i.time_to_land } else { -1.0 };
+        // The prediction with this node's horizon (`+28`): slice k counts
+        // only if k == 1 or (k - 1) x 0.05 < horizon (820E2CD8's loop).
+        let k = i.time_to_land_slice;
+        // (retail sums 0.05 in single precision).
+        let t_prev = (1..k).fold(0.0f32, |t, _| t + 0.05);
+        let land = if k != 0 && (k == 1 || t_prev < self.blendintime) { i.time_to_land } else { -1.0 };
         if !self.started {
             self.to_land = land;
             if land != -1.0 {
@@ -1148,8 +1160,12 @@ pub enum Kind {
     SkaterModulate(SkaterModulate),
     Flip,
     PassThrough,
+    /// `+20` a pose was kept; the kept pose (`823772D0` stores each live
+    /// sample). `posecapture_capture` (`820B38F0`) deletes the live child,
+    /// after which the kept pose is returned (`820B37F0`).
     PoseCapture {
-        frozen: Option<Pose>,
+        kept: Option<Pose>,
+        kept_board: Option<Pose>,
     },
     DegenerateBlend(DegenerateBlend),
     SkaterTimer(SkaterTimer),
@@ -1167,11 +1183,13 @@ pub enum Kind {
     /// `blank` (sample `8237B608`): an empty pose.
     Blank,
     /// `partialswitch` (init `8237B610`, update `8237B7C8`, sample
-    /// `8237B878`): `+20` state (0 for `state = on`), `+28` weight, `+24`
-    /// blend time (0: set by commands not read).
+    /// `8237B878`, commands `8237B698`): `+20` state (0 for `on`), `+28`
+    /// weight, `+24` blend time (0 until `partialswitch_setstate` sets its
+    /// `blendduration`, default 0.3).
     PartialSwitch {
         on: bool,
         w: f32,
+        duration: f32,
     },
     /// `apextimer` (init `820A20E0`, update `820A2188`): plays its clip so
     /// that the middle falls on the top of the jump.
@@ -1321,15 +1339,15 @@ impl Build<'_> {
         } else if ty == k("cycle") || ty == k("play") {
             Kind::Timer(self.timer(&items, scope, ty == k("cycle")))
         } else if ty == k("add") {
-            // 82375378: both weights default to 1 (their param names are
-            // not resolved: 0x9D5E2C7C, 0x1A524142).
+            // 82375378: both weights default to 1; their params (keys
+            // 0x9D5E2C7C, 0x1A524142, names unknown) appear in no script
+            // tree, so 1 is what every tree gets.
             let wa = lookup(&items, 0x9D5E_2C7C).and_then(Value::as_f32).unwrap_or(1.0);
             let wb = lookup(&items, 0x1A52_4142).and_then(Value::as_f32).unwrap_or(1.0);
             Kind::Add { wa, wb }
         } else if ty == k("applydifference") {
-            // The node weight `+20`: its init (slot 2 `820A2390`) is not
-            // read; 1 (INFERRED from the trees giving no weight).
-            Kind::ApplyDifference { weight: 1.0 }
+            // 820A2390: the weight `+20` is `strength`, default 1.
+            Kind::ApplyDifference { weight: self.float(&items, "strength", scope).unwrap_or(1.0) }
         } else if ty == k("modulate") {
             Kind::Modulate(self.modulate(&items, scope))
         } else if ty == k("skatermodulate") {
@@ -1339,7 +1357,7 @@ impl Build<'_> {
         } else if ty == k("boardrotateoverlay") {
             Kind::PassThrough
         } else if ty == k("skaterposecapture") {
-            Kind::PoseCapture { frozen: None }
+            Kind::PoseCapture { kept: None, kept_board: None }
         } else if ty == k("degenerateblend") {
             Kind::DegenerateBlend(DegenerateBlend { records: Vec::new(), duration: 0.0, next_duration: -1.0 })
         } else if ty == k("ik") {
@@ -1381,12 +1399,13 @@ impl Build<'_> {
                 latched: false,
                 done: false,
                 captured: None,
+                captured_board: None,
             })
         } else if ty == k("blank") {
             Kind::Blank
         } else if ty == k("partialswitch") {
             let on = self.checksum(&items, "state", scope) == Some(k("on"));
-            Kind::PartialSwitch { on, w: if on { 0.0 } else { 1.0 } }
+            Kind::PartialSwitch { on, w: if on { 0.0 } else { 1.0 }, duration: 0.0 }
         } else if ty == k("apextimer") {
             let duration = self.checksum(&items, "anim", scope).map_or(0.0, |a| self.lib.duration(a));
             Kind::ApexTimer { time: 0.0, duration, started: false, to_apex: 1.0 }
@@ -1460,8 +1479,8 @@ impl Build<'_> {
     fn timer(&mut self, items: &[(u32, Value)], scope: &Params, looping: bool) -> Timer {
         let anim = self.checksum(items, "anim", scope).unwrap_or(0);
         let mut duration = self.lib.duration(anim);
-        // 0xF0DE0109: the speed parameter (name not resolved), default 1.
-        let mut speed = lookup(items, 0xF0DE_0109).map(|v| self.resolve(v, scope)).and_then(|v| v.as_f32()).unwrap_or(1.0);
+        // `speed` (0xF0D90109, `607C`), default 1.
+        let mut speed = lookup(items, qb_key("speed")).map(|v| self.resolve(v, scope)).and_then(|v| v.as_f32()).unwrap_or(1.0);
         if let Some(c) = self.float(items, "cycle_length", scope) {
             if duration == -1.0 {
                 duration = c;
@@ -1668,8 +1687,11 @@ pub struct SkaterInputs {
     pub spin: f32,
     /// `820B8220` (animinfo `+164`): riding switch.
     pub switch: bool,
-    /// `820B9298` -> `820E79D8`: seconds until landing, -1 if not found.
+    /// `820B9298` -> `820E79D8`: seconds until landing, -1 if not found,
+    /// and the 0.05 s slice it was found in (see
+    /// `CorePhysics::time_to_land_slice`).
     pub time_to_land: f32,
+    pub time_to_land_slice: u32,
     /// `820B91D8` -> `820D7878`: seconds until the top of the jump.
     pub time_to_apex: f32,
 }
@@ -1685,9 +1707,10 @@ impl Node {
             Kind::UberCrouch(u) => u.crouch.update(dt, i),
             Kind::PhaseTimer(t) => t.update(dt, i),
             Kind::Catch(c) => c.update(dt, i),
-            Kind::PartialSwitch { on, w } => {
-                // 8237B7C8 with a blend time of 0: straight to 0 or 1.
-                *w = if *on { 0.0 } else { 1.0 };
+            Kind::PartialSwitch { on, w, duration } => {
+                // 8237B7C8: towards 1 (off) or 0 (on) over the blend time.
+                let step = if *duration != 0.0 { dt / *duration } else { 1.0 };
+                *w = if *on { (*w - step).max(0.0) } else { (*w + step).min(1.0) };
             }
             Kind::ApexTimer { time, duration, started, to_apex } => {
                 // 820A2188.
@@ -1846,9 +1869,8 @@ impl Node {
                 p
             }
             Kind::SkaterModulate(m) => {
-                if !cx.board {
-                    m.sample_value(&cx.inputs);
-                }
+                // Runs on every sample, the board's too (82245DC0/82245E58).
+                m.sample_value(&cx.inputs);
                 let s = m.strength;
                 if s == 0.0 {
                     return Pose::zero(rig);
@@ -1865,11 +1887,19 @@ impl Node {
                 first(self, cx)
             }
             Kind::PassThrough => first(self, cx),
-            Kind::PoseCapture { frozen } => {
-                if let Some(p) = frozen {
-                    return p.clone();
+            Kind::PoseCapture { .. } => {
+                if self.children.is_empty() {
+                    let Kind::PoseCapture { kept, kept_board } = &self.kind else { unreachable!() };
+                    let k = if cx.board { kept_board } else { kept };
+                    return k.clone().unwrap_or_else(|| Pose::zero(rig));
                 }
-                first(self, cx)
+                let p = first(self, cx);
+                if let Kind::PoseCapture { kept, kept_board } = &mut self.kind {
+                    // The board keeps its own copy (INFERRED: retail keeps
+                    // one buffer per node).
+                    *(if cx.board { kept_board } else { kept }) = Some(p.clone());
+                }
+                p
             }
             Kind::DegenerateBlend(d) => {
                 // 8237C910.
@@ -1906,9 +1936,8 @@ impl Node {
                 let v = cx.inputs.velocity;
                 let s = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
                 let d = s - *speed_now;
-                if !cx.board {
-                    *speed_now = if d.abs() > 0.5 { if d > 0.0 { *speed_now + 0.5 } else { *speed_now - 0.5 } } else { s };
-                }
+                // Stepped on every sample, the board's too (82245E58).
+                *speed_now = if d.abs() > 0.5 { if d > 0.0 { *speed_now + 0.5 } else { *speed_now - 0.5 } } else { s };
                 let u = if *speed == *speed_min { 0.0 } else { ((*speed_now - *speed_min) / (*speed - *speed_min)).clamp(0.0, 1.0) };
                 let (wa, wb) = (1.0 - u, u);
                 let mut a =
@@ -1929,15 +1958,13 @@ impl Node {
                 let v = cx.inputs.velocity;
                 let s = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
                 let d = s - u.speed_now;
-                if !cx.board {
-                    u.speed_now = if d > 0.5 {
-                        u.speed_now + 0.5
-                    } else if d < -0.5 {
-                        u.speed_now - 0.5
-                    } else {
-                        s
-                    };
-                }
+                u.speed_now = if d > 0.5 {
+                    u.speed_now + 0.5
+                } else if d < -0.5 {
+                    u.speed_now - 0.5
+                } else {
+                    s
+                };
                 let f = if u.speed == u.speed_min { 0.0 } else { ((u.speed_now - u.speed_min) / (u.speed - u.speed_min)).clamp(0.0, 1.0) };
                 let c = u.crouch.w;
                 let clips = u.clips;
@@ -1988,15 +2015,18 @@ impl Node {
                     return Pose::zero(rig);
                 }
                 let s = c.strength;
-                let mut p = if c.latched && c.captured.is_some() && !cx.board {
-                    c.captured.clone().unwrap()
+                // The captured pose lives in each object's own pose buffer
+                // (skater +24, board +32: 820B3798 / 820B0380).
+                let kept = if cx.board { &c.captured_board } else { &c.captured };
+                let mut p = if c.latched && kept.is_some() {
+                    kept.clone().unwrap()
                 } else {
                     let live = match self.children.first_mut() {
                         Some(ch) => ch.sample(phase, cx),
                         None => Pose::zero(rig),
                     };
-                    if let (Kind::Catch(c), false) = (&mut self.kind, cx.board) {
-                        c.captured = Some(live.clone());
+                    if let Kind::Catch(c) = &mut self.kind {
+                        *(if cx.board { &mut c.captured_board } else { &mut c.captured }) = Some(live.clone());
                     }
                     live
                 };
@@ -2265,19 +2295,45 @@ impl AnimTree {
                 true
             }
             Kind::Modulate(m) if command == k("modulate_setstrength") => {
-                // Handler not read: sets the strength and stops any blend
-                // (LIKELY).
+                // 82381F5C: only `+24`, the strength.
                 if let Some(s) = params.float(k("strength")) {
                     m.strength = s;
-                    m.done = true;
                 }
                 true
             }
-            Kind::PoseCapture { .. } if command == k("posecapture_capture") => {
-                // Capturing needs the last sampled pose; not kept yet, so
-                // the node stays live (APPROXIMATE).
+            Kind::Modulate(m) if command == k("modulate_startblend") => {
+                // 82381E68 -> 82381AC8: restart the blend from the current
+                // strength (nothing when no blendfunction is given).
+                let Some(f) = params.checksum(k("blendfunction")) else { return true };
+                let anim = params.checksum(k("anim")).unwrap_or(0);
+                m.duration = if anim != 0 { lib.duration(anim) } else { params.float(k("blendtime")).unwrap_or(0.0) };
+                let curve = params.get(k("blendcurve")).cloned();
+                m.func = BlendFn::new(f, curve.as_ref());
+                m.start = m.strength;
+                m.done = false;
+                m.t = 0.0;
+                if let Some(Value::Array(a)) = &curve {
+                    m.from_start = a.first().and_then(Value::as_f32) == Some(1.0);
+                }
                 true
             }
+            Kind::PoseCapture { kept, .. } if command == k("posecapture_capture") => {
+                // 820B38F0: with a kept pose and a live child, delete the
+                // child; the kept pose is returned from then on.
+                if kept.is_some() && node.children.len() == 1 {
+                    node.children.clear();
+                }
+                true
+            }
+            Kind::PartialSwitch { on, duration, .. } if command == k("partialswitch_setstate") => {
+                // 8237B6F0: the first unnamed checksum (or `state`).
+                let st = params.unnamed_checksum().or_else(|| params.checksum(k("state"))).unwrap_or(0);
+                *on = st == k("on");
+                let d = params.float(k("blendduration")).unwrap_or(-1.0);
+                *duration = if d == -1.0 { 0.3 } else { d };
+                true
+            }
+            Kind::PartialSwitch { on, .. } if command == k("partialswitch_ison") => *on,
             _ => false,
         }
     }

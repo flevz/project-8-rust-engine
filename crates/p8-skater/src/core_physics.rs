@@ -496,28 +496,39 @@ impl CorePhysics {
     /// Retail `820E2CD8` (via `820E79D8`): seconds until the skater would
     /// land, stepping the flight in 0.05 s slices under air gravity from
     /// 0.0025 above the object and casting a feeler along each slice; -1 if
-    /// nothing upward-facing is hit within `max` seconds. The feeler's
-    /// filter masks (set by `8221B0D0`) are not read: none are used here.
+    /// nothing upward-facing is hit within `max` seconds.
     pub fn time_to_land(&self, s: &Scripts, world: &dyn crate::world::World, max: f32) -> f32 {
+        self.time_to_land_slice(s, world, max).0
+    }
+
+    /// [`CorePhysics::time_to_land`] and the 1-based slice the hit fell in
+    /// (0 when none), so a caller with a shorter horizon can apply the
+    /// retail cut-off: slice k is cast only if k == 1 or (k - 1) x 0.05 <
+    /// its horizon.
+    pub fn time_to_land_slice(&self, s: &Scripts, world: &dyn crate::world::World, max: f32) -> (f32, u32) {
         let g = Vec3::new(0.0, self.air_gravity(s), 0.0);
         let mut p = self.body.position + Vec3::new(0.0, 0.0025, 0.0);
         let mut v = self.body.velocity;
         let step = 0.05;
         let mut t = step;
+        let mut k = 1u32;
         loop {
             let next = p + v * step;
-            if let Some(hit) = world.feeler(p, next, 0, 0) {
+            // The feeler's defaults (8221B0D0 -> 8221AEA8): ignore_1 = 0x10,
+            // ignore_0 = 0.
+            if let Some(hit) = world.feeler(p, next, 0x10, 0) {
                 if hit.normal.y > 0.0 {
                     let len = (next - p).length();
                     let frac = if len > 0.0 { (hit.point - p).length() / len } else { 0.0 };
-                    return (t - step) + frac * step;
+                    return ((t - step) + frac * step, k);
                 }
-                return -1.0;
+                return (-1.0, 0);
             }
             if t >= max {
-                return -1.0;
+                return (-1.0, 0);
             }
             t += step;
+            k += 1;
             p = next;
             v += g * step;
         }
@@ -534,8 +545,12 @@ impl CorePhysics {
         let mut i = self.anim_inputs(s);
         if self.state == State::Air {
             i.time_to_apex = self.time_to_apex(s);
-            // 2 s horizon; each node applies its own (INFERRED equivalent).
-            i.time_to_land = world.map_or(-1.0, |w| self.time_to_land(s, w, 2.0));
+            // One prediction with a horizon longer than any node's (the
+            // scripts' land_blend_time is 0.3); each node applies its own
+            // cut-off by slice.
+            let (t, k) = world.map_or((-1.0, 0), |w| self.time_to_land_slice(s, w, 2.0));
+            i.time_to_land = t;
+            i.time_to_land_slice = k;
         }
         i
     }
@@ -562,6 +577,7 @@ impl CorePhysics {
             spin: self.spin_degrees,
             switch: false,
             time_to_land: -1.0,
+            time_to_land_slice: 0,
             time_to_apex: 0.0,
         }
     }

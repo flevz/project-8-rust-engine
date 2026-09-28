@@ -39,13 +39,16 @@ pub struct Chain {
 }
 
 /// Hinge axis in the knee's frame. Retail's constant (set by `82380500`,
-/// CONFIRMED in the recompiled code) is (0, 1, 0), but the node solves on a
-/// Havok skeleton reached through a skeleton mapper (`824E47E8`) whose bone
-/// frames are not traced. In this skeleton's frame the clips bend the knee
-/// about local Z (Sk8_Gnd_Stnd_To_Crch_Base_xx: -Z by 36-40 degrees when
-/// crouching), and only +Z puts every foot on its target (the `anim_check`
-/// example: under 0.1 mm; with Y the knees twist sideways). INFERRED from
-/// that data.
+/// CONFIRMED in the recompiled code) is (0, 1, 0) in the frame of the
+/// ragdoll's Havok skeleton (the node takes it from the `ragdoll`
+/// component and maps poses with `824E47E8`). That skeleton's bones are the
+/// rigid bodies of `default_human_ragdoll.rag` (global.pak, a Havok 4.0
+/// packfile): each sits exactly at this skeleton's bind position, rotated
+/// by the same -90 degrees about the bone's own X axis (all 15 bodies). So
+/// the ragdoll's (0, 1, 0) is this skeleton's (0, 0, 1): CONFIRMED for both
+/// knees (and it is the axis the clips bend the knees about). Because the
+/// offset is the same for every bone, the ankle taking the target's
+/// rotation in ragdoll space is the same as taking it here.
 pub const HINGE_AXIS: V3 = [0.0, 0.0, 1.0];
 /// The gains (`82380500`).
 pub const FIRST_JOINT_GAIN: f32 = 1.0;
@@ -98,12 +101,25 @@ fn shortest_rotation_damped(gain: f32, from: V3, to: V3) -> Q {
         return [0.0, 0.0, 0.0, 1.0];
     }
     if damped < -0.99999 {
-        // `8244DCF0` (not read): a half turn about an axis perpendicular to
-        // `from`. APPROXIMATE: any perpendicular axis is used here. A leg
-        // never needs this in practice (the target would be straight behind
-        // the thigh).
-        let p = if from[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-        let a = normalize3(cross(from, p));
+        // `8244DCF0`: a half turn about an axis perpendicular to `from`:
+        // zero its smallest component, swap the other two and negate one.
+        let m = from.map(f32::abs);
+        let (mut small, mut i1, mut i2) = (0usize, 1usize, 2usize);
+        let mut least = m[0];
+        if m[1] < m[0] {
+            i1 = 0;
+            least = m[1];
+            small = 1;
+        }
+        if m[2] < least {
+            i2 = small;
+            small = 2;
+        }
+        let mut v = [0.0f32; 3];
+        v[i1] = from[i2];
+        v[i2] = -from[i1];
+        v[small] = 0.0;
+        let a = normalize3(v);
         return [a[0], a[1], a[2], 0.0];
     }
     let c = ((damped + 1.0) * 0.5).sqrt();
