@@ -4,7 +4,7 @@
 //! each foot ends from its IK target.
 use glam::Vec3;
 use p8_formats::{ik, qb_key, skeleton::Skeleton, zone};
-use p8_skater::anim_tree::{ClipLib, Rig, SkaterInputs};
+use p8_skater::anim_tree::{ClipLib, Rig};
 use p8_skater::world::Level;
 use p8_skater::{InputState, Scripts, Skater};
 use std::collections::BTreeMap;
@@ -22,13 +22,19 @@ fn main() {
     let s = Scripts::new(globals);
     let z = zone::load(&root.join("ZONES"), "z_houses").expect("zone");
     let r = z.restarts.iter().find(|r| r.name == qb_key("z_houses_TRG_Restart_Default")).unwrap();
+    // P8_FLAT=1: a flat floor at the restart height instead of the level.
     let level = Level::new(&z.collision);
+    let flat = p8_skater::FlatFloor { height: r.pos[1] };
+    let world: &dyn p8_skater::World = if std::env::var_os("P8_FLAT").is_some() { &flat } else { &level };
     let sk = Skeleton::load(&root.join("ZONES/global.pak.xen"), qb_key("Pros_Hawk_skel")).expect("skeleton");
     let rig = Rig::from_skeleton(&sk);
     let lib = ClipLib::open(&root.join("PAK/perm_anims.pak.xen"), &root.join("../ANIMS/standardkeyQ.bin.xen")).expect("clips");
     let mut k = Skater::new(&s, Vec3::from(r.pos), Vec3::from(r.angles));
     let g = |c: u32| s.globals.get(&c).cloned();
     k.anim.attach(lib, rig.clone(), &g);
+    let board_sk = Skeleton::load(&root.join("ZONES/global.pak.xen"), qb_key("board")).expect("board skeleton");
+    let board_rig = Rig::from_skeleton(&board_sk);
+    k.anim.board_rig = Some(board_rig.clone());
     let feet = [("L", "Bone_IK_Foot_Slave_L", "bone_ankle_l"), ("R", "Bone_IK_Foot_Slave_R", "bone_ankle_r")];
     let phases = [
         ("still", InputState::default(), 2.0),
@@ -38,9 +44,10 @@ fn main() {
     let mut last = Vec::new();
     for (label, input, secs) in phases {
         for i in 0..(secs * 60.0) as usize {
-            k.step(&s, &input, &level);
-            k.anim.update(1.0 / 60.0);
-            let pose = k.anim.sample(SkaterInputs::default());
+            k.step(&s, &input, world);
+            let inputs = k.physics.anim_inputs(&s);
+            k.anim.update(1.0 / 60.0, inputs);
+            let pose = k.anim.sample(inputs);
             if k.anim.branches != last {
                 last = k.anim.branches.clone();
                 println!(
@@ -56,6 +63,19 @@ fn main() {
                     p.q.iter().zip(&p.t).map(|(q, t)| format!("{} {} {} {} {} {} {}", q[0], q[1], q[2], q[3], t[0], t[1], t[2])).collect();
                 let f = format!("{dir}/{}_{}.txt", label.replace(' ', "_"), (i + 1) / 60);
                 std::fs::write(f, lines.join("\n")).expect("dump");
+                let mut t = format!("{:?}\n", k.physics.anim_inputs(&s));
+                if let Some(bp) = k.anim.sample_board() {
+                    let locals: Vec<ik::Local> =
+                        bp.q.iter().zip(&bp.t).map(|(q, t)| ik::Local { rotation: [-q[0], -q[1], -q[2], q[3]], translation: *t }).collect();
+                    let m = ik::model_space(&locals, &board_rig.parents);
+                    for (i, b) in m.iter().enumerate() {
+                        t += &format!("board bone {i} w={} pos {:?} rot {:?}\n", bp.w[i], b.translation, b.rotation);
+                    }
+                }
+                if let Some(b) = &k.anim.body {
+                    b.describe(0, &mut t);
+                }
+                std::fs::write(format!("{dir}/{}_{}_tree.txt", label.replace(' ', "_"), (i + 1) / 60), t).expect("dump");
             }
             if i % 30 == 29
                 && let Some(p) = pose

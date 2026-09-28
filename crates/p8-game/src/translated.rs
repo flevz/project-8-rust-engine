@@ -158,6 +158,10 @@ impl Frame {
 struct SkaterRoot;
 #[derive(Component)]
 struct Rider;
+
+/// The placeholder board, removed when the real board loads.
+#[derive(Component)]
+struct BoardBox;
 #[derive(Component)]
 struct StatusText;
 
@@ -238,6 +242,7 @@ fn setup(
         .spawn((SkaterRoot, Transform::default(), Visibility::default()))
         .with_children(|root| {
             root.spawn((
+                BoardBox,
                 Mesh3d(meshes.add(Cuboid::new(0.22, 0.05, 0.82))),
                 MeshMaterial3d(materials.add(Color::srgb(0.12, 0.12, 0.12))),
                 Transform::from_xyz(0.0, 0.09, 0.0),
@@ -265,7 +270,15 @@ fn setup(
     };
     let note = match model {
         Ok(n) => {
+            let real_board = n.contains("board_default");
             commands.queue(move |world: &mut bevy::ecs::world::World| {
+                if real_board {
+                    let mut q = world.query_filtered::<Entity, With<BoardBox>>();
+                    let boxes: Vec<Entity> = q.iter(world).collect();
+                    for b in boxes {
+                        world.despawn(b);
+                    }
+                }
                 let mut q = world.query_filtered::<Entity, With<Rider>>();
                 let riders: Vec<Entity> = q.iter(world).collect();
                 for r in riders {
@@ -382,11 +395,13 @@ fn step(
         // The new skater keeps the clips and skeleton of the old one.
         let lib = skater.object.anim.lib.take();
         let rig = skater.object.anim.rig.clone();
+        let board_rig = skater.object.anim.board_rig.take();
         skater.object = p8_skater::Skater::new(&skater.scripts, ground.spawn.0, ground.spawn.1);
         if let Some(lib) = lib {
             let scripts = &skater.scripts;
             let g = |c: u32| scripts.globals.get(&c).cloned();
             skater.object.anim.attach(lib, rig, &g);
+            skater.object.anim.board_rig = board_rig;
         }
         skater.current = Frame::of(&skater.object.physics);
         skater.cam_dir = skater.object.physics.body.at();
@@ -395,7 +410,8 @@ fn step(
     let skater = &mut *skater;
     skater.object.physics.dt = dt;
     let events = skater.object.step(&skater.scripts, &input, ground.world());
-    skater.object.anim.update(dt);
+    let inputs = skater.object.physics.anim_inputs(&skater.scripts);
+    skater.object.anim.update(dt, inputs);
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);
     }

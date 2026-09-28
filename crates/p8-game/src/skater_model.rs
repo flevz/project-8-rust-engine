@@ -26,7 +26,7 @@ use p8_formats::qb::Value;
 use p8_formats::scene::Scene;
 use p8_formats::skeleton::Skeleton;
 use p8_formats::texture::{self, DictTexture};
-use p8_skater::anim_tree::{ClipLib, Rig, SkaterInputs};
+use p8_skater::anim_tree::{ClipLib, Rig};
 use p8_skater::Scripts;
 
 /// The ped profile used for the player's skater (see the module notes).
@@ -84,12 +84,20 @@ fn image(t: &texture::Rgba8) -> Image {
     img
 }
 
-/// The model's joints and their rest transforms.
+/// A model's joints and their rest transforms; `board` for the board.
 #[derive(Component)]
 pub struct SkaterJoints {
     joints: Vec<Entity>,
     bind: Vec<Transform>,
+    board: bool,
 }
+
+/// The board model: `board_default` (APPROXIMATE: the profile names no
+/// board, other ped profiles use desc_id `default`; the pro's own
+/// `SKATER_PRO/BOARDS/board_hawk` is not linked from the scripts read) on the
+/// `board` skeleton, animated by the skater's tree with each clip's `_b`
+/// counterpart.
+const BOARD_MODEL: &str = "MODELS/SKATER_MALE/board_default.skin.xen";
 
 fn load_anims(compressed: &Path, skeleton: &Skeleton, s: &Scripts, object: &mut p8_skater::Skater) -> Result<usize, String> {
     let data = compressed.parent().ok_or("no data folder")?;
@@ -106,12 +114,14 @@ fn load_anims(compressed: &Path, skeleton: &Skeleton, s: &Scripts, object: &mut 
 /// added a branch). Rotations are the conjugate of the clips' (82327678).
 pub fn animate(mut skater: ResMut<crate::translated::Skater>, models: Query<&SkaterJoints>, mut joints: Query<&mut Transform>) {
     let object = &mut skater.object;
-    let flipped = false; // stance (skaterflip) is not translated yet
-    let pose = object.anim.sample(SkaterInputs { flipped });
+    let inputs = object.anim.inputs;
+    let pose = object.anim.sample(inputs);
+    let board = object.anim.sample_board();
     for m in &models {
+        let pose = if m.board { &board } else { &pose };
         for (i, &e) in m.joints.iter().enumerate() {
             let Ok(mut tf) = joints.get_mut(e) else { continue };
-            *tf = match &pose {
+            *tf = match pose {
                 Some(p) if i < p.q.len() => {
                     let q = p.q[i];
                     Transform { translation: Vec3::from(p.t[i]), rotation: Quat::from_xyzw(-q[0], -q[1], -q[2], q[3]).normalize(), scale: Vec3::ONE }
@@ -146,6 +156,47 @@ pub fn spawn(
     // Joints: the bind pose hierarchy under a model root at the object's
     // origin (the model faces +Z like the physics matrix's third row).
     let model_root = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent))).id();
+    let (joints, bind_local) = build_skinned(commands, model_root, &skeleton, &scene, &textures, meshes, materials, images, bindposes);
+    let anim_note = match load_anims(compressed, &skeleton, &skater.scripts, &mut skater.object) {
+        Ok(n) => format!("animation tree ({n} clips)"),
+        Err(e) => format!("no animation ({e})"),
+    };
+    commands.entity(model_root).insert(SkaterJoints { joints, bind: bind_local, board: false });
+    // The board, under the same root (both objects share the origin).
+    let board_note = match load_board(compressed) {
+        Ok((bskel, bscene, btex)) => {
+            let root = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent))).id();
+            let (joints, bind) = build_skinned(commands, root, &bskel, &bscene, &btex, meshes, materials, images, bindposes);
+            commands.entity(root).insert(SkaterJoints { joints, bind, board: true });
+            skater.object.anim.board_rig = Some(Rig::from_skeleton(&bskel));
+            "board_default".to_string()
+        }
+        Err(e) => format!("no board ({e})"),
+    };
+    Ok(format!("{PROFILE}: {} meshes, {} bones, {anim_note}, {board_note}", scene.meshes.len(), skeleton.bones.len()))
+}
+
+fn load_board(compressed: &Path) -> Result<(Skeleton, Scene, Vec<DictTexture>), String> {
+    let skel = Skeleton::load(&compressed.join("ZONES").join("global.pak.xen"), p8_formats::qb_key("board"))?;
+    let skin = find_path(compressed, BOARD_MODEL).ok_or_else(|| format!("{BOARD_MODEL} not found"))?;
+    let scene = Scene::load(&skin)?;
+    let tex = texture::load_dictionary(&PathBuf::from(skin.to_string_lossy().replace(".skin.xen", ".tex.xen"))).unwrap_or_default();
+    Ok((skel, scene, tex))
+}
+
+/// Joints in bind pose under `model_root` and the skinned meshes.
+#[allow(clippy::too_many_arguments)]
+fn build_skinned(
+    commands: &mut Commands,
+    model_root: Entity,
+    skeleton: &Skeleton,
+    scene: &Scene,
+    textures: &[DictTexture],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
+) -> (Vec<Entity>, Vec<Transform>) {
     let mut joints: Vec<Entity> = Vec::with_capacity(skeleton.bones.len());
     let mut world: Vec<Mat4> = Vec::with_capacity(skeleton.bones.len());
     let mut bind_local: Vec<Transform> = Vec::with_capacity(skeleton.bones.len());
@@ -210,10 +261,5 @@ pub fn spawn(
             ChildOf(model_root),
         ));
     }
-    let anim_note = match load_anims(compressed, &skeleton, &skater.scripts, &mut skater.object) {
-        Ok(n) => format!("animation tree ({n} clips)"),
-        Err(e) => format!("no animation ({e})"),
-    };
-    commands.entity(model_root).insert(SkaterJoints { joints, bind: bind_local });
-    Ok(format!("{PROFILE}: {} meshes, {} bones, {anim_note}", scene.meshes.len(), skeleton.bones.len()))
+    (joints, bind_local)
 }

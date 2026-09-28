@@ -40,9 +40,29 @@ pub fn qb_key(name: &str) -> u32 {
     crc
 }
 
+/// Continue a checksum over more characters (`821E5718` via `821E57A0`):
+/// `qb_key_extend(qb_key(a), b) == qb_key(a + b)`. Used for a clip's board
+/// counterpart (`"_b"`).
+pub fn qb_key_extend(key: u32, more: &str) -> u32 {
+    let mut crc = key;
+    for b in more.bytes() {
+        let b = match b.to_ascii_lowercase() {
+            b'/' => b'\\',
+            b => b,
+        };
+        crc = TABLE[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc
+}
+
 #[cfg(test)]
 mod tests {
-    use super::qb_key;
+    use super::{qb_key, qb_key_extend};
+
+    #[test]
+    fn extending_matches_the_whole_name() {
+        assert_eq!(qb_key_extend(qb_key("Sk8_Gnd_Stnd_Base_xx"), "_b"), qb_key("Sk8_Gnd_Stnd_Base_xx_B"));
+    }
 
     /// Every pair below is quoted in Project8Recomp's `dev_cheats.h`, where it
     /// is used successfully against the retail executable.

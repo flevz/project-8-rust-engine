@@ -481,6 +481,39 @@ impl CorePhysics {
         input.brake_digital
     }
 
+    /// Retail `820D7570`: the brake input as the animation reads it
+    /// (animinfo `+132`). With the stick at rest: Down held without Left or
+    /// Right; otherwise the stick pulled back past
+    /// `physics_brake_stick_threshold` and held within it sideways.
+    pub fn anim_brake_input(&self, s: &Scripts, input: &InputState) -> bool {
+        if input.stick_back_raw == 0.0 && input.stick_x_raw == 0.0 {
+            return input.down && !input.left && !input.right;
+        }
+        let t = s.physics_float("Physics_Brake_Stick_Threshold", self.on_bike);
+        input.stick_back_raw * 0.0078125 > t && (input.stick_x_raw * 0.0078125).abs() < t
+    }
+
+    /// What the animation tree reads (the animinfo copies, `820B8EA0`).
+    pub fn anim_inputs(&self, s: &Scripts) -> crate::anim_tree::SkaterInputs {
+        let brake_input = self.anim_brake_input(s, &self.last_input);
+        let m = self.body.matrix;
+        crate::anim_tree::SkaterInputs {
+            flipped: false,
+            crouched: self.crouched,
+            in_air: self.state == State::Air,
+            in_vert_air: self.vert.in_vert_air,
+            on_vert_ground: self.vert.on_vert_ground,
+            velocity: self.body.velocity.to_array(),
+            turn: self.turn_amount,
+            brake_input,
+            brake_amount: self.brake_amount,
+            kick: self.kick_flag && !brake_input,
+            right: m.x_axis.to_array(),
+            up: m.y_axis.to_array(),
+            at: m.z_axis.to_array(),
+        }
+    }
+
     /// Retail `820D9208`.
     pub fn is_braking(&mut self, s: &Scripts, input: &InputState) -> bool {
         // 1.27 is the constant at 820029BC.

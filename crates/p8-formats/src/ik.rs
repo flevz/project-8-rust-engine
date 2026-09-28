@@ -38,8 +38,16 @@ pub struct Chain {
     pub target: usize,
 }
 
-/// Hinge axis in the knee's frame and the gains (`82380500`).
-pub const HINGE_AXIS: V3 = [0.0, 1.0, 0.0];
+/// Hinge axis in the knee's frame. Retail's constant (set by `82380500`,
+/// CONFIRMED in the recompiled code) is (0, 1, 0), but the node solves on a
+/// Havok skeleton reached through a skeleton mapper (`824E47E8`) whose bone
+/// frames are not traced. In this skeleton's frame the clips bend the knee
+/// about local Z (Sk8_Gnd_Stnd_To_Crch_Base_xx: -Z by 36-40 degrees when
+/// crouching), and only +Z puts every foot on its target (the `anim_check`
+/// example: under 0.1 mm; with Y the knees twist sideways). INFERRED from
+/// that data.
+pub const HINGE_AXIS: V3 = [0.0, 0.0, 1.0];
+/// The gains (`82380500`).
 pub const FIRST_JOINT_GAIN: f32 = 1.0;
 pub const SECOND_JOINT_GAIN: f32 = 1.0;
 

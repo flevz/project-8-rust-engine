@@ -12,4 +12,4 @@ pub mod skeleton;
 pub mod texture;
 pub mod zone;
 
-pub use checksum::qb_key;
+pub use checksum::{qb_key, qb_key_extend};
