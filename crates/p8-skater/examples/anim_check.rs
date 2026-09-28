@@ -154,6 +154,15 @@ fn spin_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wor
         if air_seen && !in_air {
             after += 1;
         }
+        if std::env::var_os("P8_TREE").is_some() && after == 30 {
+            let mut t = String::new();
+            if let Some(b) = &k.anim.body {
+                b.describe(0, &mut t);
+            }
+            for l in t.lines().filter(|l| l.contains("degenerate") || l.contains("skaterflip") || l.contains("mirror")).take(30) {
+                println!("{l}");
+            }
+        }
         if air_seen && after < 240 && (after > 0 || in_air) {
             println!(
                 "t={t:5.2} air={in_air} spin={:6.1} flipped={} rotated={} feet L-R yaw {yaw:7.1} (change {jump:+6.1}) board yaw {board_yaw:7.1} branches {}",
@@ -191,9 +200,21 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
             let mut x = InputState { up: t < 2.0, ..Default::default() };
             match g {
                 "r2" => x.r2 = (150..153).contains(&f),
-                "manual" => {
+                // ground:manual:<a><b> presses button a then b in the
+                // manual (s square/kick, c circle, t triangle).
+                g if g.starts_with("manual") => {
                     x.up = x.up || (150..153).contains(&f);
                     x.down = (156..159).contains(&f);
+                    let seq: Vec<char> = g.strip_prefix("manual:").unwrap_or("").chars().collect();
+                    for (n, c) in seq.iter().enumerate() {
+                        let on = (180 + n as i32 * 8..183 + n as i32 * 8).contains(&f);
+                        match c {
+                            's' => x.kick |= on,
+                            'c' => x.circle |= on,
+                            't' => x.triangle |= on,
+                            _ => {}
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -223,7 +244,7 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         let inputs = k.physics.anim_inputs_in(s, Some(world));
         k.anim.update(1.0 / 60.0, inputs);
         let _ = k.anim.sample(inputs);
-        if std::env::var_os("P8_TREE").is_some() && air_frames == 20 {
+        if std::env::var_os("P8_TREE").is_some() && (air_frames == 20 || (ground.is_some() && i == 200)) {
             let mut t = String::new();
             if let Some(b) = &k.anim.body {
                 b.describe(0, &mut t);

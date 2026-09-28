@@ -551,6 +551,16 @@ impl Ctx<'_> {
         // `anim_command` is the anim tree component's command (82244CF0),
         // the same one `Skater_Anim_Command` (820B8558) forwards to.
         if n == k("Skater_Anim_Command") || n == k("Anim_Command") {
+            // Nodes built now read the skater's state as it is now (e.g.
+            // skaterflip's init 820B04F8 reads SkaterState +40 / +48), not
+            // as the last animation update saw it; the landing prediction
+            // (needs the world) keeps the last update's values.
+            let old = self.anim.inputs;
+            let mut now_inputs = self.p.anim_inputs(self.s);
+            now_inputs.time_to_land = old.time_to_land;
+            now_inputs.time_to_land_slice = old.time_to_land_slice;
+            now_inputs.time_to_apex = old.time_to_apex;
+            self.anim.inputs = now_inputs;
             // The anim component's command (see anim_tree.rs): `target` node
             // id, `command`, `params`.
             let target = params.checksum(k("target")).unwrap_or(0);

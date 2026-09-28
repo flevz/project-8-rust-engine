@@ -401,6 +401,44 @@ impl Pose {
         self.q[b] = conj(qmul(conj(parent_model), turned));
     }
 
+    /// `820A2FA8` (the board rotated): bone 3 given the half turn of
+    /// [`Pose::turn_round`] (`82383358` with (0, 1, 0, 0)); bones 8 down to 4
+    /// mirrored as `823835D0` does (the board skeleton has no partners, so
+    /// each is reflected: rotation z and w, translation z negated); then
+    /// bones 4 and 6 (the trucks) swap rotations. Checked against the
+    /// recompiled function on 40 random board poses (to 5e-7).
+    pub fn board_rotate(&mut self, rig: &Rig) {
+        let n = self.q.len();
+        if n <= 6 {
+            return;
+        }
+        let conj = |q: [f32; 4]| [-q[0], -q[1], -q[2], q[3]];
+        let h = [0.5f32; 4];
+        let p = qmul(qmul(conj(h), conj([0.0, 1.0, 0.0, 0.0])), h);
+        self.q[3] = qmul(p, self.q[3]);
+        let mut done = vec![false; n];
+        for i in (4..n).rev() {
+            if done[i] {
+                continue;
+            }
+            let reflect = |me: &mut Pose, b: usize| {
+                me.q[b][2] = -me.q[b][2];
+                me.q[b][3] = -me.q[b][3];
+                me.t[b][2] = -me.t[b][2];
+            };
+            if let Some(j) = rig.mirror.get(i).copied().flatten().filter(|&j| j < n) {
+                self.q.swap(i, j);
+                self.t.swap(i, j);
+                self.w.swap(i, j);
+                reflect(self, j);
+                done[j] = true;
+            }
+            reflect(self, i);
+            done[i] = true;
+        }
+        self.q.swap(4, 6);
+    }
+
     /// The skaterflip mirror (`82377178`, op run `823764B8` ->
     /// `823835D0`): nothing when the strength is 0; else, from the last bone
     /// to the first, each bone not yet done swaps rotation, translation and
@@ -780,6 +818,87 @@ impl Wobble {
                 break;
             }
         }
+    }
+}
+
+/// `balanceadd` (vtable `82001344`: init `820A2B50`, update `820A2A70`,
+/// sample `820A2D38`): the second child (a lean pose) added to the first
+/// by the running balance's lean.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BalanceAdd {
+    /// `+36` / `+40`: the first and second child's weights.
+    pub wa: f32,
+    pub wb: f32,
+    /// `+44`: lean the other way (`side` right or back; inverted for
+    /// right / left when the skater was flipped at build).
+    pub other_side: bool,
+    /// `+45`: `update_both` (the first weight is 1 - the second).
+    pub update_both: bool,
+    /// `+46`: `use_blend_instead_of_add`.
+    pub blend: bool,
+    /// `+32`: `blendfunction` (none: the weight is used as is).
+    pub func: Option<BlendFn>,
+}
+
+impl BalanceAdd {
+    /// `820A2A70`: animinfo `+36` (the lean, 0 with no balance) / 3000 on
+    /// its side (`82000E9C` / `82000E98`), 0 on the other; at most 1.
+    fn update(&mut self, i: &SkaterInputs) {
+        let v = i.balance_lean.unwrap_or(0.0);
+        self.wb = if !self.other_side {
+            if v < 0.0 { 0.0 } else { v * 0.000_333_333_3 }
+        } else if v > 0.0 {
+            0.0
+        } else {
+            v * -0.000_333_333_3
+        };
+        if self.wb > 1.0 {
+            self.wb = 1.0;
+        }
+        if let Some(f) = &self.func {
+            self.wb = f.eval(self.wb);
+        }
+        if self.update_both {
+            self.wa = 1.0 - self.wb;
+        }
+    }
+}
+
+/// `grindlandadd` (vtable `82001404`: init `820A42B8`, update `820A41E0`,
+/// sample `820A7750`): the second child (a landing pose) added to the
+/// first, fading in over `blendintime`; the first child's weight drops to
+/// 0 once the landing clip has run its length. With `sync` the blend and
+/// time go on from the object's tags `grindlandaddblend` /
+/// `grindlandaddtime` (shared by every such node of the skater).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrindLandAdd {
+    /// `+32` / `+36`: the two weights.
+    pub wa: f32,
+    pub wb: f32,
+    /// `+40`: time, `+44`: the clip's length (`anim`).
+    pub time: f32,
+    pub length: f32,
+    /// `+52`: blend progress, `+56`: `blendintime` (default 1).
+    pub t: f32,
+    pub blendintime: f32,
+    /// `+48`: the blend function (`8237BE30`, linear by default).
+    pub func: BlendFn,
+    /// The object's tags (blend, time).
+    pub tags: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+}
+
+impl GrindLandAdd {
+    fn update(&mut self, dt: f32) {
+        self.time += dt;
+        self.wa = if self.time > self.length { 0.0 } else { 1.0 };
+        if self.t < 1.0 {
+            self.t += dt / self.blendintime;
+        }
+        if self.t > 1.0 {
+            self.t = 1.0;
+        }
+        self.tags.set((self.t, self.time));
+        self.wb = self.func.eval(self.t);
     }
 }
 
@@ -1427,6 +1546,17 @@ pub enum Kind {
     },
     /// Not translated: the node type.
     Wobble(Wobble),
+    /// `mirror` (vtable `8201C0AC`): the child, always mirrored (init
+    /// `82381148` sets the flag, sample `82381158` -> `82377178`).
+    Mirror,
+    /// `boardrotateoverlay` (vtable `82001220`): the child; on the board,
+    /// turned round when `rotated` (sample `820A32C8` -> op 823772D0 ->
+    /// `820A2FA8`).
+    BoardRotate {
+        rotated: bool,
+    },
+    BalanceAdd(BalanceAdd),
+    GrindLandAdd(GrindLandAdd),
     Untranslated(u32),
 }
 
@@ -1493,6 +1623,10 @@ struct Build<'a> {
     rotated0: bool,
     vert0: bool,
     speed0: f32,
+    /// animinfo `+524`: the board is rotated (flipandrotate `+24`).
+    board_rotated0: bool,
+    /// The object's `grindlandadd` tags.
+    tags: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
 }
 
 fn lookup(items: &[(u32, Value)], key: u32) -> Option<&Value> {
@@ -1572,7 +1706,16 @@ impl Build<'_> {
         } else if ty == k("skaterflip") {
             Kind::Flip { flipped: self.flipped0, rotated0: self.rotated0, rotated: self.rotated0 }
         } else if ty == k("boardrotateoverlay") {
-            Kind::PassThrough
+            // 820A2ED8: `always` (on / off), else the board-rotated flag
+            // (animinfo +524) now; `mirror` inverts it.
+            let mut rotated = match self.checksum(&items, "always", scope) {
+                Some(a) => a == k("on"),
+                None => self.board_rotated0,
+            };
+            if lookup(&items, k("mirror")).is_some() {
+                rotated = !rotated;
+            }
+            Kind::BoardRotate { rotated }
         } else if ty == k("skaterposecapture") {
             Kind::PoseCapture { kept: None, kept_board: None }
         } else if ty == k("degenerateblend") {
@@ -1669,6 +1812,61 @@ impl Build<'_> {
                 induration: self.float(&items, "induration", scope).unwrap_or(1.0),
                 outduration: self.float(&items, "outduration", scope).unwrap_or(1.0),
             }
+        } else if ty == k("mirror") {
+            Kind::Mirror
+        } else if ty == k("balanceadd") {
+            // 820A2B50.
+            let flag = |b: &Self, n: &str| lookup(&items, k(n)).map(|v| b.resolve(v, scope)).is_some_and(|v| !matches!(v, Value::Int(0)));
+            let side = self.checksum(&items, "side", scope).unwrap_or(0);
+            let mut other_side = side == k("right") || side == k("back");
+            if (side == k("right") || side == k("left")) && self.flipped0 {
+                other_side = !other_side;
+            }
+            let func = self.checksum(&items, "blendfunction", scope).map(|f| {
+                let curve = lookup(&items, k("blendcurve")).map(|v| self.resolve(v, scope));
+                BlendFn::new(f, curve.as_ref())
+            });
+            Kind::BalanceAdd(BalanceAdd {
+                wa: 1.0,
+                wb: 0.0,
+                other_side,
+                update_both: flag(self, "update_both"),
+                blend: flag(self, "use_blend_instead_of_add"),
+                func,
+            })
+        } else if ty == k("grindlandadd") {
+            // 820A42B8.
+            let mut g = GrindLandAdd {
+                wa: 1.0,
+                wb: 0.0,
+                time: 0.0,
+                length: 0.0,
+                t: 0.0,
+                blendintime: 1.0,
+                func: BlendFn::Linear,
+                tags: self.tags.clone(),
+            };
+            if let Some(v) = lookup(&items, k("sync")).map(|v| self.resolve(v, scope)) {
+                if matches!(v, Value::Int(0)) {
+                    self.tags.set((0.0, 0.0));
+                } else {
+                    (g.t, g.time) = self.tags.get();
+                }
+            }
+            if let Some(a) = self.checksum(&items, "anim", scope) {
+                g.length = self.lib.duration(a);
+            }
+            if let Some(b) = self.float(&items, "blendintime", scope) {
+                g.blendintime = b;
+            }
+            let f = self.checksum(&items, "blendfunction", scope).unwrap_or(0);
+            let curve = lookup(&items, k("blendcurve")).map(|v| self.resolve(v, scope));
+            g.func = BlendFn::new(f, curve.as_ref());
+            if matches!(lookup(&items, k("skip")).map(|v| self.resolve(v, scope)), Some(Value::Int(1))) {
+                g.time = g.length;
+                g.t = 1.0;
+            }
+            Kind::GrindLandAdd(g)
         } else if ty == k("wobble") {
             // 820B7F78 after the timer init: length of `anim`, `reverse`.
             let anim = self.checksum(&items, "anim", scope).unwrap_or(0);
@@ -1898,6 +2096,9 @@ pub struct SkaterInputs {
     /// The running balance's lean (animinfo `+36`, `820B9400` ->
     /// `820CEB80`), `None` when no balance runs (animinfo `+60` null).
     pub balance_lean: Option<f32>,
+    /// animinfo `+524` (item `+520`): the board is rotated (flipandrotate
+    /// `+24`, set by `820FD838`).
+    pub board_rotated: bool,
     /// SkaterState `+32`.
     pub crouched: bool,
     /// SkaterState `+24` == 1 (the air state).
@@ -1939,6 +2140,8 @@ impl Node {
             Kind::Timer(t) => t.update(&mut dt),
             Kind::Flip { rotated, .. } => *rotated = i.rotated,
             Kind::Wobble(w) => w.update(i),
+            Kind::BalanceAdd(b) => b.update(i),
+            Kind::GrindLandAdd(g) => g.update(dt),
             Kind::SkaterTimer(t) => t.update(&mut dt, i),
             Kind::Modulate(m) => m.update(dt),
             Kind::SkaterModulate(m) => m.update(dt, i),
@@ -2146,6 +2349,14 @@ impl Node {
                 p
             }
             Kind::PassThrough => first(self, cx),
+            Kind::BoardRotate { rotated } => {
+                let rotated = *rotated;
+                let mut p = first(self, cx);
+                if cx.board && rotated {
+                    p.board_rotate(rig);
+                }
+                p
+            }
             Kind::PoseCapture { .. } => {
                 if self.children.is_empty() {
                     let Kind::PoseCapture { kept, kept_board } = &self.kind else { unreachable!() };
@@ -2181,6 +2392,32 @@ impl Node {
                     solve_ik(&mut p, &chains, rig);
                 }
                 p
+            }
+            Kind::Mirror => {
+                let mut p = first(self, cx);
+                p.mirror(rig);
+                p
+            }
+            Kind::BalanceAdd(b) => {
+                // 820A2D38: both children, then add (823773A0) with the two
+                // weights, or blend (82376EA8) by the first.
+                let (wa, wb, blend) = (b.wa, b.wb, b.blend);
+                let mut a = self.children.first_mut().map_or(Pose::zero(rig), |c| c.sample(phase, cx));
+                let p2 = self.children.get_mut(1).map_or(Pose::zero(rig), |c| c.sample(phase, cx));
+                if blend {
+                    a.blend_weighted(&p2, wa, rig);
+                } else {
+                    a.add(wa, wb, p2);
+                }
+                a
+            }
+            Kind::GrindLandAdd(g) => {
+                // 820A7750: add (823773A0) with the two weights.
+                let (wa, wb) = (g.wa, g.wb);
+                let mut a = self.children.first_mut().map_or(Pose::zero(rig), |c| c.sample(phase, cx));
+                let p2 = self.children.get_mut(1).map_or(Pose::zero(rig), |c| c.sample(phase, cx));
+                a.add(wa, wb, p2);
+                a
             }
             Kind::Wobble(w) => {
                 // 823864B0: the child at time / length.
@@ -2371,6 +2608,10 @@ impl Node {
             Kind::SpinTimer { time, duration } => format!("spintimer t={time:.2}/{duration:.2}"),
             Kind::SpinAdd { wl, wr, .. } => format!("spinadd {wl:.2} {wr:.2}"),
             Kind::Wobble(w) => format!("wobble time={:.3}/{:.3}", w.time, w.duration),
+            Kind::Mirror => "mirror".into(),
+            Kind::BoardRotate { rotated } => format!("boardrotateoverlay rotated={rotated}"),
+            Kind::BalanceAdd(b) => format!("balanceadd {:.2} {:.2}", b.wa, b.wb),
+            Kind::GrindLandAdd(g) => format!("grindlandadd {:.2} {:.2} t={:.2}", g.wa, g.wb, g.time),
             Kind::Untranslated(t) => format!("UNTRANSLATED {}", name_of(*t).unwrap_or("?")),
         };
         let _ = writeln!(out, "{}{}{}", "  ".repeat(depth), if self.id != 0 { format!("[{:08x}] ", self.id) } else { String::new() }, v);
@@ -2495,6 +2736,8 @@ pub struct AnimTree {
     pub branches: Vec<u32>,
     /// The skater values given to the last update.
     pub inputs: SkaterInputs,
+    /// Object tags `grindlandaddblend` / `grindlandaddtime` (82245CA8).
+    tags: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     /// The board's skeleton (`board` in global.pak), when shown.
     pub board_rig: Option<Rig>,
 }
@@ -2590,6 +2833,8 @@ impl AnimTree {
                     rotated0: i.rotated,
                     vert0: i.in_vert_air || i.on_vert_ground,
                     speed0: (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+                    tags: self.tags.clone(),
+                    board_rotated0: i.board_rotated,
                 };
                 let branch = b.node(&tree, &scope);
                 if let Some(last) = d.records.last_mut() {
@@ -2667,6 +2912,11 @@ impl AnimTree {
                 true
             }
             Kind::PartialSwitch { on, .. } if command == k("partialswitch_ison") => *on,
+            Kind::BoardRotate { rotated } if command == k("boardrotate_update") => {
+                // 820A3260: the board-rotated flag now.
+                *rotated = self.inputs.board_rotated;
+                true
+            }
             _ => false,
         }
     }
@@ -2850,6 +3100,40 @@ mod tests {
         for (b, e) in expected.iter().enumerate() {
             assert!(same_rotation(p.q[b], [e[0], e[1], e[2], e[3]]), "bone {b} {:?}", p.q[b]);
             assert!((0..3).all(|k| (p.t[b][k] - e[4 + k]).abs() < 1e-4), "bone {b} {:?}", p.t[b]);
+        }
+    }
+
+    #[test]
+    fn board_rotate_matches_retail() {
+        // Input and output of the recompiled 820A2FA8 (random pose, seed 21).
+        let input = [
+            [0.408141, 0.689629, -0.395592, -0.44871, -0.283986, 0.292633, 0.307854],
+            [-0.994689, -0.0780085, 0.0058753, 0.06689, -0.128953, 0.0853625, -0.430735],
+            [0.251634, -0.892205, 0.0406976, 0.372821, 0.497561, 0.238688, 0.37504],
+            [-0.163442, -0.145726, -0.464299, 0.858182, -0.38419, 0.451964, -0.131553],
+            [0.352856, 0.517902, 0.551456, 0.550605, -0.0468724, 0.0520029, -0.157079],
+            [-0.30416, 0.0293231, 0.926362, 0.220182, -0.265134, 0.280259, -0.291438],
+            [0.765606, -0.152193, 0.0188185, -0.624765, 0.0807657, 0.229757, -0.377522],
+            [-0.630211, 0.0944427, 0.23317, 0.734539, 0.38756, -0.0903983, -0.134779],
+            [-0.673831, 0.212771, 0.707216, -0.0229247, -0.473164, -0.406737, 0.218093],
+        ];
+        let mut expected = input;
+        expected[3] = [-0.858182, -0.464299, 0.145726, -0.163442, -0.38419, 0.451964, -0.131553];
+        expected[4] = [0.765606, -0.152193, -0.0188185, 0.624765, -0.0468724, 0.0520029, 0.157079];
+        expected[5] = [-0.30416, 0.0293231, -0.926362, -0.220182, -0.265134, 0.280259, 0.291438];
+        expected[6] = [0.352856, 0.517902, -0.551456, -0.550605, 0.0807657, 0.229757, 0.377522];
+        expected[7] = [-0.630211, 0.0944427, -0.23317, -0.734539, 0.38756, -0.0903983, 0.134779];
+        expected[8] = [-0.673831, 0.212771, -0.707216, 0.0229247, -0.473164, -0.406737, -0.218093];
+        let mut p = Pose {
+            q: input.iter().map(|v| [v[0], v[1], v[2], v[3]]).collect(),
+            t: input.iter().map(|v| [v[4], v[5], v[6]]).collect(),
+            w: vec![1.0; 9],
+            strength: 1.0,
+        };
+        p.board_rotate(&rig(9));
+        for (b, e) in expected.iter().enumerate() {
+            assert!((0..4).all(|k| (p.q[b][k] - e[k]).abs() < 1e-5), "bone {b} {:?}", p.q[b]);
+            assert!((0..3).all(|k| (p.t[b][k] - e[4 + k]).abs() < 1e-5), "bone {b} {:?}", p.t[b]);
         }
     }
 
