@@ -117,6 +117,25 @@ impl Balance {
         }
     }
 
+    /// `820CE8D8`: the running balance's two buttons (meter `+80`/`+84`),
+    /// which make no trick events; `None` when no balance runs.
+    pub fn buttons(&self) -> Option<[u32; 2]> {
+        let k = qb_key;
+        let kind = self.kind;
+        let m = if kind == k("Manual") || kind == k("NoseManual") || kind == k("Flatland") {
+            &self.manual
+        } else if kind == k("Grind") || kind == k("Slide") {
+            &self.grind
+        } else if kind == k("Lip") {
+            &self.lip
+        } else if kind == k("Skitch") {
+            &self.skitch
+        } else {
+            return None;
+        };
+        Some([m.button_a, m.button_b])
+    }
+
     /// The running balance's lean for the animation (`820CEB80`, which
     /// picks the meter the same way), `None` when none runs.
     pub fn anim_lean(&self) -> Option<f32> {

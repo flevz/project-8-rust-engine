@@ -236,6 +236,8 @@ pub struct CorePhysics {
     pub allow_lip_no_grind: bool,
     /// The balance component (`+2844`).
     pub balance: crate::balance::Balance,
+    /// The trick component (`trick`), see [`crate::trick`].
+    pub tricks: crate::trick::Tricks,
     /// `+1908`, `+1909`: which way off the balance meter is safe (the
     /// meter's colours), set by `820E5988` ([`Self::update_balance_sides`]).
     pub balance_sides: [bool; 2],
@@ -404,6 +406,7 @@ impl CorePhysics {
             no_rail_tricks: false,
             allow_lip_no_grind: false,
             balance: Default::default(),
+            tricks: Default::default(),
             balance_sides: [false; 2],
             vibration: Default::default(),
             script_goto: None,

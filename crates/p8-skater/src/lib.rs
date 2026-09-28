@@ -25,6 +25,7 @@ pub mod script;
 pub mod skater;
 pub mod stats;
 pub mod transfer;
+pub mod trick;
 pub mod vert;
 pub mod vibration;
 pub mod world;

@@ -56,7 +56,6 @@ pub struct Skater {
 struct Ctx<'a> {
     p: &'a mut CorePhysics,
     s: &'a Scripts,
-    input: InputState,
     seed: &'a mut u32,
     events: Vec<Event>,
     world: Option<&'a dyn World>,
@@ -69,12 +68,23 @@ impl Skater {
     pub fn new(s: &Scripts, pos: Vec3, angles: Vec3) -> Self {
         let mut physics = CorePhysics::at_restart(s, pos, angles);
         physics.scripted = true;
+        // The trick mapping from the player's profile (82120A88).
+        let profile = match s.global("master_skater_list") {
+            Some(Value::Array(list)) => list
+                .iter()
+                .find(|e| {
+                    matches!(e.get_named("name"), Some(Value::Checksum(c)) if *c == qb_key(crate::core_physics::PLAYER_SKATER))
+                        || matches!(e.get_named("name"), Some(Value::String(t)) if t.eq_ignore_ascii_case(crate::core_physics::PLAYER_SKATER))
+                })
+                .cloned(),
+            _ => None,
+        };
+        physics.tricks.set_mapping(profile.as_ref(), &s.globals);
         let mut seed = 1;
         let mut anim = crate::anim_tree::AnimTree::default();
         let mut ctx = Ctx {
             p: &mut physics,
             s,
-            input: InputState::default(),
             seed: &mut seed,
             events: Vec::new(),
             world: None,
@@ -93,13 +103,15 @@ impl Skater {
     /// own update (LIKELY order; the script update's place in the frame
     /// is not read).
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
+        // The trick component updates before the core physics (the skater's
+        // components are added in that order, 8219C3C8).
+        self.update_tricks(s, input, world);
         let mut events = self.physics.step(s, input, world);
         let Some(script) = self.script.as_mut() else { return events };
         let goto = self.physics.script_goto.take();
         let mut ctx = Ctx {
             p: &mut self.physics,
             s,
-            input: *input,
             seed: &mut self.seed,
             events: Vec::new(),
             world: Some(world),
@@ -158,6 +170,53 @@ impl Skater {
         events
     }
 
+    /// The trick component's frame (`821247F0`): buttons, extra tricks run at
+    /// once (`82123CF0` -> `82123B00` -> `82122E10` on the skater's script),
+    /// then the queue and the pending manual / grind tricks.
+    fn update_tricks(&mut self, s: &Scripts, input: &InputState, world: &dyn World) {
+        let now = self.physics.time_ms as u32;
+        let buttons = self.physics.balance.buttons();
+        self.physics.tricks.update(input, buttons, now);
+        // No special meter yet: its lists are never tried ([+28]+116).
+        let special = false;
+        if self.physics.tricks.extra_active(now) {
+            'lists: for (list, skip, is_special) in self.physics.tricks.extra_lists_to_try(special) {
+                let Some(Value::Array(entries)) = s.globals.get(&list).cloned() else { continue };
+                self.physics.tricks.last_special = is_special;
+                for (index, entry) in entries.iter().enumerate() {
+                    if !self.physics.tricks.extra_hit(entry, index, skip, now, &s.globals) {
+                        continue;
+                    }
+                    if let Some(trick) = self.physics.tricks.resolve(entry, &s.globals)
+                        && let Some(run) = self.physics.tricks.run(&trick, Some(qb_key("isextra")), None)
+                    {
+                        self.goto_trick(s, world, run);
+                    }
+                    if !self.physics.tricks.extra_on {
+                        break 'lists;
+                    }
+                }
+            }
+        }
+        self.physics.tricks.update_lists(special, now, now, &s.globals);
+    }
+
+    /// Go to a trick's script on the skater's script and run it now
+    /// (`82226588` + `8220F8F0`).
+    fn goto_trick(&mut self, s: &Scripts, world: &dyn World, run: crate::trick::RunTrick) {
+        let Some(script) = self.script.as_mut() else { return };
+        let mut ctx = Ctx {
+            p: &mut self.physics,
+            s,
+            seed: &mut self.seed,
+            events: Vec::new(),
+            world: Some(world),
+            anim: &mut self.anim,
+        };
+        script.goto(&mut ctx, run.script, &run.params);
+        script.update(&mut ctx);
+    }
+
     fn untranslated_from(untranslated: &mut Vec<u32>, run: &mut Script) {
         for k in run.untranslated.drain(..) {
             if !untranslated.contains(&k) {
@@ -170,35 +229,6 @@ impl Skater {
     pub fn script_name(&self) -> Option<u32> {
         self.script.as_ref().map(|s| s.name)
     }
-}
-
-/// Button names as the trick component's `Held` reads them (table at
-/// 826E08C8, index = position), mapped to our controller records. Retail
-/// keeps per-button held flags (`+2664`) updated from input events; that
-/// pipeline is not read, so the records' held state stands in (LIKELY).
-fn held(input: &InputState, button: u32) -> bool {
-    let k = qb_key;
-    let i = input;
-    let table: [(&str, bool); 17] = [
-        ("Up", i.up),
-        ("Down", i.down),
-        ("Left", i.left),
-        ("Right", i.right),
-        ("UpLeft", i.up && i.left),
-        ("UpRight", i.up && i.right),
-        ("DownLeft", i.down && i.left),
-        ("DownRight", i.down && i.right),
-        ("Circle", i.circle),
-        ("Square", i.kick),
-        ("X", i.crouch),
-        ("Triangle", i.triangle),
-        ("L1", i.l1),
-        ("L2", i.l2),
-        ("R1", i.r1),
-        ("R2", i.r2),
-        ("L3", false),
-    ];
-    table.iter().any(|(n, v)| k(n) == button && *v)
 }
 
 impl Host for Ctx<'_> {
@@ -615,13 +645,94 @@ impl Ctx<'_> {
             script.goto(self, target, &args);
             return Some(true);
         }
-        // --- trick ---
+        // --- trick (component commands 8211F598..82124BA8) ---
+        let now = p.time_ms as u32;
+        let g = &self.s.globals;
         if n == k("Held") {
-            // 8211F680: any of `Buttons`, else the unnamed button.
+            // 8211F680: any of `Buttons`, else the unnamed button; the held
+            // flags +2664.
+            let held = |c: u32| p.tricks.held[crate::trick::button_id(c)];
             if let Some(Value::Array(items)) = params.get(k("Buttons")) {
-                return Some(items.iter().any(|v| matches!(v, Value::Checksum(c) if held(&self.input, *c))));
+                return Some(items.iter().any(|v| matches!(v, Value::Checksum(c) if held(*c))));
             }
-            return Some(params.unnamed_checksum().is_some_and(|c| held(&self.input, c)));
+            return Some(params.unnamed_checksum().is_some_and(held));
+        }
+        if n == k("pressed") {
+            return Some(p.tricks.pressed(params, now));
+        }
+        if n == k("Released") {
+            return Some(p.tricks.released(params));
+        }
+        if n == k("SetQueueTricks") {
+            p.tricks.set_queue_tricks(params, g);
+            return Some(true);
+        }
+        if n == k("ClearTrickQueue") {
+            p.tricks.queue.clear();
+            return Some(true);
+        }
+        if n == k("SetManualTricks") {
+            p.tricks.set_manual_tricks(params);
+            return Some(true);
+        }
+        if n == k("ClearManualTrick") {
+            // 8211FAF0.
+            p.tricks.manual_pending = None;
+            p.tricks.manual_lists.clear();
+            return Some(true);
+        }
+        if n == k("SetExtraTricks") {
+            p.tricks.set_extra_tricks(params, now, g);
+            return Some(true);
+        }
+        if n == k("KillExtraTricks") {
+            p.tricks.extra_on = false;
+            return Some(true);
+        }
+        if n == k("UseGrindEvents") {
+            p.tricks.flags = 8;
+            return Some(true);
+        }
+        if n == k("ClearEventBuffer") {
+            p.tricks.clear_event_buffer(params, now, g);
+            return Some(true);
+        }
+        if n == k("SetTrickName") {
+            // 82120160 (kept for the score display, not translated).
+            p.tricks.trick_name = match params.0.first().map(|(_, v)| v) {
+                Some(Value::String(t)) => t.clone(),
+                _ => String::new(),
+            };
+            return Some(true);
+        }
+        if n == k("SetTrickScore") {
+            // 82120250.
+            p.tricks.trick_score = params.unnamed_int().unwrap_or(0);
+            return Some(true);
+        }
+        if n == k("DoNextTrick") || n == k("DoNextManualTrick") {
+            // 82124960 / 82124AF8: first the script detect_dodgy_ragdoll_state
+            // (822104B0), then the next trick (821230D8 / 821235C0).
+            if let Some(mut run) = Script::new(self, k("detect_dodgy_ragdoll_state"), &Params::new()) {
+                run.update(self);
+            }
+            let p = &mut *self.p;
+            let g = &self.s.globals;
+            let trick = if n == k("DoNextTrick") { p.tricks.next_queued(now, g) } else { p.tricks.next_manual(g) };
+            let Some(trick) = trick else { return Some(true) };
+            let extra = params.params(k("trickparams"));
+            let Some(mut run) = p.tricks.run(&trick, None, extra.as_ref()) else { return Some(true) };
+            if let Some(first) = params.checksum(k("scripttorunfirst")) {
+                // 82210460 (INFERRED: runs it now with `params`).
+                let args = params.params(k("params")).unwrap_or_default();
+                if let Some(mut f) = Script::new(self, first, &args) {
+                    f.update(self);
+                }
+            }
+            // 82226588: the skater's script goes to the trick (here the
+            // script running the command; INFERRED the same one).
+            script.goto(self, run.script, &std::mem::take(&mut run.params));
+            return Some(true);
         }
         None
     }
@@ -703,5 +814,19 @@ const COMMANDS: &[&str] = &[
     "SpeedLessThan",
     "SetSpeed",
     "Held",
+    "pressed",
+    "Released",
+    "SetQueueTricks",
+    "ClearTrickQueue",
+    "SetManualTricks",
+    "ClearManualTrick",
+    "SetExtraTricks",
+    "KillExtraTricks",
+    "UseGrindEvents",
+    "ClearEventBuffer",
+    "SetTrickName",
+    "SetTrickScore",
+    "DoNextTrick",
+    "DoNextManualTrick",
     "MakeSkaterGoto",
 ];
