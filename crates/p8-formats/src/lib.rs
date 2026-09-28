@@ -4,6 +4,7 @@
 pub mod anim;
 pub mod checksum;
 pub mod havok;
+pub mod ik;
 pub mod pak;
 pub mod qb;
 pub mod scene;

@@ -168,7 +168,7 @@ pub(crate) struct ModelNote(String);
 #[allow(clippy::too_many_arguments)]
 fn setup(
     ground: Res<Ground>,
-    skater: Res<Skater>,
+    mut skater: ResMut<Skater>,
     zones: Res<crate::balance_meter::ZonesDir>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -254,7 +254,7 @@ fn setup(
         Some(compressed) => crate::skater_model::spawn(
             &mut commands,
             root,
-            &skater.scripts,
+            &mut skater,
             compressed,
             &mut meshes,
             &mut materials,
@@ -379,7 +379,15 @@ fn step(
     let was_held = skater.controller.select.held;
     let input = skater.controller.update(&pad, skater.object.physics.time_ms);
     if skater.controller.select.held && !was_held {
+        // The new skater keeps the clips and skeleton of the old one.
+        let lib = skater.object.anim.lib.take();
+        let rig = skater.object.anim.rig.clone();
         skater.object = p8_skater::Skater::new(&skater.scripts, ground.spawn.0, ground.spawn.1);
+        if let Some(lib) = lib {
+            let scripts = &skater.scripts;
+            let g = |c: u32| scripts.globals.get(&c).cloned();
+            skater.object.anim.attach(lib, rig, &g);
+        }
         skater.current = Frame::of(&skater.object.physics);
         skater.cam_dir = skater.object.physics.body.at();
     }
@@ -387,6 +395,7 @@ fn step(
     let skater = &mut *skater;
     skater.object.physics.dt = dt;
     let events = skater.object.step(&skater.scripts, &input, ground.world());
+    skater.object.anim.update(dt);
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);
     }
@@ -432,6 +441,19 @@ fn present(
     }
 }
 
+/// The newest branch and the node types used that are not translated yet.
+fn anim_note(a: &p8_skater::anim_tree::AnimTree) -> String {
+    use p8_skater::anim_tree::name_of;
+    let name = |k: u32| name_of(k).map_or(format!("{k:08x}"), str::to_string);
+    let branch = a.branches.last().map_or("none yet".to_string(), |&b| name(b));
+    if a.untranslated.is_empty() {
+        format!("branch {branch}")
+    } else {
+        let u: Vec<String> = a.untranslated.iter().map(|&k| name(k)).collect();
+        format!("branch {branch}; stand-ins for untranslated nodes: {}", u.join(", "))
+    }
+}
+
 fn hud(
     skater: Res<Skater>,
     ground: Res<Ground>,
@@ -446,7 +468,7 @@ fn hud(
         None => "-",
     };
     let line = format!(
-        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]  [{}]  [{}]",
+        "speed {:5.2} m/s   height {:4.2} m   {:?}   spin {:4.0}°   {}{}   turn {turn}   last event {:?}\n[original scripts: {}{}]  [level: {}]  [{}]  [{}]\n[animation: {}]",
         p.body.velocity.length(),
         p.body.position.y,
         p.state,
@@ -463,6 +485,7 @@ fn hud(
         ground.note,
         meter.as_ref().map_or("balance meter textures not loaded yet", |m| m.note.as_str()),
         model.as_ref().map_or("model not loaded yet", |m| m.0.as_str()),
+        anim_note(&skater.object.anim),
     );
     if let Ok(mut t) = text.single_mut()
         && **t != line

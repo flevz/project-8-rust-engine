@@ -48,6 +48,8 @@ pub struct Skater {
     /// Every command met that is not translated yet (checksums).
     pub untranslated: Vec<u32>,
     seed: u32,
+    /// The animation tree the scripts drive (`skater_anim_command`).
+    pub anim: crate::anim_tree::AnimTree,
 }
 
 /// What a running script sees of the skater.
@@ -58,6 +60,7 @@ struct Ctx<'a> {
     seed: &'a mut u32,
     events: Vec<Event>,
     world: Option<&'a dyn World>,
+    anim: &'a mut crate::anim_tree::AnimTree,
 }
 
 impl Skater {
@@ -67,10 +70,18 @@ impl Skater {
         let mut physics = CorePhysics::at_restart(s, pos, angles);
         physics.scripted = true;
         let mut seed = 1;
-        let mut ctx =
-            Ctx { p: &mut physics, s, input: InputState::default(), seed: &mut seed, events: Vec::new(), world: None };
+        let mut anim = crate::anim_tree::AnimTree::default();
+        let mut ctx = Ctx {
+            p: &mut physics,
+            s,
+            input: InputState::default(),
+            seed: &mut seed,
+            events: Vec::new(),
+            world: None,
+            anim: &mut anim,
+        };
         let script = Script::new(&mut ctx, qb_key("skaterinit"), &Params::new());
-        let mut me = Skater { physics, script, spawned: Vec::new(), untranslated: Vec::new(), seed };
+        let mut me = Skater { physics, script, spawned: Vec::new(), untranslated: Vec::new(), seed, anim };
         if me.script.is_none() {
             // Scripts without skaterinit: fall back to the stand-in handlers.
             me.physics.scripted = false;
@@ -85,8 +96,15 @@ impl Skater {
         let mut events = self.physics.step(s, input, world);
         let Some(script) = self.script.as_mut() else { return events };
         let goto = self.physics.script_goto.take();
-        let mut ctx =
-            Ctx { p: &mut self.physics, s, input: *input, seed: &mut self.seed, events: Vec::new(), world: Some(world) };
+        let mut ctx = Ctx {
+            p: &mut self.physics,
+            s,
+            input: *input,
+            seed: &mut self.seed,
+            events: Vec::new(),
+            world: Some(world),
+            anim: &mut self.anim,
+        };
         if let Some(name) = goto {
             // Retail goes to the script and updates it in place (820F4990).
             script.goto(&mut ctx, name, &Params::new());
@@ -493,6 +511,21 @@ impl Ctx<'_> {
             p.allow_lip_no_grind = n == k("AllowLipNoGrind"); // 820D5C08 / 820D5C20: +2137
             return Some(true);
         }
+        if n == k("Skater_Anim_Command") {
+            // The anim component's command (see anim_tree.rs): `target` node
+            // id, `command`, `params`.
+            let target = params.checksum(k("target")).unwrap_or(0);
+            let command = params.checksum(k("command")).unwrap_or(0);
+            let inner = params.params(k("params")).unwrap_or_default();
+            let g = |c: u32| self.s.globals.get(&c).cloned();
+            let globals = &self.s.globals;
+            let named = |v: &Value| globals.iter().find(|(_, x)| *x == v).map(|(k, _)| *k);
+            return Some(self.anim.command_named(&target, command, &inner, &g, Some(&named)));
+        }
+        if n == k("Skater_AnimNodeExists") {
+            let id = params.checksum(k("id")).unwrap_or(0);
+            return Some(self.anim.node_exists(id));
+        }
         if n == k("Vibrate") {
             // 8228D528 (the "vibration" component).
             let off = params.flag(k("OFF"));
@@ -580,6 +613,8 @@ impl Ctx<'_> {
 
 /// Commands this host translates (so expressions call them).
 const COMMANDS: &[&str] = &[
+    "Skater_Anim_Command",
+    "Skater_AnimNodeExists",
     "Vibrate",
     "ClearPanel_Landed",
     "ClearPanel_Bailed",

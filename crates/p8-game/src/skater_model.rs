@@ -7,12 +7,10 @@
 //! finds the model path in the script array `ped_body` (`mesh`), read as
 //! `MODELS/.../<name>.skin.xen` with textures in `<name>.tex.xen`.
 //!
-//! Animation: [`RidingPose`] plays the standing ride pose, the ground
-//! tree's base `Sk8_Gnd_Stnd_Base_xx` with the difference clip
-//! `Sk8_Gnd_Stnd_Slow_Idle01_xDx` applied (the `applydifference` node of
-//! `OnGround_AnimBranch`), the idle looping. APPROXIMATE: the rest of the
-//! tree (speed and crouch blends, other idles, air, tricks, stance flip)
-//! is not translated yet, so this pose is shown in every state. Not used
+//! Animation: the skater's animation tree (`p8_skater::anim_tree`), which
+//! the player's own scripts drive (e.g. `Stopped_AnimBranch` when standing
+//! still, `OnGround_AnimBranch` when rolling), is sampled every frame and
+//! written to the joints ([`animate`]). Not used
 //! yet: normal maps, the other texture layers and
 //! the materials' blend modes (hair and eyelashes use alpha cut-outs here:
 //! APPROXIMATE).
@@ -24,11 +22,11 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use p8_formats::anim::{self, Clip};
 use p8_formats::qb::Value;
 use p8_formats::scene::Scene;
 use p8_formats::skeleton::Skeleton;
 use p8_formats::texture::{self, DictTexture};
+use p8_skater::anim_tree::{ClipLib, Rig, SkaterInputs};
 use p8_skater::Scripts;
 
 /// The ped profile used for the player's skater (see the module notes).
@@ -86,50 +84,40 @@ fn image(t: &texture::Rgba8) -> Image {
     img
 }
 
-/// The looping ride pose (see the module notes) on the model's joints.
+/// The model's joints and their rest transforms.
 #[derive(Component)]
-pub struct RidingPose {
+pub struct SkaterJoints {
     joints: Vec<Entity>,
     bind: Vec<Transform>,
-    base: Clip,
-    idle: Clip,
-    time: f32,
 }
 
-/// Clip names of the ride pose: the base and the difference applied to it.
-const RIDE_BASE: &str = "Sk8_Gnd_Stnd_Base_xx";
-const RIDE_IDLE: &str = "Sk8_Gnd_Stnd_Slow_Idle01_xDx";
-
-fn load_ride(compressed: &Path) -> Result<(Clip, Clip), String> {
+fn load_anims(compressed: &Path, skeleton: &Skeleton, s: &Scripts, object: &mut p8_skater::Skater) -> Result<usize, String> {
     let data = compressed.parent().ok_or("no data folder")?;
-    let std_q_path = find_path(data, "ANIMS/standardkeyQ.bin.xen").ok_or("ANIMS/standardkeyQ.bin.xen not found")?;
-    let std_q = std::fs::read(&std_q_path).map_err(|e| format!("{}: {e}", std_q_path.display()))?;
+    let std_q = find_path(data, "ANIMS/standardkeyQ.bin.xen").ok_or("ANIMS/standardkeyQ.bin.xen not found")?;
     let pak = find_path(compressed, "PAK/perm_anims.pak.xen").ok_or("PAK/perm_anims.pak.xen not found")?;
-    let keys = [p8_formats::qb_key(RIDE_BASE), p8_formats::qb_key(RIDE_IDLE)];
-    let mut clips = anim::load_all(&pak, &keys, &std_q)?;
-    let idle = clips.pop().ok_or("idle clip missing")?;
-    let base = clips.pop().ok_or("base clip missing")?;
-    Ok((base, idle))
+    let lib = ClipLib::open(&pak, &std_q)?;
+    let n = lib.len();
+    let g = |c: u32| s.globals.get(&c).cloned();
+    object.anim.attach(lib, Rig::from_skeleton(skeleton), &g);
+    Ok(n)
 }
 
-/// Advance the ride pose and write it to the joints. The idle loops over
-/// its duration (INFERRED from the tree's `cycle` use; the node's own
-/// timing is not translated yet).
-pub fn animate(time: Res<Time>, mut poses: Query<&mut RidingPose>, mut joints: Query<&mut Transform>) {
-    for mut r in &mut poses {
-        let d = r.idle.duration;
-        r.time = if d > 0.0 { (r.time + time.delta_secs()) % d } else { 0.0 };
-        let pose = anim::apply_difference(&r.base.sample(0.0), &r.idle.sample(r.time));
-        for (i, &e) in r.joints.iter().enumerate() {
+/// Write the tree's pose to the joints (rest pose before the scripts have
+/// added a branch). Rotations are the conjugate of the clips' (82327678).
+pub fn animate(mut skater: ResMut<crate::translated::Skater>, models: Query<&SkaterJoints>, mut joints: Query<&mut Transform>) {
+    let object = &mut skater.object;
+    let flipped = false; // stance (skaterflip) is not translated yet
+    let pose = object.anim.sample(SkaterInputs { flipped });
+    for m in &models {
+        for (i, &e) in m.joints.iter().enumerate() {
             let Ok(mut tf) = joints.get_mut(e) else { continue };
-            let bind = r.bind[i];
-            match pose.get(i) {
-                Some(b) if b.weight > 0.0 => {
-                    tf.rotation = Quat::from_array(b.bevy_rotation()).normalize();
-                    tf.translation = b.t.map(Vec3::from).unwrap_or(bind.translation);
+            *tf = match &pose {
+                Some(p) if i < p.q.len() => {
+                    let q = p.q[i];
+                    Transform { translation: Vec3::from(p.t[i]), rotation: Quat::from_xyzw(-q[0], -q[1], -q[2], q[3]).normalize(), scale: Vec3::ONE }
                 }
-                _ => *tf = bind,
-            }
+                _ => m.bind[i],
+            };
         }
     }
 }
@@ -140,13 +128,14 @@ pub fn animate(time: Res<Time>, mut poses: Query<&mut RidingPose>, mut joints: Q
 pub fn spawn(
     commands: &mut Commands,
     parent: Entity,
-    s: &Scripts,
+    skater: &mut crate::translated::Skater,
     compressed: &Path,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
     bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
 ) -> Result<String, String> {
+    let s = &skater.scripts;
     let (skel_key, mesh_path) = profile_files(s, PROFILE)?;
     let skeleton = Skeleton::load(&compressed.join("ZONES").join("global.pak.xen"), skel_key)?;
     let skin = find_path(compressed, &format!("{mesh_path}.xen")).ok_or_else(|| format!("{mesh_path}.xen not found"))?;
@@ -221,13 +210,10 @@ pub fn spawn(
             ChildOf(model_root),
         ));
     }
-    let anim_note = match load_ride(compressed) {
-        Ok((base, idle)) => {
-            let note = format!("ride pose {RIDE_BASE} + {RIDE_IDLE}");
-            commands.entity(model_root).insert(RidingPose { joints, bind: bind_local, base, idle, time: 0.0 });
-            note
-        }
+    let anim_note = match load_anims(compressed, &skeleton, &skater.scripts, &mut skater.object) {
+        Ok(n) => format!("animation tree ({n} clips)"),
         Err(e) => format!("no animation ({e})"),
     };
+    commands.entity(model_root).insert(SkaterJoints { joints, bind: bind_local });
     Ok(format!("{PROFILE}: {} meshes, {} bones, {anim_note}", scene.meshes.len(), skeleton.bones.len()))
 }
