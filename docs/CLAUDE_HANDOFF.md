@@ -576,8 +576,9 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
     stores 1 - v), degenerateblend (default blend 0.3 s), ik
     (`p8-formats/src/ik.rs`: Havok two-joint solver 824E9118, hinge
     (0,1,0), gains 1; target = the animation's Bone_IK_Foot_Slave; ankle
-    takes its rotation), skaterflip/boardrotateoverlay/skaterposecapture
-    as pass-through, skatermodulate `offwhenfinished`.
+    takes its rotation), skaterflip (mirror + turn-round, see STANCE),
+    boardrotateoverlay as pass-through, skaterposecapture, skatermodulate
+    `offwhenfinished`.
   - User report fixed: feet drifted off the board because there was no IK.
     User asked whether the idle was right: it was not; standing still is
     `Stoppedstate` -> `Skater_PlayStoppedAnim` -> `Stopped_AnimBranch`
@@ -591,9 +592,24 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
     time to land 820E2CD8, time to apex 820D7878), and the real board
     (`board_default` on the `board` skeleton, sampled from the same tree with
     `<clip>_b` clips; `qb_key_extend` = 821E5718). Addresses: NOTES 25-26.
-  - IK hinge: retail's constant is (0,1,0) but in a mapped Havok skeleton
-    (824E47E8); in our skeleton the knee bends about +Z (from the clips), and
-    +Z puts every foot exactly on its target. INFERRED, documented in ik.rs.
+  - IK hinge: retail's constant is (0,1,0) in the ragdoll's Havok skeleton
+    (824E47E8). CONFIRMED to be our +Z: every body of
+    `default_human_ragdoll.rag` (global.pak, Havok 4.0 packfile) sits at our
+    bind position turned -90 degrees about the bone's X. Documented in ik.rs.
+  - Board sampling steps the same sample-time state as the skater's
+    (82245DC0/82245E58); pose captures are per object (820B3798/820B0380).
+  - STANCE DONE (the 180 snap): SkaterState +40 = `CorePhysics::flipped`,
+    +48 = `rotated` (both toggled by the backwards flip 820DBAA8 and
+    FlipAndRotate 820D9008/820FD8E8); a restart sets flipped = the
+    profile's goofy flag (820DFB88; `master_skater_list` entry `hawk` is
+    goofy, `PLAYER_SKATER` APPROXIMATE until skater choice is read);
+    switch = 820B8220. skaterflip mirrors its child if flipped when built
+    (823835D0) and turns its pose round if +48 changed since (820B0E20 ->
+    820B0560 on bones 1, 89, 91). Checked with `P8_SPIN=1` on anim_check:
+    feet direction changes 0.4 degrees on the landing frame. NOT done: the
+    board's part of 820B0E20 (HUD lists `skaterflip` when it would run);
+    the display matrix smoothing 820DA1A8 (we still draw from the physics
+    matrix; the game skips its own between-ticks smoothing on a turn).
   - User report (video, stand-in build): feet through the board, wrong
     rolling poses. Causes: the stand-ins (base_transition looped), the Y
     hinge, and the invented board box. All three replaced.
@@ -602,16 +618,17 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
     live tree values and the board. Render with the private repo's pose
     scripts (research/tools).
   - NEXT: anim events (`8237C178`/`8237C380`, the `skateranimeventtable`;
-    `KickBoostEvent` gives the push its speed), stance (skaterflip mirror
-    82377178 + FlipAndRotate display), grind/manual/lip branches (new node
-    types will show on the HUD), the static tree's wheel/face layers.
-- User report (model shown): after landing a 180 the model snaps to face
-  forward. The model is drawn from the physics matrix; retail keeps
-  regular/goofy + fakie state (`flipped` +2024, `FlipAndRotate`
-  `820FDAF0`, display matrix `matrix_32` +32, `820DA1A8` display
-  smoothing, flipandrotate component `+25` FlipAfter) and draws from the
-  display matrix. To do with the animation system (stance also picks
-  mirrored animations). Not started.
+    `KickBoostEvent` gives the push its speed), grind/manual/lip branches
+    (new node types will show on the HUD), the static tree's wheel/face
+    layers, the board part of 820B0E20, display smoothing 820DA1A8.
+  - FOUND, not done: the player's stats. `master_skater_list` `hawk` has
+    his own stats (speed 10, spin 11, ollie 7, air 11, ...); the physics
+    uses `StatLevels::with_default` (5 or the script default). Find how
+    retail loads profile stats into the stat component before changing.
+  - FOUND: `default_appearance` = `appearance_Hawk` is not in the dumped
+    globals (search other paks); it may name the pro board.
+- User report (model shown): after landing a 180 the model snapped to face
+  forward. FIXED by the stance work above.
 - Next after (3): the board model (`board_default`, own skeleton `board`
   in global.pak) and the animation system.
 
