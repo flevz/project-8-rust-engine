@@ -942,13 +942,14 @@ impl Tricks {
         self.extra_special = params.checksum(k("special")).unwrap_or(0);
         self.extra_skip = vec![0; self.extra_lists.len()];
         self.extra_special_skip = 0;
-        // `ignore` (a name or an array of names): 8211EE80 -> 8211EDF8.
-        let ignore: Vec<u32> = match params.get(k("ignore")) {
-            Some(Value::Array(a)) => a.iter().filter_map(|v| if let Value::Checksum(c) = v { Some(*c) } else { None }).collect(),
-            Some(Value::Checksum(c)) => vec![*c],
+        // `ignore` (a text, or an array of texts; 82123DF8 reads it with
+        // 82212780 / 82212AD0): 8211EE80 -> 8211EDF8 per list.
+        let ignore: Vec<String> = match params.get(k("ignore")) {
+            Some(Value::Array(a)) => a.iter().filter_map(|v| if let Value::String(t) = v { Some(t.clone()) } else { None }).collect(),
+            Some(Value::String(t)) => vec![t.clone()],
             _ => Vec::new(),
         };
-        for name in ignore {
+        for name in &ignore {
             for n in 0..self.extra_lists.len() {
                 let bits = self.skip_bits(self.extra_lists[n], name, g);
                 self.extra_skip[n] |= bits;
@@ -959,20 +960,17 @@ impl Tricks {
         }
     }
 
-    /// `8211EDF8` (not read in full): entries of `list` whose trick is
-    /// named `name` (INFERRED: compares the entry's resolved `params.name`).
-    fn skip_bits(&self, list: u32, name: u32, g: &dyn Globals) -> u32 {
+    /// `8211EDF8`: a bit for each entry of `list` whose trick (the entry, or
+    /// its `trickslot` through the mapping `+2728`) has a `params.name`
+    /// text equal to `name` (`8211ECD0`: both made narrow, 821EFCB0, then
+    /// compared exactly).
+    fn skip_bits(&self, list: u32, name: &str, g: &dyn Globals) -> u32 {
         let Some(Value::Array(entries)) = g.global(list) else { return 0 };
         let mut bits = 0;
         for (i, e) in entries.iter().enumerate().take(32) {
             let Some(t) = self.resolve(e, g) else { continue };
             let n = struct_member(&t, "params").and_then(|p| struct_member(p, "name"));
-            let hit = match n {
-                Some(Value::String(s)) => qb_key(s) == name,
-                Some(Value::Checksum(c)) => *c == name,
-                _ => false,
-            };
-            if hit {
+            if matches!(n, Some(Value::String(s)) if s == name) {
                 bits |= 1 << i;
             }
         }

@@ -609,6 +609,39 @@ impl Ctx<'_> {
             p.balance.stop();
             return Some(true);
         }
+        if n == k("DoingBalanceTrick") {
+            // 820CE5E8: balance `+28`.
+            return Some(p.balance.doing);
+        }
+        if n == k("StartBalanceTrick") {
+            // 820CE600.
+            p.balance.doing = true;
+            return Some(true);
+        }
+        if n == k("SetBalanceTrickType") {
+            // 820CE750: the first unnamed checksum into balance `+24`.
+            if let Some(t) = params.unnamed_checksum() {
+                p.balance.kind = t;
+            }
+            return Some(true);
+        }
+        if n == k("GetBalanceTrickType") {
+            // 820CE700: `trick_type` = balance `+24`.
+            script.locals.add(k("trick_type"), Value::Checksum(p.balance.kind));
+            return Some(true);
+        }
+        if n == k("SetLastAnimData") {
+            // 820D6DE8: the first unnamed checksum into physics `+1524`.
+            if let Some(c) = params.unnamed_checksum() {
+                p.last_anim_data = c;
+            }
+            return Some(true);
+        }
+        if n == k("GetLastAnimData") {
+            // 820D6E50: `prev_data` = physics `+1524`.
+            script.locals.add(k("prev_data"), Value::Checksum(p.last_anim_data));
+            return Some(true);
+        }
         if n == k("InBailstate") {
             return Some(p.in_bail); // 82116A10: +128
         }
@@ -919,6 +952,12 @@ const COMMANDS: &[&str] = &[
     "GetSkaterVelocity",
     "DoBalanceTrick",
     "StopBalanceTrick",
+    "DoingBalanceTrick",
+    "StartBalanceTrick",
+    "SetBalanceTrickType",
+    "GetBalanceTrickType",
+    "SetLastAnimData",
+    "GetLastAnimData",
     "NoRailTricks",
     "AllowRailTricks",
     "AllowLipNoGrind",

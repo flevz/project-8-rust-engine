@@ -205,6 +205,12 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
                 g if g.starts_with("manual") => {
                     x.up = x.up || (150..153).contains(&f);
                     x.down = (156..159).contains(&f);
+                    // Keep the balance: tap against the lean past 600.
+                    if f > 160 && f % 6 < 3 {
+                        let lean = k.physics.balance.manual.lean;
+                        x.up |= lean > 600.0;
+                        x.down |= lean < -600.0;
+                    }
                     let seq: Vec<char> = g.strip_prefix("manual:").unwrap_or("").chars().collect();
                     for (n, c) in seq.iter().enumerate() {
                         let on = (180 + n as i32 * 8..183 + n as i32 * 8).contains(&f);
@@ -244,7 +250,9 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         let inputs = k.physics.anim_inputs_in(s, Some(world));
         k.anim.update(1.0 / 60.0, inputs);
         let _ = k.anim.sample(inputs);
-        if std::env::var_os("P8_TREE").is_some() && (air_frames == 20 || (ground.is_some() && i == 200)) {
+        if std::env::var_os("P8_TREE").is_some()
+            && (air_frames == 20 || (ground.is_some() && i == std::env::var("P8_TREE_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(200)))
+        {
             let mut t = String::new();
             if let Some(b) = &k.anim.body {
                 b.describe(0, &mut t);

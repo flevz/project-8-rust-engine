@@ -652,8 +652,7 @@ impl Script {
             WIDE_STRING => {
                 let n = u32_at(&code, p) as usize;
                 let s = code.get(p + 4..p + 4 + n).unwrap_or(&[]);
-                let units: Vec<u16> =
-                    s.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
+                let units: Vec<u16> = s.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).take_while(|&u| u != 0).collect();
                 out.add(key, Value::String(String::from_utf16_lossy(&units)));
                 p + 4 + n
             }
@@ -826,8 +825,8 @@ impl Script {
                         break;
                     }
                 }
-                EQUALS | DOT | MINUS | PLUS | DIVIDE | MULTIPLY | LESS | 0x13 | GREATER | 0x15 | OR | 0x33 | 0x34
-                | 0x35 | 0x36 | ARRAY_OPEN
+                EQUALS | DOT | MINUS | PLUS | DIVIDE | MULTIPLY | LESS | 0x13 | GREATER | 0x15 | OR | 0x33 | 0x34 | 0x35 | 0x36
+                | ARRAY_OPEN
                     if !expect_operand =>
                 {
                     while let Some(&top) = ops.last() {
@@ -986,6 +985,103 @@ impl Script {
             self.locals.add(array, Value::Array(a));
             return Some(true);
         }
+        if name == k("FormatText") {
+            // 822A9B78 -> 822A96E0: the first unnamed string with `%c` (a
+            // one-letter parameter name) or `%%name` (a name of letters,
+            // digits and `_`) replaced by that parameter's value (a name of
+            // a global stands for its value unless `DoNotResolve`); `\%` is
+            // a plain `%`. A missing parameter fails the command. The text
+            // goes to the parameter named by `TextName`, its checksum to
+            // the one named by `ChecksumName`. Values: integers (`%d`, or
+            // `%0*d` with `integer_width`) and strings; floats, vectors,
+            // pairs, names (822A9128 cases not read) and `UseCommas`
+            // (821EEEB0, not read) are not translated.
+            let fmt = params.0.iter().find_map(|(n, v)| match (n, v) {
+                (0, Value::String(t)) => Some(t.clone()),
+                _ => None,
+            })?;
+            let chars: Vec<char> = fmt.chars().collect();
+            let mut out = String::new();
+            let mut i = 0;
+            while i < chars.len() {
+                let c = chars[i];
+                if c == '\\' && chars.get(i + 1) == Some(&'%') {
+                    out.push('%');
+                    i += 2;
+                    continue;
+                }
+                if c != '%' || i + 1 >= chars.len() {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                let key = if chars[i + 1] == '%' {
+                    let start = i + 2;
+                    let mut end = start;
+                    while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+                        end += 1;
+                    }
+                    i = end;
+                    chars[start..end].iter().collect::<String>()
+                } else {
+                    i += 2;
+                    chars[i - 1].to_string()
+                };
+                let Some(v) = params.get(k(&key)) else { return Some(false) };
+                let v = match v {
+                    Value::Checksum(c) if !params.flag(k("DoNotResolve")) => resolve_name(host, *c),
+                    v => v.clone(),
+                };
+                if params.flag(k("UseCommas")) {
+                    return None;
+                }
+                let width = params.int(k("integer_width")).unwrap_or(0).max(0) as usize;
+                match v {
+                    Value::Int(n) if width != 0 => out.push_str(&format!("{n:0width$}")),
+                    Value::Int(n) => out.push_str(&n.to_string()),
+                    Value::String(t) => out.push_str(&t),
+                    _ => return None,
+                }
+            }
+            if let Some(t) = params.checksum(k("TextName")) {
+                self.locals.add(t, Value::String(out.clone()));
+            }
+            if let Some(c) = params.checksum(k("ChecksumName")) {
+                self.locals.add(c, Value::Checksum(qb_key(&out)));
+            }
+            return Some(true);
+        }
+        if name == k("AppendSuffixToChecksum") {
+            // 822A9E70: `appended_id` = the checksum `base` continued over
+            // `suffixstring` (821E57A0 -> 821E5718: the same CRC as a whole
+            // name, so no name table is needed).
+            let base = params.checksum(k("base"))?;
+            let suffix = match params.get(k("suffixstring")) {
+                Some(Value::String(t)) => t.clone(),
+                _ => String::new(),
+            };
+            self.locals.add(k("appended_id"), Value::Checksum(p8_formats::checksum::qb_key_extend(base, &suffix)));
+            return Some(true);
+        }
+        if name == k("GlobalExists") {
+            // 822A8648: a global named `name` exists and, when `type` is
+            // given, is of that type (structure/struct, array, string,
+            // float, checksum/name, vector, integer/int, pair).
+            let Some(v) = params.checksum(k("name")).and_then(|n| host.global(n)) else { return Some(false) };
+            let Some(t) = params.checksum(k("type")) else { return Some(true) };
+            let is = match v {
+                Value::Struct(_) => t == k("structure") || t == k("struct"),
+                Value::Array(_) => t == k("array"),
+                Value::String(_) => t == k("string"),
+                Value::Float(_) => t == k("float"),
+                Value::Checksum(_) => t == k("checksum") || t == k("name"),
+                Value::Vector(_) => t == k("vector"),
+                Value::Int(_) => t == k("integer") || t == k("int"),
+                Value::Pair(..) => t == k("pair"),
+                _ => false,
+            };
+            return Some(is);
+        }
         if name == k("StructureContains") {
             // 822ACAD0: `Structure` (a struct, or a name of a struct among
             // the script's locals); `Name` or the first unnamed checksum;
@@ -1070,9 +1166,7 @@ impl Script {
             return Some(true);
         }
         if name == k("OnExitRun") {
-            self.on_exit = params
-                .unnamed_checksum()
-                .map(|n| (n, params.params(k("Params")).unwrap_or_default()));
+            self.on_exit = params.unnamed_checksum().map(|n| (n, params.params(k("Params")).unwrap_or_default()));
             return Some(true);
         }
         if name == k("Printf") {
@@ -1127,6 +1221,9 @@ fn is_vm_command(name: u32) -> bool {
         "GetArraySize",
         "SetArrayElement",
         "StructureContains",
+        "FormatText",
+        "AppendSuffixToChecksum",
+        "GlobalExists",
         "Goto",
         "GotoRandomScript",
         "SetException",
@@ -1262,9 +1359,7 @@ fn apply(host: &dyn Host, op: u8, values: &mut Vec<Value>) {
         GREATER => Int(matches!((num(&a), num(&b)), (Some(x), Some(y)) if x > y) as i32),
         DOT => match (&a, &b) {
             // 82211BE0, which also searches included global structs.
-            (Struct(m), Checksum(k)) => {
-                crate::params::Params(m.clone()).get_in(*k, &|g| host.global(g)).unwrap_or(Int(0))
-            }
+            (Struct(m), Checksum(k)) => crate::params::Params(m.clone()).get_in(*k, &|g| host.global(g)).unwrap_or(Int(0)),
             _ => Int(0),
         },
         ARRAY_OPEN => match (&a, &b) {
@@ -1361,6 +1456,40 @@ mod tests {
         let mut s = Script::new(t, qb_key(name), &Params::new()).unwrap();
         s.update(t);
         s
+    }
+
+    #[test]
+    fn manual_transition_names_are_built_as_the_manual_script_does() {
+        // manualtricks.qb `manual`: getlastanimdata / appendsuffixtochecksum
+        // / formattext checksumname = transition_start '%s_out_%n' / GlobalExists.
+        let k = qb_key;
+        let mut t = Test::new(&[("main", Asm::default().nl().t(ENDSCRIPT))]);
+        t.globals.insert(k("Manual_out_7"), Value::Struct(vec![]));
+        let mut sc = run(&mut t, "main");
+        let mut p = Params::new();
+        p.add(k("base"), Value::Checksum(k("manual")));
+        p.add(k("suffixstring"), Value::String("_data".into()));
+        assert_eq!(sc.vm_command(&mut t, k("AppendSuffixToChecksum"), &p), Some(true));
+        assert_eq!(sc.locals.get(k("appended_id")), Some(&Value::Checksum(k("manual_data"))));
+        let mut p = Params::new();
+        p.add(k("checksumname"), Value::Checksum(k("transition_start")));
+        p.add(0, Value::String("%s_out_%n".into()));
+        p.add(k("s"), Value::String("manual".into()));
+        p.add(k("n"), Value::Int(7));
+        assert_eq!(sc.vm_command(&mut t, k("FormatText"), &p), Some(true));
+        assert_eq!(sc.locals.get(k("transition_start")), Some(&Value::Checksum(k("manual_out_7"))));
+        let mut p = Params::new();
+        p.add(0, Value::String("%s_out_%n".into()));
+        p.add(k("s"), Value::String("manual".into()));
+        assert_eq!(sc.vm_command(&mut t, k("FormatText"), &p), Some(false), "a missing parameter fails");
+        let mut p = Params::new();
+        p.add(k("name"), Value::Checksum(k("manual_out_7")));
+        p.add(k("type"), Value::Checksum(k("structure")));
+        assert_eq!(sc.vm_command(&mut t, k("GlobalExists"), &p), Some(true));
+        p.add(k("type"), Value::Checksum(k("array")));
+        assert_eq!(sc.vm_command(&mut t, k("GlobalExists"), &p), Some(false));
+        p.add(k("name"), Value::Checksum(k("manual_out_1")));
+        assert_eq!(sc.vm_command(&mut t, k("GlobalExists"), &p), Some(false));
     }
 
     #[test]

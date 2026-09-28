@@ -864,6 +864,27 @@ impl BalanceAdd {
     }
 }
 
+/// The object's tags `grindlandaddblend` / `grindlandaddtime`, shared by
+/// its grindlandadd nodes (a mutex so the tree can move between threads).
+#[derive(Clone, Debug, Default)]
+pub struct Tags(std::sync::Arc<std::sync::Mutex<(f32, f32)>>);
+
+impl Tags {
+    fn get(&self) -> (f32, f32) {
+        *self.0.lock().unwrap()
+    }
+    fn set(&self, v: (f32, f32)) {
+        *self.0.lock().unwrap() = v;
+    }
+}
+
+/// The same object's tags.
+impl PartialEq for Tags {
+    fn eq(&self, o: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &o.0)
+    }
+}
+
 /// `grindlandadd` (vtable `82001404`: init `820A42B8`, update `820A41E0`,
 /// sample `820A7750`): the second child (a landing pose) added to the
 /// first, fading in over `blendintime`; the first child's weight drops to
@@ -884,7 +905,7 @@ pub struct GrindLandAdd {
     /// `+48`: the blend function (`8237BE30`, linear by default).
     pub func: BlendFn,
     /// The object's tags (blend, time).
-    pub tags: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    pub tags: Tags,
 }
 
 impl GrindLandAdd {
@@ -1626,7 +1647,7 @@ struct Build<'a> {
     /// animinfo `+524`: the board is rotated (flipandrotate `+24`).
     board_rotated0: bool,
     /// The object's `grindlandadd` tags.
-    tags: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    tags: Tags,
 }
 
 fn lookup(items: &[(u32, Value)], key: u32) -> Option<&Value> {
@@ -2737,7 +2758,7 @@ pub struct AnimTree {
     /// The skater values given to the last update.
     pub inputs: SkaterInputs,
     /// Object tags `grindlandaddblend` / `grindlandaddtime` (82245CA8).
-    tags: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    tags: Tags,
     /// The board's skeleton (`board` in global.pak), when shown.
     pub board_rig: Option<Rig>,
 }

@@ -174,6 +174,10 @@ pub struct CorePhysics {
     /// SkaterState `+264`: doing a trick (`DoingTrick`; set when a trick
     /// runs, `82122E10`, cleared by each `DoNextTrick`, `821230D8`).
     pub doing_trick: bool,
+    /// `+1524`: the last anim data (`SetLastAnimData`, `820D6DE8`; read by
+    /// `GetLastAnimData`, `820D6E50`): a checksum the manual script makes
+    /// from its anim data's `string`.
+    pub last_anim_data: u32,
     /// flipandrotate `+24`: the board is rotated (toggled by every flip,
     /// `820FD8E8` -> `820FD838`; the board model's turn is not
     /// translated).
@@ -403,6 +407,7 @@ impl CorePhysics {
             flipped: false,
             goofy: false,
             doing_trick: false,
+            last_anim_data: 0,
             board_rotated: false,
             flip_after: false,
             rotate_after: false,

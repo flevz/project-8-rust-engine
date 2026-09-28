@@ -52,6 +52,10 @@ pub struct Balance {
     /// `+24`: the balance type running (a checksum: Manual, NoseManual,
     /// Flatland, Grind, Slide, Lip, Skitch; 0 = none).
     pub kind: u32,
+    /// `+28`: a balance trick has started (`StartBalanceTrick`, `820CE600`;
+    /// read by `DoingBalanceTrick`, `820CE5E8`). Cleared with the type by
+    /// `StopBalanceTrick` (`820CEAE8`) and the combo reset (`820CE840`).
+    pub doing: bool,
     /// `+32`: `balanceparams` given to `DoBalanceTrick`, used instead of
     /// the type's parameter struct.
     pub params: Option<Value>,
@@ -335,6 +339,7 @@ impl Balance {
             m.lean_speed = 0.0;
         }
         self.kind = 0;
+        self.doing = false;
     }
 
     /// `82190A60` also hides the meter on screen (both modes).
@@ -345,6 +350,7 @@ impl Balance {
         }
         self.display.hide();
         self.kind = 0;
+        self.doing = false;
     }
 
     /// The end of `82190F58` (from `8219179C`), after an update that did
