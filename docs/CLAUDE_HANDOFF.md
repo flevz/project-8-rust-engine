@@ -525,6 +525,43 @@ After that, in the user's order: grinds (rail grab's grind set-up
 meter's grind parts), manuals (`82190F58` manual meter is shared), then bails.
 The user may instead ask for models and animations; pushing depends on them.
 
+## 17-tricks. Trick system (done this session; the user's priority now)
+
+The user asked for gameplay before stats: the trick system, manuals,
+grinds, flip tricks, grab tricks, wallrides. Stats wait.
+
+- DONE (p8-skater/src/trick.rs, NOTES 28/29): button events, every
+  trigger type the data uses, the queue, DoNextTrick, extra / manual /
+  grind pending tricks, the trick mapping from the profile (HawkTricks),
+  the trick commands; flip/rotate-after flags, DoingTrick, matrix queries
+  (queries.rs), GetArraySize / SetArrayElement in the VM, the manual
+  balance meter in the ground update. Checked with
+  `P8_FLAT=1 P8_TRICK=<left|up|grab:down|ground:r2|ground:manual> cargo run
+  --release -p p8-skater --example anim_check -- <DATA/COMPRESSED>
+  /home/user/p8work/extra_names.txt`: kickflip, tail grab, R2 stance switch
+  (the user's video: it now keeps rolling forward and switches), manual
+  (leans and bails with no input).
+- Also fixed from the user's videos: handplant hold looped (wobble node
+  translated), handplant bail never got up (anim_command /
+  Skater_AnimComplete, timer_wait now blocks scripts), board rode
+  backwards after a backwards landing (820B0E20 board part).
+- TOOL: `research/tools/harness` (private repo) compiles recompiled retail
+  functions and runs them on test inputs. Use it to check a translation or
+  to find what a long function does. README there.
+- NEXT (user's list): grinds (rail grab set-up 820F8120, grind update
+  820F4DE8, rail update 820F8CF0, the balance meter's grind parts; trick
+  lists GrindTricks etc.), wallrides (WallRideTricks, core wall ride),
+  reverts (Reverts list via ExtraSlot1/2 -> Trick_Revert: should work,
+  untested), landing bails (the checks are translated; test a trick landed
+  late), special meter ([+28]+116, special lists), score display
+  (Display, SetTrickName/Score are stored only), the board model's
+  rotate (820FD838 [+40]+520), skitch.
+- APPROXIMATE / INFERRED here: event times use game time (retail real
+  time, same unpaused); DoNextTrick goes to the calling script (retail
+  the skater's main script); scripttorunfirst run at once; stick-direction
+  buttons (ids 19-34), L3/R3 never held (no records); PLAYER_SKATER =
+  hawk; 8211EDF8 (extra tricks' ignore) compares trick names.
+
 ## 17-model. Skater model and animations (in progress; the user chose this before the trick queue)
 
 Plan agreed with the user: (1) skeleton, (2) model + textures in the game,
