@@ -410,7 +410,7 @@ fn step(
     let skater = &mut *skater;
     skater.object.physics.dt = dt;
     let events = skater.object.step(&skater.scripts, &input, ground.world());
-    let inputs = skater.object.physics.anim_inputs(&skater.scripts);
+    let inputs = skater.object.physics.anim_inputs_in(&skater.scripts, Some(ground.world()));
     skater.object.anim.update(dt, inputs);
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);

@@ -29,14 +29,26 @@
 //! - `skaterposecapture` (`820B37F0`): live pass-through; after
 //!   `posecapture_capture` it returns the captured pose (LIKELY: the
 //!   command handler was not read, only the sample).
-//! - `skatermodulate` (update `820B2790`, sample `820B3288`, finish
-//!   `820B26C0`): `offwhenfinished` translated. `turn` and `slope` read
-//!   skater-component fields (+380 turn; +228/+272/+304 slope vectors) that
-//!   are not traced yet: UNKNOWN, taken as 0 (not turning, level ground).
+//! - `skatermodulate` (init `820B2D00`, update `820B2790`, sample
+//!   `820B3288`, finish `820B26C0`): offwhenfinished, turn, slope, speed,
+//!   brake, vert, crouch, board, time/play. Other types (grindlean, nollie,
+//!   spin, ...) are not translated (they rise over blendtime).
+//! - The rolling nodes: `skatertimer` (crouch, jump, cycle, play), `speedblend`,
+//!   `crouchblend`, `ubercrouchblend`, `kicktimer`/`kickcatch`,
+//!   `braketimer`/`brakecatch`, `skatertimedswitch`; and the air nodes:
+//!   `blank`, `partialswitch`, `apextimer`, `takeoffblend`,
+//!   `ollielandblend`, `spinleftrighttimer`, `spinleftrightadd` (addresses
+//!   at each type).
+//! - Inputs are the animinfo component's copies of skater values
+//!   (`820B8EA0`, [`SkaterInputs`]). Slopes use the physics matrix where
+//!   retail uses the model's display matrix (APPROXIMATE).
+//! - The board object samples the same nodes with each clip's `_b`
+//!   counterpart (see `AnimTree::sample_board`).
 //!
-//! Not translated (listed in `untranslated`; APPROXIMATE stand-ins): timers
-//! other than cycle/play run as `cycle`; other nodes with children pass
-//! their first child through; leaves give an empty pose.
+//! Not translated (listed in `untranslated`; APPROXIMATE stand-ins): other
+//! node types; with children they pass their first child through, leaves
+//! give an empty pose. Anim events (`8237C178`/`8237C380`, e.g. the kick's
+//! `KickBoostEvent`) are not fired yet.
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -989,6 +1001,80 @@ impl Catch {
     }
 }
 
+/// `ollielandblend` (init `820A8050`, update `820A7D88`): blends the
+/// landing child in as the predicted landing approaches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OllieLand {
+    /// `+20`
+    w: f32,
+    func: Option<BlendFn>,
+    /// `+28` blendintime (also the prediction horizon), `+32` the blend
+    /// time in use, `+36` maxblendtime, `+40` blendthreshold, `+44`
+    /// holdtime
+    blendintime: f32,
+    blend: f32,
+    maxblendtime: f32,
+    threshold: f32,
+    hold: f32,
+    /// `+52` seconds to landing, `+56` started, `+60` t, `+64` time
+    to_land: f32,
+    started: bool,
+    t: f32,
+    time: f32,
+    /// `+68` / `+72` highdropstartblendtime / highdropendblendtime
+    high_drop: Option<(f32, f32)>,
+}
+
+impl OllieLand {
+    fn update(&mut self, dt: f32, i: &SkaterInputs) {
+        if !i.in_air {
+            return;
+        }
+        let land = if i.time_to_land >= 0.0 && i.time_to_land <= self.blendintime + 0.05 { i.time_to_land } else { -1.0 };
+        if !self.started {
+            self.to_land = land;
+            if land != -1.0 {
+                self.started = true;
+                self.blend = self.blendintime;
+                let f = (land - i.time_to_apex).min(self.threshold) / self.threshold;
+                self.blend = (self.blend + (self.maxblendtime - self.blend) * f).min(land);
+            }
+        } else {
+            self.to_land = land;
+        }
+        let old = self.t;
+        if self.to_land == -1.0 {
+            self.started = false;
+            if self.t > 0.0 {
+                self.t = (self.t - dt * 10.0).max(0.0);
+            }
+        } else if self.started {
+            if self.to_land > self.blend + self.hold {
+                self.to_land = (self.to_land - dt).max(0.0);
+                if self.t > 0.0 {
+                    self.t -= dt * 10.0;
+                }
+            } else if self.t < 1.0 {
+                self.t = (self.t + dt / self.blend).min(1.0);
+            }
+        }
+        if self.t != old {
+            if old - self.t > 0.1 {
+                self.t = old - 0.1;
+            }
+            self.t = self.t.clamp(0.0, 1.0);
+        }
+        self.w = self.func.as_ref().map_or(self.t, |f| f.eval(self.t));
+        if let Some((a, b)) = self.high_drop {
+            let f = if b - a != 0.0 { ((self.time - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
+            if f > self.w {
+                self.w = f;
+            }
+        }
+        self.time += dt;
+    }
+}
+
 /// `crouchblend` (init `820A3BB8`, update `820A3AC0`) and the crouch part of
 /// `ubercrouchblend` (init `820B6008`, update `820B5E88`).
 #[derive(Clone, Debug, PartialEq)]
@@ -1078,6 +1164,50 @@ pub enum Kind {
     UberCrouch(UberCrouch),
     PhaseTimer(PhaseTimer),
     Catch(Catch),
+    /// `blank` (sample `8237B608`): an empty pose.
+    Blank,
+    /// `partialswitch` (init `8237B610`, update `8237B7C8`, sample
+    /// `8237B878`): `+20` state (0 for `state = on`), `+28` weight, `+24`
+    /// blend time (0: set by commands not read).
+    PartialSwitch {
+        on: bool,
+        w: f32,
+    },
+    /// `apextimer` (init `820A20E0`, update `820A2188`): plays its clip so
+    /// that the middle falls on the top of the jump.
+    ApexTimer {
+        time: f32,
+        duration: f32,
+        started: bool,
+        /// `+80` seconds to the apex
+        to_apex: f32,
+    },
+    /// `takeoffblend` (init `820B5950`, update `820B5890`): `+36` rises from
+    /// `strength` over `blendintime`; weight = blend function.
+    TakeoffBlend {
+        t: f32,
+        blendintime: f32,
+        func: Option<BlendFn>,
+        w: f32,
+    },
+    OllieLand(OllieLand),
+    /// `spinleftrighttimer` (init `820B53C8`, update `820B5460`): the clip
+    /// time follows the spin, -180..180 degrees over the clip.
+    SpinTimer {
+        time: f32,
+        duration: f32,
+    },
+    /// `spinleftrightadd` (init `820B5100`, update `820B51A8`, sample
+    /// `820B52F0`): left and right weights that ease in (`induration`) and
+    /// out (`outduration`) with the spin direction.
+    SpinAdd {
+        cur: f32,
+        prev: f32,
+        wl: f32,
+        wr: f32,
+        induration: f32,
+        outduration: f32,
+    },
     /// `skatertimedswitch` (init `820B3B50`, update `820B3C10`): `+20`
     /// weight (from `start`), `+28` the landing clip's length, `+32` time.
     TimedSwitch {
@@ -1252,6 +1382,57 @@ impl Build<'_> {
                 done: false,
                 captured: None,
             })
+        } else if ty == k("blank") {
+            Kind::Blank
+        } else if ty == k("partialswitch") {
+            let on = self.checksum(&items, "state", scope) == Some(k("on"));
+            Kind::PartialSwitch { on, w: if on { 0.0 } else { 1.0 } }
+        } else if ty == k("apextimer") {
+            let duration = self.checksum(&items, "anim", scope).map_or(0.0, |a| self.lib.duration(a));
+            Kind::ApexTimer { time: 0.0, duration, started: false, to_apex: 1.0 }
+        } else if ty == k("takeoffblend") {
+            let func = self
+                .checksum(&items, "blendfunction", scope)
+                .map(|f| BlendFn::new(f, lookup(&items, k("blendcurve")).map(|v| self.resolve(v, scope)).as_ref()));
+            Kind::TakeoffBlend {
+                t: self.float(&items, "strength", scope).unwrap_or(0.0),
+                blendintime: self.float(&items, "blendintime", scope).unwrap_or(0.0),
+                func,
+                w: 0.0,
+            }
+        } else if ty == k("ollielandblend") {
+            let blendintime = self.float(&items, "blendintime", scope).unwrap_or(0.0);
+            let func = self
+                .checksum(&items, "blendfunction", scope)
+                .map(|f| BlendFn::new(f, lookup(&items, k("blendcurve")).map(|v| self.resolve(v, scope)).as_ref()));
+            let hs = self.float(&items, "highdropstartblendtime", scope);
+            let he = self.float(&items, "highdropendblendtime", scope);
+            Kind::OllieLand(OllieLand {
+                w: 0.0,
+                func,
+                blendintime,
+                blend: blendintime,
+                maxblendtime: self.float(&items, "maxblendtime", scope).unwrap_or(blendintime),
+                threshold: self.float(&items, "blendthreshold", scope).unwrap_or(1.0),
+                hold: self.float(&items, "holdtime", scope).unwrap_or(0.0),
+                to_land: 1.0,
+                started: false,
+                t: 0.0,
+                time: 0.0,
+                high_drop: if hs.is_some() || he.is_some() { Some((hs.unwrap_or(9999.9), he.unwrap_or(9999.9))) } else { None },
+            })
+        } else if ty == k("spinleftrighttimer") {
+            let duration = self.checksum(&items, "anim", scope).map_or(0.0, |a| self.lib.duration(a));
+            Kind::SpinTimer { time: 0.0, duration }
+        } else if ty == k("spinleftrightadd") {
+            Kind::SpinAdd {
+                cur: 0.0,
+                prev: 0.0,
+                wl: 0.0,
+                wr: 0.0,
+                induration: self.float(&items, "induration", scope).unwrap_or(1.0),
+                outduration: self.float(&items, "outduration", scope).unwrap_or(1.0),
+            }
         } else if ty == k("skatertimedswitch") {
             let anim = self.checksum(&items, if self.crouched0 { "crouchanim" } else { "standanim" }, scope).unwrap_or(0);
             Kind::TimedSwitch { w: self.float(&items, "start", scope).unwrap_or(0.0), length: self.lib.duration(anim), time: 0.0 }
@@ -1483,6 +1664,14 @@ pub struct SkaterInputs {
     pub right: [f32; 3],
     pub up: [f32; 3],
     pub at: [f32; 3],
+    /// Trick component `+5360` (animinfo `+532`): degrees spun this air.
+    pub spin: f32,
+    /// `820B8220` (animinfo `+164`): riding switch.
+    pub switch: bool,
+    /// `820B9298` -> `820E79D8`: seconds until landing, -1 if not found.
+    pub time_to_land: f32,
+    /// `820B91D8` -> `820D7878`: seconds until the top of the jump.
+    pub time_to_apex: f32,
 }
 
 impl Node {
@@ -1496,6 +1685,74 @@ impl Node {
             Kind::UberCrouch(u) => u.crouch.update(dt, i),
             Kind::PhaseTimer(t) => t.update(dt, i),
             Kind::Catch(c) => c.update(dt, i),
+            Kind::PartialSwitch { on, w } => {
+                // 8237B7C8 with a blend time of 0: straight to 0 or 1.
+                *w = if *on { 0.0 } else { 1.0 };
+            }
+            Kind::ApexTimer { time, duration, started, to_apex } => {
+                // 820A2188.
+                let half = *duration * 0.5;
+                if !*started {
+                    if !i.in_air {
+                        return self.update_children(dt, i);
+                    }
+                    *to_apex = i.time_to_apex;
+                    *started = true;
+                    if half > *to_apex {
+                        *time = half - *to_apex;
+                    }
+                }
+                *to_apex -= dt;
+                *time = if *to_apex > half {
+                    0.0
+                } else if *to_apex < -half {
+                    *duration
+                } else {
+                    *time + dt
+                };
+                if *time > *duration {
+                    *time = *duration;
+                }
+            }
+            Kind::TakeoffBlend { t, blendintime, func, w } => {
+                if *t < 1.0 {
+                    *t = if *blendintime > 0.0 { (*t + dt / *blendintime).min(1.0) } else { 1.0 };
+                }
+                *w = func.as_ref().map_or(*t, |f| f.eval(*t));
+            }
+            Kind::OllieLand(o) => o.update(dt, i),
+            Kind::SpinTimer { time, duration } => {
+                let a = if i.switch { -i.spin } else { i.spin }.clamp(-180.0, 180.0);
+                *time = (a / 180.0 * 0.5 + 0.5) * *duration;
+            }
+            Kind::SpinAdd { cur, prev, wl, wr, induration, outduration } => {
+                *prev = *cur;
+                *cur = if i.switch { -i.spin } else { i.spin };
+                if *cur < *prev {
+                    if *wl < 1.0 {
+                        *wl += dt / *induration;
+                    }
+                    if *wr > 0.0 {
+                        *wr -= dt / *outduration;
+                    }
+                } else if *cur > *prev {
+                    if *wl > 0.0 {
+                        *wl -= dt / *outduration;
+                    }
+                    if *wr < 1.0 {
+                        *wr += dt / *induration;
+                    }
+                } else {
+                    if *wl > 0.0 {
+                        *wl -= dt / *outduration;
+                    }
+                    if *wr > 0.0 {
+                        *wr -= dt / *outduration;
+                    }
+                }
+                *wl = wl.clamp(0.0, 1.0);
+                *wr = wr.clamp(0.0, 1.0);
+            }
             Kind::TimedSwitch { w, length, time } => {
                 // 820B3C10; then (820B3C60) the second child is only
                 // updated once the switch has started.
@@ -1531,6 +1788,10 @@ impl Node {
             }
             _ => {}
         }
+        self.update_children(dt, i);
+    }
+
+    fn update_children(&mut self, dt: f32, i: &SkaterInputs) {
         for c in &mut self.children {
             c.update(dt, i);
         }
@@ -1742,6 +2003,43 @@ impl Node {
                 p.scale(s);
                 p
             }
+            Kind::Blank => Pose::zero(rig),
+            Kind::PartialSwitch { w, .. } => {
+                // 8237B878: the second child, blended towards the first by
+                // 1 - weight.
+                let w = *w;
+                if w == 1.0 || self.children.len() < 2 {
+                    let n = self.children.len();
+                    return self.children.get_mut(n.min(2).saturating_sub(1)).map_or(Pose::zero(rig), |c| c.sample(phase, cx));
+                }
+                let a = self.children[0].sample(phase, cx);
+                let mut b = self.children[1].sample(phase, cx);
+                b.blend_weighted(&a, 1.0 - w, rig);
+                b
+            }
+            Kind::ApexTimer { time, duration, .. } | Kind::SpinTimer { time, duration } => {
+                let p = if *duration > 0.0 { *time / *duration } else { 0.0 };
+                match self.children.first_mut() {
+                    Some(c) => c.sample(p, cx),
+                    None => Pose::zero(rig),
+                }
+            }
+            Kind::TakeoffBlend { w, .. } => {
+                let w = *w;
+                two_child_blend(&mut self.children, w, phase, cx)
+            }
+            Kind::OllieLand(o) => {
+                let w = o.w;
+                two_child_blend(&mut self.children, w, phase, cx)
+            }
+            Kind::SpinAdd { wl, wr, .. } => {
+                let (wl, wr) = (*wl, *wr);
+                let mut a =
+                    if wl != 0.0 { self.children.first_mut().map_or(Pose::zero(rig), |c| c.sample(phase, cx)) } else { Pose::zero(rig) };
+                let b = if wr != 0.0 { self.children.get_mut(1).map_or(Pose::zero(rig), |c| c.sample(phase, cx)) } else { Pose::zero(rig) };
+                a.add(wl, wr, b);
+                a
+            }
             Kind::Untranslated(_) => Pose::zero(rig),
         }
     }
@@ -1768,6 +2066,13 @@ impl Node {
             Kind::Catch(c) => format!("catch s={:.2}", c.strength),
             Kind::TimedSwitch { w, time, length } => format!("timedswitch w={w:.2} t={time:.2}/{length:.2}"),
             Kind::Ik { .. } => "ik".into(),
+            Kind::Blank => "blank".into(),
+            Kind::PartialSwitch { w, .. } => format!("partialswitch w={w:.2}"),
+            Kind::ApexTimer { time, duration, .. } => format!("apextimer t={time:.2}/{duration:.2}"),
+            Kind::TakeoffBlend { w, .. } => format!("takeoffblend w={w:.2}"),
+            Kind::OllieLand(o) => format!("ollielandblend w={:.2} to_land={:.2}", o.w, o.to_land),
+            Kind::SpinTimer { time, duration } => format!("spintimer t={time:.2}/{duration:.2}"),
+            Kind::SpinAdd { wl, wr, .. } => format!("spinadd {wl:.2} {wr:.2}"),
             Kind::Untranslated(t) => format!("UNTRANSLATED {}", name_of(*t).unwrap_or("?")),
         };
         let _ = writeln!(out, "{}{}{}", "  ".repeat(depth), if self.id != 0 { format!("[{:08x}] ", self.id) } else { String::new() }, v);

@@ -493,6 +493,53 @@ impl CorePhysics {
         input.stick_back_raw * 0.0078125 > t && (input.stick_x_raw * 0.0078125).abs() < t
     }
 
+    /// Retail `820E2CD8` (via `820E79D8`): seconds until the skater would
+    /// land, stepping the flight in 0.05 s slices under air gravity from
+    /// 0.0025 above the object and casting a feeler along each slice; -1 if
+    /// nothing upward-facing is hit within `max` seconds. The feeler's
+    /// filter masks (set by `8221B0D0`) are not read: none are used here.
+    pub fn time_to_land(&self, s: &Scripts, world: &dyn crate::world::World, max: f32) -> f32 {
+        let g = Vec3::new(0.0, self.air_gravity(s), 0.0);
+        let mut p = self.body.position + Vec3::new(0.0, 0.0025, 0.0);
+        let mut v = self.body.velocity;
+        let step = 0.05;
+        let mut t = step;
+        loop {
+            let next = p + v * step;
+            if let Some(hit) = world.feeler(p, next, 0, 0) {
+                if hit.normal.y > 0.0 {
+                    let len = (next - p).length();
+                    let frac = if len > 0.0 { (hit.point - p).length() / len } else { 0.0 };
+                    return (t - step) + frac * step;
+                }
+                return -1.0;
+            }
+            if t >= max {
+                return -1.0;
+            }
+            t += step;
+            p = next;
+            v += g * step;
+        }
+    }
+
+    /// Retail `820D7878`: seconds until the top of the jump, -vy / gravity.
+    pub fn time_to_apex(&self, s: &Scripts) -> f32 {
+        -1.0 / self.air_gravity(s) * self.body.velocity.y
+    }
+
+    /// What the animation tree reads (the animinfo copies, `820B8EA0`).
+    /// `world` is needed for the landing prediction.
+    pub fn anim_inputs_in(&self, s: &Scripts, world: Option<&dyn crate::world::World>) -> crate::anim_tree::SkaterInputs {
+        let mut i = self.anim_inputs(s);
+        if self.state == State::Air {
+            i.time_to_apex = self.time_to_apex(s);
+            // 2 s horizon; each node applies its own (INFERRED equivalent).
+            i.time_to_land = world.map_or(-1.0, |w| self.time_to_land(s, w, 2.0));
+        }
+        i
+    }
+
     /// What the animation tree reads (the animinfo copies, `820B8EA0`).
     pub fn anim_inputs(&self, s: &Scripts) -> crate::anim_tree::SkaterInputs {
         let brake_input = self.anim_brake_input(s, &self.last_input);
@@ -511,6 +558,11 @@ impl CorePhysics {
             right: m.x_axis.to_array(),
             up: m.y_axis.to_array(),
             at: m.z_axis.to_array(),
+            // Trick component +5360 (animinfo +532).
+            spin: self.spin_degrees,
+            switch: false,
+            time_to_land: -1.0,
+            time_to_apex: 0.0,
         }
     }
 

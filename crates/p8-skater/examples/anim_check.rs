@@ -45,7 +45,7 @@ fn main() {
     for (label, input, secs) in phases {
         for i in 0..(secs * 60.0) as usize {
             k.step(&s, &input, world);
-            let inputs = k.physics.anim_inputs(&s);
+            let inputs = k.physics.anim_inputs_in(&s, Some(world));
             k.anim.update(1.0 / 60.0, inputs);
             let pose = k.anim.sample(inputs);
             if k.anim.branches != last {
@@ -57,11 +57,11 @@ fn main() {
                 );
             }
             if let (Ok(dir), Some(p)) = (std::env::var("P8_POSE_DUMP"), &pose)
-                && i % 60 == 59
+                && i % std::env::var("P8_DUMP_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(60) == 0
             {
                 let lines: Vec<String> =
                     p.q.iter().zip(&p.t).map(|(q, t)| format!("{} {} {} {} {} {} {}", q[0], q[1], q[2], q[3], t[0], t[1], t[2])).collect();
-                let f = format!("{dir}/{}_{}.txt", label.replace(' ', "_"), (i + 1) / 60);
+                let f = format!("{dir}/{}_{}.txt", label.replace(' ', "_"), i);
                 std::fs::write(f, lines.join("\n")).expect("dump");
                 let mut t = format!("{:?}\n", k.physics.anim_inputs(&s));
                 if let Some(bp) = k.anim.sample_board() {
@@ -75,7 +75,7 @@ fn main() {
                 if let Some(b) = &k.anim.body {
                     b.describe(0, &mut t);
                 }
-                std::fs::write(format!("{dir}/{}_{}_tree.txt", label.replace(' ', "_"), (i + 1) / 60), t).expect("dump");
+                std::fs::write(format!("{dir}/{}_{}_tree.txt", label.replace(' ', "_"), i), t).expect("dump");
             }
             if i % 30 == 29
                 && let Some(p) = pose
