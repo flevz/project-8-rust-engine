@@ -232,7 +232,16 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         } else {
             InputState::default()
         };
-        if ground.is_none() && (6..10).contains(&air_frames) {
+        // spin:<degrees>: spin with L1 in the air up to that angle (a
+        // landing sideways bails).
+        // hold: grab (circle) from air frame 6 and hold it to the ground.
+        if which == "hold" && in_air && air_frames >= 6 {
+            input.circle = true;
+            input.down = air_frames < 10;
+        }
+        if let Some(d) = which.strip_prefix("spin:").and_then(|d| d.parse::<f32>().ok()) {
+            input.l1 = in_air && k.physics.spin_degrees.abs() < d;
+        } else if ground.is_none() && (6..10).contains(&air_frames) {
             match dir {
                 "left" => input.left = true,
                 "right" => input.right = true,
@@ -252,7 +261,8 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         let _ = k.anim.sample(inputs);
         if std::env::var_os("P8_TREE").is_some()
             && (air_frames == std::env::var("P8_AIR_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(20)
-                || (ground.is_some() && i == std::env::var("P8_TREE_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(200)))
+                || (std::env::var("P8_TREE_AT").is_ok()
+                    && i == std::env::var("P8_TREE_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(200)))
         {
             let mut t = String::new();
             if let Some(b) = &k.anim.body {

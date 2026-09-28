@@ -1513,6 +1513,16 @@ pub enum Kind {
         rotated: bool,
     },
     PassThrough,
+    /// `differencetoggle` (ctor `820A4AB0`, vtable `82001250`: init
+    /// `820A3D68`, command `820A3E50`, sample `820A4108`): the child at the
+    /// same phase. While on (`+88` 0; built off, `difference_setstate`
+    /// sets it) retail also adds the `anim` difference clip at a strength
+    /// that can blend in (`82376DE0`, not read): NOT TRANSLATED, so on
+    /// passes through too. Only walking turns it on (`OneFootDifference`,
+    /// `RunningTurnDifference`).
+    DifferenceToggle {
+        on: bool,
+    },
     /// `+20` a pose was kept; the kept pose (`823772D0` stores each live
     /// sample). `posecapture_capture` (`820B38F0`) deletes the live child,
     /// after which the kept pose is returned (`820B37F0`).
@@ -1778,6 +1788,8 @@ impl Build<'_> {
             Kind::DegenerateBlend(DegenerateBlend { records: Vec::new(), duration: 0.0, next_duration: -1.0 })
         } else if ty == k("ik") {
             Kind::Ik { chains: self.ik_chains(&items) }
+        } else if ty == k("differencetoggle") {
+            Kind::DifferenceToggle { on: false }
         } else if ty == k("skateridleswitch") {
             Kind::IdleSwitch { input: self.checksum(&items, "input", scope).unwrap_or(0), weight: 0.0, tags: self.tags.clone() }
         } else if ty == k("skatertimer") {
@@ -2422,7 +2434,7 @@ impl Node {
                 }
                 p
             }
-            Kind::PassThrough => first(self, cx),
+            Kind::PassThrough | Kind::DifferenceToggle { .. } => first(self, cx),
             Kind::BoardRotate { rotated } => {
                 let rotated = *rotated;
                 let mut p = first(self, cx);
@@ -2669,6 +2681,7 @@ impl Node {
             Kind::SkaterModulate(m) => format!("skatermodulate {:08x} x={:.2} s={:.2}", m.timertype, m.x, m.strength),
             Kind::Flip { flipped, rotated0, rotated } => format!("skaterflip flipped={flipped} turned={}", rotated0 != rotated),
             Kind::PassThrough => "pass".into(),
+            Kind::DifferenceToggle { on } => format!("differencetoggle on={on}"),
             Kind::PoseCapture { .. } => "posecapture".into(),
             Kind::DegenerateBlend(d) => format!("degenerateblend {:?}", d.records.iter().map(|r| r.0).collect::<Vec<_>>()),
             Kind::SpeedBlend { speed_now, speed, .. } => format!("speedblend {speed_now:.2}/{speed}"),
@@ -2991,6 +3004,11 @@ impl AnimTree {
                 true
             }
             Kind::PartialSwitch { on, .. } if command == k("partialswitch_ison") => *on,
+            Kind::DifferenceToggle { on } if command == k("difference_setstate") => {
+                // 820A40A8: the first unnamed checksum; `on` turns it on.
+                *on = params.unnamed_checksum() == Some(k("on"));
+                true
+            }
             Kind::BoardRotate { rotated } if command == k("boardrotate_update") => {
                 // 820A3260: the board-rotated flag now.
                 *rotated = self.inputs.board_rotated;
