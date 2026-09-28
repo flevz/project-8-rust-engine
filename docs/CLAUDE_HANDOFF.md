@@ -562,13 +562,36 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
   w), position = base + w·diff (`anim::apply_difference`). Add node
   (`82376220`): q = qB⊗qA after nlerp from identity by weight; t = tA·wA +
   tB·wB (not in Rust yet).
-- (4) first step done: the game plays the standing ride pose
-  (`Sk8_Gnd_Stnd_Base_xx` ApplyDifference `Sk8_Gnd_Stnd_Slow_Idle01_xDx`,
-  idle looping) on the model in every state (`skater_model::RidingPose`,
-  APPROXIMATE). Next: translate the anim tree from the scripts
-  (`OnGround_AnimBranch` etc.; generic node factory `82379F18`, skater
-  nodes `820A5E40`, lazy blend ops `82376AE8`), the anim script commands
-  (`PlayAnim`, `Skater_WaitAnimFinished`, ...), then stance.
+- (4) in progress: the animation tree runs from the scripts
+  (`p8-skater/src/anim_tree.rs`, commands `Skater_Anim_Command`,
+  `Skater_AnimNodeExists` in `skater.rs`; the game samples it in
+  `skater_model::animate`). Verified with `cargo run -p p8-skater --example
+  anim_check -- <DATA/COMPRESSED> <names>`: the scripts add
+  `OnGround_AnimBranch` at spawn, `Stopped_AnimBranch` when still,
+  `Ollie_AnimBranch` on the ollie (set `P8_POSE_DUMP=<dir>` to dump poses).
+  - Translated (addresses in the module doc): pose ops (source 823757A0
+    fills the rest pose first; flush 82376BF8; add 82376220 = A ⊗ B;
+    apply difference 823767C8; blend 82376648), nodes source/skatersource,
+    cycle, play, add, applydifference, modulate + blend functions (curve
+    stores 1 - v), degenerateblend (default blend 0.3 s), ik
+    (`p8-formats/src/ik.rs`: Havok two-joint solver 824E9118, hinge
+    (0,1,0), gains 1; target = the animation's Bone_IK_Foot_Slave; ankle
+    takes its rotation), skaterflip/boardrotateoverlay/skaterposecapture
+    as pass-through, skatermodulate `offwhenfinished`.
+  - User report fixed: feet drifted off the board because there was no IK.
+    User asked whether the idle was right: it was not; standing still is
+    `Stoppedstate` -> `Skater_PlayStoppedAnim` -> `Stopped_AnimBranch`
+    (sk8_gnd_Stop_base_xx + sk8_gnd_Stop_idle_xdx + from_stnd), now played.
+  - NEXT (the rolling branch `OnGround_AnimBranch`): translate skatertimer
+    (init 820B3D08, update 820B4038), speedblend, crouchblend,
+    ubercrouchblend, kicktimer/kickcatch (pushing!), braketimer/
+    brakecatch, skatertimedswitch; and the skater inputs they and
+    skatermodulate read (anim component +380 turn, +228/+272/+304 slope,
+    +580 flags). Find the vtables with the factory map (NOTES section 25).
+    Until then they are stand-ins listed on the HUD (first child /
+    cycle). Then: skaterflip mirror (82377178) + stance display
+    (FlipAndRotate), then the static tree's wheel/face layers, then
+    tricks, bails (ragdoll).
 - User report (model shown): after landing a 180 the model snaps to face
   forward. The model is drawn from the physics matrix; retail keeps
   regular/goofy + fakie state (`flipped` +2024, `FlipAndRotate`

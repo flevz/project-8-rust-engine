@@ -49,6 +49,14 @@ fn main() {
                     last.iter().map(|&b| name(b)).collect::<Vec<_>>().join(" > ")
                 );
             }
+            if let (Ok(dir), Some(p)) = (std::env::var("P8_POSE_DUMP"), &pose)
+                && i % 60 == 59
+            {
+                let lines: Vec<String> =
+                    p.q.iter().zip(&p.t).map(|(q, t)| format!("{} {} {} {} {} {} {}", q[0], q[1], q[2], q[3], t[0], t[1], t[2])).collect();
+                let f = format!("{dir}/{}_{}.txt", label.replace(' ', "_"), (i + 1) / 60);
+                std::fs::write(f, lines.join("\n")).expect("dump");
+            }
             if i % 30 == 29
                 && let Some(p) = pose
             {
