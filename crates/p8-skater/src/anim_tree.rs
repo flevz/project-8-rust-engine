@@ -23,8 +23,10 @@
 //! - `degenerateblend` (update `8237CAB8`, sample `8237C910`, add-branch
 //!   `8237CCA8`).
 //! - `ik` (`8237F5D8`, see `p8_formats::ik`).
-//! - `skaterflip` (`820B2638`): passes the pose through; mirrors it when the
-//!   skater is flipped (`82377178`, not translated: no stance yet).
+//! - `skaterflip` (`820B2638`): passes the pose through; mirrors it
+//!   (`82377178` -> `823835D0`) when the skater was flipped as the branch was
+//!   built (`820B04F8`). The board-rotate part (`820B0E20`, node `+21`/`+22`
+//!   from SkaterState `+48`) is not translated.
 //! - `boardrotateoverlay` (`820A32C8`): passes the skater's pose through.
 //! - `skaterposecapture` (`820B37F0`): live pass-through; after
 //!   `posecapture_capture` it returns the captured pose (LIKELY: the
@@ -258,6 +260,9 @@ pub struct Rig {
     pub parents: Vec<Option<usize>>,
     pub bind_q: Vec<[f32; 4]>,
     pub bind_t: Vec<[f32; 3]>,
+    /// Left/right partner of each bone (the skeleton's `+0x1C` table, read
+    /// by the mirror `823835D0`).
+    pub mirror: Vec<Option<usize>>,
 }
 
 impl Rig {
@@ -269,6 +274,7 @@ impl Rig {
             parents: sk.bones.iter().map(|b| b.parent).collect(),
             bind_q: sk.bones.iter().map(|b| [-b.rotation[0], -b.rotation[1], -b.rotation[2], b.rotation[3]]).collect(),
             bind_t: sk.bones.iter().map(|b| b.position).collect(),
+            mirror: sk.bones.iter().map(|b| b.mirror).collect(),
         }
     }
 
@@ -322,6 +328,76 @@ impl Pose {
     /// `82377148`.
     pub fn scale(&mut self, s: f32) {
         self.strength *= s;
+    }
+
+    /// `820B0560` (angle pi, rotation and translation on, as the skater's
+    /// skaterflip calls it): turn bone `b` (a child of the root bone 0)
+    /// half a turn about the model's up axis through the model origin.
+    /// Rotation: `q_b = conj(R (x) q_0)` with `R = P (x) conj(q_0 (x) q_b)`,
+    /// `P = conj(h) (x) conj(S) (x) h` (`82383358`), `S` the half turn
+    /// about Y (a static built once from a matrix, `820A8A38`) and
+    /// `h = (0.5, 0.5, 0.5, 0.5)`, so `P` is `(-1, 0, 0, 0)` (S's sign is
+    /// from the matrix conversion: (0, 1, 0, 0)). Translation: the bone's
+    /// model position `p = t_0 + conj(q_0) (x) t_b (x) q_0` becomes
+    /// `(-p.x, p.y, -p.z)`, then `t_b = q_0 (x) (p - t_0) (x) conj(q_0)`.
+    /// Checked on the skeleton's bind pose: bones 1, 89 and 91 turn exactly
+    /// half a turn about the model's up axis.
+    pub fn turn_round(&mut self, b: usize) {
+        if b == 0 || b >= self.q.len() {
+            return;
+        }
+        let conj = |q: [f32; 4]| [-q[0], -q[1], -q[2], q[3]];
+        let h = [0.5f32; 4];
+        let p = qmul(qmul(conj(h), conj([0.0, 1.0, 0.0, 0.0])), h);
+        let q0 = self.q[0];
+        let r = qmul(p, conj(qmul(q0, self.q[b])));
+        self.q[b] = conj(qmul(r, q0));
+        let t0 = self.t[0];
+        let tb = self.t[b];
+        let w = qmul(qmul(conj(q0), [tb[0], tb[1], tb[2], 0.0]), q0);
+        let pos = [t0[0] + w[0], t0[1] + w[1], t0[2] + w[2]];
+        let d = [-pos[0] - t0[0], pos[1] - t0[1], -pos[2] - t0[2]];
+        let n = qmul(qmul(q0, [d[0], d[1], d[2], 0.0]), conj(q0));
+        self.t[b] = [n[0], n[1], n[2]];
+    }
+
+    /// The skaterflip mirror (`82377178`, op run `823764B8` ->
+    /// `823835D0`): nothing when the strength is 0; else, from the last bone
+    /// to the first, each bone not yet done swaps rotation, translation and
+    /// weight with its partner in the skeleton's mirror table, and both are
+    /// reflected across the Z plane (rotation z and w negated, translation
+    /// z negated). Then the root turns half a turn about Y (rotation
+    /// `q (x) (0, 1, 0, 0)`, translation x and z negated).
+    pub fn mirror(&mut self, rig: &Rig) {
+        if self.strength == 0.0 {
+            return;
+        }
+        fn reflect(p: &mut Pose, b: usize) {
+            p.q[b][2] = -p.q[b][2];
+            p.q[b][3] = -p.q[b][3];
+            p.t[b][2] = -p.t[b][2];
+        }
+        let n = self.q.len();
+        let mut done = vec![false; n];
+        for i in (0..n).rev() {
+            if done[i] {
+                continue;
+            }
+            if let Some(j) = rig.mirror.get(i).copied().flatten().filter(|&j| j < n) {
+                self.q.swap(i, j);
+                self.t.swap(i, j);
+                self.w.swap(i, j);
+                reflect(self, j);
+                done[j] = true;
+            }
+            reflect(self, i);
+            done[i] = true;
+        }
+        if n > 0 {
+            self.q[0] = qmul(self.q[0], [0.0, 1.0, 0.0, 0.0]);
+            self.t[0][0] = -self.t[0][0];
+            self.t[0][2] = -self.t[0][2];
+        }
     }
 
     /// Source (`823757A0`): the rest pose, then the clip at `time`.
@@ -1158,7 +1234,15 @@ pub enum Kind {
     },
     Modulate(Modulate),
     SkaterModulate(SkaterModulate),
-    Flip,
+    /// skaterflip: `flipped` is the skater's flipped flag (SkaterState
+    /// `+40`) when the node was built (`820B04F8`, node `+20`); `rotated0`
+    /// SkaterState `+48` then (node `+21`) and `rotated` at the last update
+    /// (`820B0548`, node `+22`).
+    Flip {
+        flipped: bool,
+        rotated0: bool,
+        rotated: bool,
+    },
     PassThrough,
     /// `+20` a pose was kept; the kept pose (`823772D0` stores each live
     /// sample). `posecapture_capture` (`820B38F0`) deletes the live child,
@@ -1274,6 +1358,7 @@ struct Build<'a> {
     /// Skater state when the branch is built (read by several inits).
     crouched0: bool,
     flipped0: bool,
+    rotated0: bool,
     vert0: bool,
     speed0: f32,
 }
@@ -1353,7 +1438,7 @@ impl Build<'_> {
         } else if ty == k("skatermodulate") {
             Kind::SkaterModulate(self.skater_modulate(&items, scope))
         } else if ty == k("skaterflip") {
-            Kind::Flip
+            Kind::Flip { flipped: self.flipped0, rotated0: self.rotated0, rotated: self.rotated0 }
         } else if ty == k("boardrotateoverlay") {
             Kind::PassThrough
         } else if ty == k("skaterposecapture") {
@@ -1659,8 +1744,10 @@ impl Build<'_> {
 /// copies (`820B8EA0`) of skater values.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SkaterInputs {
-    /// SkaterState `+40` (stance flip; not translated yet).
+    /// SkaterState `+40`: flipped (the stance).
     pub flipped: bool,
+    /// SkaterState `+48`: toggled with every turn-around.
+    pub rotated: bool,
     /// SkaterState `+32`.
     pub crouched: bool,
     /// SkaterState `+24` == 1 (the air state).
@@ -1700,6 +1787,7 @@ impl Node {
     fn update(&mut self, mut dt: f32, i: &SkaterInputs) {
         match &mut self.kind {
             Kind::Timer(t) => t.update(&mut dt),
+            Kind::Flip { rotated, .. } => *rotated = i.rotated,
             Kind::SkaterTimer(t) => t.update(&mut dt, i),
             Kind::Modulate(m) => m.update(dt),
             Kind::SkaterModulate(m) => m.update(dt, i),
@@ -1879,12 +1967,34 @@ impl Node {
                 p.scale(s);
                 p
             }
-            Kind::Flip => {
-                // 82377178 mirrors the pose when flipped: not translated.
-                if cx.inputs.flipped && !cx.untranslated.contains(&qb_key("skaterflip")) {
-                    cx.untranslated.push(qb_key("skaterflip"));
+            Kind::Flip { flipped, rotated0, rotated } => {
+                // 820B2638: the child, mirrored if the skater was flipped
+                // when the branch was built; then (op 823772D0 -> slot 8,
+                // 820B0E20) if the skater has turned round since, the
+                // branch's pose is turned round too.
+                let (flipped, turned) = (*flipped, *rotated0 != *rotated);
+                let mut p = first(self, cx);
+                if flipped {
+                    p.mirror(rig);
                 }
-                first(self, cx)
+                if turned {
+                    if cx.board {
+                        // The board's part (820B0560 on bone 1 without the
+                        // rotation, then its own matrix work) is not
+                        // translated.
+                        if !cx.untranslated.contains(&qb_key("skaterflip")) {
+                            cx.untranslated.push(qb_key("skaterflip"));
+                        }
+                    } else {
+                        // The children of control_root (the skeleton's
+                        // bones 1, 89 and 91, named here as retail passes
+                        // indices).
+                        for b in [1, 89, 91] {
+                            p.turn_round(b);
+                        }
+                    }
+                }
+                p
             }
             Kind::PassThrough => first(self, cx),
             Kind::PoseCapture { .. } => {
@@ -2085,7 +2195,7 @@ impl Node {
             Kind::ApplyDifference { .. } => "applydifference".into(),
             Kind::Modulate(m) => format!("modulate s={:.2}", m.strength),
             Kind::SkaterModulate(m) => format!("skatermodulate {:08x} x={:.2} s={:.2}", m.timertype, m.x, m.strength),
-            Kind::Flip => "skaterflip".into(),
+            Kind::Flip { flipped, rotated0, rotated } => format!("skaterflip flipped={flipped} turned={}", rotated0 != rotated),
             Kind::PassThrough => "pass".into(),
             Kind::PoseCapture { .. } => "posecapture".into(),
             Kind::DegenerateBlend(d) => format!("degenerateblend {:?}", d.records.iter().map(|r| r.0).collect::<Vec<_>>()),
@@ -2255,6 +2365,7 @@ impl AnimTree {
                     types: &mut self.untranslated,
                     crouched0: i.crouched,
                     flipped0: i.flipped,
+                    rotated0: i.rotated,
                     vert0: i.in_vert_air || i.on_vert_ground,
                     speed0: (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
                 };
@@ -2384,11 +2495,68 @@ mod tests {
     use super::*;
 
     fn rig(n: usize) -> Rig {
-        Rig { names: (0..n as u32).collect(), parents: vec![None; n], bind_q: vec![[0.0, 0.0, 0.0, 1.0]; n], bind_t: vec![[0.0; 3]; n] }
+        Rig {
+            names: (0..n as u32).collect(),
+            parents: vec![None; n],
+            bind_q: vec![[0.0, 0.0, 0.0, 1.0]; n],
+            bind_t: vec![[0.0; 3]; n],
+            mirror: vec![None; n],
+        }
     }
 
     fn pose(q: [f32; 4], t: [f32; 3], w: f32) -> Pose {
         Pose { q: vec![q], t: vec![t], w: vec![w], strength: 1.0 }
+    }
+
+    fn same_rotation(a: [f32; 4], b: [f32; 4]) -> bool {
+        let d: f32 = (0..4).map(|i| a[i] * b[i]).sum();
+        (d.abs() - 1.0).abs() < 1e-5
+    }
+
+    /// A root like the skater's (control_root's bind rotation) and one
+    /// child, positioned and turned.
+    fn two_bones() -> Pose {
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        Pose {
+            q: vec![[-0.5, -0.5, -0.5, 0.5], [s, s, 0.0, 0.0], [0.0, 0.0, s, s]],
+            t: vec![[0.1, 0.0, 0.2], [0.09, -0.04, 0.11], [0.3, 0.2, -0.1]],
+            w: vec![1.0, 0.5, 0.25],
+            strength: 1.0,
+        }
+    }
+
+    #[test]
+    fn mirroring_twice_gives_the_pose_back() {
+        let mut r = rig(3);
+        r.mirror = vec![None, Some(2), Some(1)];
+        let before = two_bones();
+        let mut p = before.clone();
+        p.mirror(&r);
+        assert_eq!(p.w, vec![1.0, 0.25, 0.5], "partners swap");
+        p.mirror(&r);
+        for b in 0..3 {
+            assert!(same_rotation(p.q[b], before.q[b]), "{b}");
+            assert!((0..3).all(|k| (p.t[b][k] - before.t[b][k]).abs() < 1e-6), "{b}");
+        }
+    }
+
+    #[test]
+    fn turning_round_moves_the_bone_half_a_turn_about_up() {
+        let model_pos = |p: &Pose| {
+            let c = |q: [f32; 4]| [-q[0], -q[1], -q[2], q[3]];
+            let t = p.t[1];
+            let w = qmul(qmul(c(p.q[0]), [t[0], t[1], t[2], 0.0]), p.q[0]);
+            [p.t[0][0] + w[0], p.t[0][1] + w[1], p.t[0][2] + w[2]]
+        };
+        let before = two_bones();
+        let mut p = before.clone();
+        p.turn_round(1);
+        let (a, b) = (model_pos(&before), model_pos(&p));
+        assert!((b[0] + a[0]).abs() < 1e-5 && (b[1] - a[1]).abs() < 1e-5 && (b[2] + a[2]).abs() < 1e-5, "{a:?} -> {b:?}");
+        p.turn_round(1);
+        assert!(same_rotation(p.q[1], before.q[1]));
+        assert!((0..3).all(|k| (p.t[1][k] - before.t[1][k]).abs() < 1e-5));
+        assert_eq!(p.q[0], before.q[0]);
     }
 
     #[test]

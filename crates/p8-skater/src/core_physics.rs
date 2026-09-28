@@ -8,6 +8,8 @@ use crate::input::InputState;
 use crate::script::{Scripts, StatContext};
 use crate::stats::StatLevels;
 use glam::{Mat3, Vec3};
+use p8_formats::qb::Value;
+use p8_formats::qb_key;
 
 /// Events the translated code sends to scripts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,9 +150,11 @@ pub struct CorePhysics {
     pub time_frac_ms: f32,
     /// `+2000`: where the last jump started.
     pub jump_start: Vec3,
-    /// SkaterState `+48`: toggled by the backwards flip (`820DBAA8` via
-    /// `820D45F0`). LIKELY the scripts' "flipped"; not yet read elsewhere.
-    pub flipped: bool,
+    /// SkaterState `+48`: toggled with every turn-around (the backwards
+    /// flip `820DBAA8` via `820D45F0`, and `FlipAndRotate` `820D9008`). The
+    /// skaterflip node compares it with its value when built (`820B0E20`,
+    /// not translated).
+    pub rotated: bool,
     /// `+2128`: spinning blocked (`NoSpin`; `CanSpin` clears). Reset: false.
     pub no_spin: bool,
     /// `+2720`: turning enabled (`enableturning`/`disableturning`). Reset: on.
@@ -178,9 +182,14 @@ pub struct CorePhysics {
     /// Object `+128`: the position at the start of this frame (LIKELY: the
     /// object update stores it before the physics runs).
     pub old_position: Vec3,
-    /// SkaterState `+40`: flips which way a wall flail goes. UNKNOWN
-    /// meaning; nothing translated sets it.
-    pub state_40: bool,
+    /// SkaterState `+40`: flipped (the stance the animations are mirrored
+    /// for). Set to the profile's goofy flag at a restart (`820DFB88`,
+    /// `Obj_MoveToNode` without `NoReset`); toggled with every turn-around
+    /// (`820FD8E8`). Also picks which way a wall flail goes.
+    pub flipped: bool,
+    /// Skater profile `+36`: goofy (the profile's `stance` is `goofy`,
+    /// `821989D0`).
+    pub goofy: bool,
     /// SkaterState `+216`: when set, a wall push only clears it. UNKNOWN
     /// meaning; nothing translated sets it.
     pub state_216: bool,
@@ -363,7 +372,7 @@ impl CorePhysics {
             jump_start: Vec3::ZERO,
             gravity_multiplier: 0.0,
             last_input: InputState::default(),
-            flipped: false,
+            rotated: false,
             no_spin: false,
             turning_enabled: true,
             analog_turning: true,
@@ -374,7 +383,8 @@ impl CorePhysics {
             spin_degrees: 0.0,
             in_bail: false,
             old_position: Vec3::ZERO,
-            state_40: false,
+            flipped: false,
+            goofy: false,
             state_216: false,
             last_wallpush_ms: i64::MIN / 2,
             air_start_ms: 0,
@@ -409,8 +419,13 @@ impl CorePhysics {
     /// rotates it by the node's `Angles` about X, Y and Z. Only the Y turn
     /// (`820D0780`, same rotation as [`rotate_about_up`] on identity) is
     /// translated; X and Z are 0 in the restarts used so far.
+    ///
+    /// The skater's stance: `820DFB88` sets flipped (SkaterState `+40`) to
+    /// the profile's goofy flag.
     pub fn at_restart(scripts: &Scripts, pos: Vec3, angles: Vec3) -> Self {
         let mut p = Self::new(scripts);
+        p.goofy = profile_is_goofy(scripts, PLAYER_SKATER);
+        p.flipped = p.goofy;
         p.body.position = pos;
         p.old_position = pos;
         rotate_about_up(&mut p.body.matrix, angles.y);
@@ -555,12 +570,20 @@ impl CorePhysics {
         i
     }
 
+    /// Riding switch (animinfo `+164`, `820B8220`): flipped, inverted for a
+    /// goofy skater.
+    pub fn switch(&self) -> bool {
+        if self.goofy { !self.flipped } else { self.flipped }
+    }
+
     /// What the animation tree reads (the animinfo copies, `820B8EA0`).
     pub fn anim_inputs(&self, s: &Scripts) -> crate::anim_tree::SkaterInputs {
         let brake_input = self.anim_brake_input(s, &self.last_input);
         let m = self.body.matrix;
         crate::anim_tree::SkaterInputs {
-            flipped: false,
+            // SkaterState +40 (animinfo +580).
+            flipped: self.flipped,
+            rotated: self.rotated,
             crouched: self.crouched,
             in_air: self.state == State::Air,
             in_vert_air: self.vert.in_vert_air,
@@ -575,7 +598,7 @@ impl CorePhysics {
             at: m.z_axis.to_array(),
             // Trick component +5360 (animinfo +532).
             spin: self.spin_degrees,
-            switch: false,
+            switch: self.switch(),
             time_to_land: -1.0,
             time_to_land_slice: 0,
             time_to_apex: 0.0,
@@ -928,9 +951,11 @@ impl CorePhysics {
             m.x_axis = -m.x_axis;
             m.z_axis = -m.z_axis;
         }
-        // `flip_backwards_dont_blend` (0 in the retail scripts) skips this.
+        // `flip_backwards_dont_blend` (0 in the retail scripts) skips this:
+        // the flip `820FD8E8` (+40) and `820D45F0` (+48).
         if s.global_float("flip_backwards_dont_blend") == 0.0 {
             self.flipped = !self.flipped;
+            self.rotated = !self.rotated;
         }
         true
     }
@@ -1059,6 +1084,24 @@ impl CorePhysics {
             events.push(Event::Ollied);
         }
         events
+    }
+}
+
+/// Which entry of `master_skater_list` the player skates as (APPROXIMATE:
+/// the player's skater choice is not read yet; the model is `Pro_Hawk`).
+pub const PLAYER_SKATER: &str = "hawk";
+
+/// The profile's `stance` is `goofy` (`821989D0` stores that in the skater
+/// profile `+36`).
+pub fn profile_is_goofy(s: &Scripts, name: &str) -> bool {
+    let is = |v: Option<&Value>, n: &str| match v {
+        Some(Value::Checksum(k)) => *k == qb_key(n),
+        Some(Value::String(t)) => t.eq_ignore_ascii_case(n),
+        _ => false,
+    };
+    match s.global("master_skater_list") {
+        Some(Value::Array(list)) => list.iter().any(|e| is(e.get_named("name"), name) && is(e.get_named("stance"), "goofy")),
+        _ => false,
     }
 }
 
@@ -1451,7 +1494,7 @@ mod tests {
         p.step(&s, &InputState::default(), &floor);
         assert_eq!(p.state, State::Air);
         p.rotate(150f32.to_radians());
-        let flipped_before = p.flipped;
+        let (flipped_before, rotated_before) = (p.flipped, p.rotated);
         let mut landed = false;
         for _ in 0..120 {
             landed |= p.step(&s, &InputState::default(), &floor).contains(&Event::Landed);
@@ -1463,6 +1506,7 @@ mod tests {
         // Rolling backwards on landing: the board is turned round (150 -> -30
         // degrees from travel) and the stance flag toggled.
         assert_ne!(p.flipped, flipped_before);
+        assert_ne!(p.rotated, rotated_before);
         assert!(p.body.velocity.dot(p.body.at()) > 0.0, "facing the way it moves");
         let heading = p.body.at().x.atan2(p.body.at().z).to_degrees();
         assert!((heading + 30.0).abs() < 0.5, "heading {heading}");

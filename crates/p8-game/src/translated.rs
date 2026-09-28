@@ -416,6 +416,12 @@ fn step(
         skater.last_event = Some(*e);
     }
     skater.current = Frame::of(&skater.object.physics);
+    // The in-between-ticks smoothing is ours, not retail's: on the tick the
+    // skater turns round (the matrix is negated, `820DBAA8` / `820D9008`)
+    // it would show a half spin, so that tick is not smoothed.
+    if skater.previous.rotation.dot(skater.current.rotation).abs() < std::f32::consts::FRAC_1_SQRT_2 {
+        skater.previous.rotation = skater.current.rotation;
+    }
 }
 
 #[allow(clippy::type_complexity)]

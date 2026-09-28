@@ -36,6 +36,10 @@ fn main() {
     let board_rig = Rig::from_skeleton(&board_sk);
     k.anim.board_rig = Some(board_rig.clone());
     let feet = [("L", "Bone_IK_Foot_Slave_L", "bone_ankle_l"), ("R", "Bone_IK_Foot_Slave_R", "bone_ankle_r")];
+    if std::env::var_os("P8_SPIN").is_some() {
+        spin_check(&s, &mut k, world, &rig);
+        return;
+    }
     let phases = [
         ("still", InputState::default(), 2.0),
         ("hold A", InputState { crouch: true, ..Default::default() }, 2.0),
@@ -99,4 +103,55 @@ fn main() {
         }
     }
     println!("untranslated node types: {}", k.anim.untranslated.iter().map(|&c| name(c)).collect::<Vec<_>>().join(" "));
+}
+
+/// P8_SPIN=1: push, ollie, spin with L1 in the air until 180 degrees, land.
+/// Prints, per frame around the landing, the world direction from the right
+/// ankle to the left one (a jump in it is a visible snap), with the stance
+/// flags.
+fn spin_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::World, rig: &Rig) {
+    let (l, r) = (rig.bone(qb_key("bone_ankle_l")).unwrap(), rig.bone(qb_key("bone_ankle_r")).unwrap());
+    let mut air_seen = false;
+    let mut after = 0;
+    let mut prev_yaw: Option<f32> = None;
+    for i in 0..60 * 12 {
+        let t = i as f32 / 60.0;
+        let in_air = k.physics.state == p8_skater::core_physics::State::Air;
+        air_seen |= in_air;
+        let input = if t < 3.0 {
+            InputState { up: true, ..Default::default() }
+        } else if t < 3.5 {
+            InputState { crouch: true, ..Default::default() }
+        } else if in_air && k.physics.spin_degrees.abs() < 175.0 {
+            InputState { l1: true, ..Default::default() }
+        } else {
+            InputState::default()
+        };
+        k.step(s, &input, world);
+        let inputs = k.physics.anim_inputs_in(s, Some(world));
+        k.anim.update(1.0 / 60.0, inputs);
+        let Some(p) = k.anim.sample(inputs) else { continue };
+        let locals: Vec<ik::Local> =
+            p.q.iter().zip(&p.t).map(|(q, t)| ik::Local { rotation: [-q[0], -q[1], -q[2], q[3]], translation: *t }).collect();
+        let m = ik::model_space(&locals, &rig.parents);
+        let d = k.physics.body.matrix * (Vec3::from(m[l].translation) - Vec3::from(m[r].translation));
+        let yaw = d.x.atan2(d.z).to_degrees();
+        let jump = prev_yaw.map_or(0.0, |y| ((yaw - y + 540.0) % 360.0) - 180.0);
+        prev_yaw = Some(yaw);
+        if air_seen && !in_air {
+            after += 1;
+        }
+        if air_seen && after < 240 && (after > 0 || in_air) {
+            println!(
+                "t={t:5.2} air={in_air} spin={:6.1} flipped={} rotated={} feet L-R yaw {yaw:7.1} (change {jump:+6.1}) branches {}",
+                k.physics.spin_degrees,
+                k.physics.flipped,
+                k.physics.rotated,
+                k.anim.branches.len()
+            );
+        }
+        if after >= 240 {
+            break;
+        }
+    }
 }

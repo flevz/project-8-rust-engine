@@ -86,7 +86,7 @@ impl CorePhysics {
             let slow = 1.0 - (a.abs() - dont_slow) / (std::f32::consts::FRAC_PI_2 - dont_slow);
             self.body.velocity *= slow;
             if speed_before > s.global_float("Wall_Bounce_Dont_Flail_Speed") {
-                events.push(if (a < 0.0) != self.state_40 { Event::FlailLeft } else { Event::FlailRight });
+                events.push(if (a < 0.0) != self.flipped { Event::FlailLeft } else { Event::FlailRight });
             }
         }
         // 0.15 is the constant at 820029DC.
