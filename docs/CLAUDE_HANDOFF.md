@@ -582,16 +582,29 @@ commands, anim tree, waits), then tricks on top, then the ragdoll bail.
     User asked whether the idle was right: it was not; standing still is
     `Stoppedstate` -> `Skater_PlayStoppedAnim` -> `Stopped_AnimBranch`
     (sk8_gnd_Stop_base_xx + sk8_gnd_Stop_idle_xdx + from_stnd), now played.
-  - NEXT (the rolling branch `OnGround_AnimBranch`): translate skatertimer
-    (init 820B3D08, update 820B4038), speedblend, crouchblend,
-    ubercrouchblend, kicktimer/kickcatch (pushing!), braketimer/
-    brakecatch, skatertimedswitch; and the skater inputs they and
-    skatermodulate read (anim component +380 turn, +228/+272/+304 slope,
-    +580 flags). Find the vtables with the factory map (NOTES section 25).
-    Until then they are stand-ins listed on the HUD (first child /
-    cycle). Then: skaterflip mirror (82377178) + stance display
-    (FlipAndRotate), then the static tree's wheel/face layers, then
-    tricks, bails (ragdoll).
+  - DONE since: every node type in the ground, stopped and ollie trees
+    (rolling: skatertimer, speedblend, crouchblend, ubercrouchblend,
+    kicktimer/kickcatch, braketimer/brakecatch, skatertimedswitch; air:
+    blank, partialswitch, apextimer, takeoffblend, ollielandblend,
+    spinleftrighttimer, spinleftrightadd), skatermodulate's modes, the
+    animinfo inputs (`CorePhysics::anim_inputs_in`: brake input 820D7570,
+    time to land 820E2CD8, time to apex 820D7878), and the real board
+    (`board_default` on the `board` skeleton, sampled from the same tree with
+    `<clip>_b` clips; `qb_key_extend` = 821E5718). Addresses: NOTES 25-26.
+  - IK hinge: retail's constant is (0,1,0) but in a mapped Havok skeleton
+    (824E47E8); in our skeleton the knee bends about +Z (from the clips), and
+    +Z puts every foot exactly on its target. INFERRED, documented in ik.rs.
+  - User report (video, stand-in build): feet through the board, wrong
+    rolling poses. Causes: the stand-ins (base_transition looped), the Y
+    hinge, and the invented board box. All three replaced.
+  - Check tool: `P8_FLAT=1 P8_POSE_DUMP=<dir> P8_DUMP_EVERY=10 cargo run -p
+    p8-skater --example anim_check -- <DATA/COMPRESSED> <names>` dumps poses,
+    live tree values and the board. Render with the private repo's pose
+    scripts (research/tools).
+  - NEXT: anim events (`8237C178`/`8237C380`, the `skateranimeventtable`;
+    `KickBoostEvent` gives the push its speed), stance (skaterflip mirror
+    82377178 + FlipAndRotate display), grind/manual/lip branches (new node
+    types will show on the HUD), the static tree's wheel/face layers.
 - User report (model shown): after landing a 180 the model snaps to face
   forward. The model is drawn from the physics matrix; retail keeps
   regular/goofy + fakie state (`flipped` +2024, `FlipAndRotate`
