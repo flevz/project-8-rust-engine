@@ -40,9 +40,15 @@ that are not translated yet are listed on screen while playing.
 
 ## Play
 
-The same game builds and runs on Windows and macOS. Every launcher comes in
-a pair with the same steps and messages: `NAME.bat` on Windows,
-`NAME.command` on a Mac.
+The same game builds and runs on Windows and macOS. There is one download
+per platform, updated automatically after every change (only when the game
+compiles on both):
+
+- Windows: [Project8-Windows.zip](https://github.com/flevz/project-8-rust-engine/releases/download/latest/Project8-Windows.zip)
+- macOS: [Project8-macOS.zip](https://github.com/flevz/project-8-rust-engine/releases/download/latest/Project8-macOS.zip)
+
+Each holds the same game with that platform's launchers: `NAME.bat` on
+Windows, `NAME.command` on a Mac, with the same steps and messages.
 
 | Launcher | What it does |
 | --- | --- |
@@ -57,56 +63,55 @@ You need your own game data: the `DATA` folder of your installed Project 8.
 
 ### Windows
 
-1. Double-click `INSTALL.bat`. If it says something is missing, follow its
+1. Download `Project8-Windows.zip` and unzip it (right-click > Extract All).
+   Open the `Project8-Windows` folder.
+2. Double-click `INSTALL.bat`. If it says something is missing, follow its
    steps (Rust from https://rustup.rs and the Visual Studio C++ build
    tools), restart the PC, and run it again until everything says `[OK]`.
-2. Double-click `BUILD.bat`. The first build takes 10–20 minutes.
-3. Double-click `SETUP.bat` and drag in your installed Project 8 folder. It
+3. Double-click `BUILD.bat`. The first build takes 10–20 minutes.
+4. Double-click `SETUP.bat` and drag in your installed Project 8 folder. It
    remembers where your game files are (`scripts-location.txt`, kept on your
    machine only).
-4. Double-click `PLAY.bat`.
+5. Double-click `PLAY.bat`.
 
 ### macOS
 
-1. Get the engine. Open **Terminal** (Applications > Utilities) and paste:
-
-       git clone https://github.com/flevz/project-8-rust-engine ~/project-8-rust-engine
-
-   If macOS offers to install the "command line developer tools", click
-   **Install**, wait, then paste the line again. The folder appears in your
-   home folder. (Downloading the ZIP from GitHub also works; see
-   Troubleshooting for the "unidentified developer" message.)
-2. Double-click `INSTALL.command`. If it says something is missing, type `y`
+1. Download `Project8-macOS.zip` and double-click it to unzip. Move the
+   `Project8-macOS` folder somewhere handy, such as your home folder.
+2. Once per download, let macOS run the launchers: open **Terminal**
+   (Applications > Utilities), type `xattr -dr com.apple.quarantine `
+   (with a space at the end), drag the `Project8-macOS` folder into the
+   Terminal window and press Enter. Nothing is printed; that is normal.
+3. Double-click `INSTALL.command`. If it says something is missing, type `y`
    to install it (Apple's Command Line Tools, then Rust), and run it again
    until everything says `[OK]`.
-3. Double-click `BUILD.command`. The first build takes 10–20 minutes.
-4. Put your game data on the Mac: copy the `DATA` folder of your Project 8
+4. Double-click `BUILD.command`. The first build takes 10–20 minutes.
+5. Put your game data on the Mac: copy the `DATA` folder of your Project 8
    install from the PC (USB stick, cloud drive or network share) into a new
    folder such as `Project8Data` in your home folder, so you have
    `~/Project8Data/DATA`. (If you keep your own backup of that folder,
    unpack it there instead.)
-5. Double-click `SETUP.command` and drag that `Project8Data` folder into the
+6. Double-click `SETUP.command` and drag that `Project8Data` folder into the
    window, then press Enter.
-6. Double-click `PLAY.command`.
+7. Double-click `PLAY.command`.
 
-To update later: in Terminal, `cd ~/project-8-rust-engine && git pull`, then
-run `BUILD.command` again (on Windows, get the new files the same way you
-got them before and run `BUILD.bat`).
+To update (both platforms): download and unzip the new zip, then run
+`BUILD` and `SETUP` in the new folder (on a Mac, do step 2 first). To skip
+the long first build, move the `target` folder from your old copy into the
+new one before running `BUILD`.
 
 ### Troubleshooting (macOS)
 
 - **"cannot be opened because it is from an unidentified developer"** (or
   "Apple could not verify…"): this happens to `.command` files that came
-  from a downloaded ZIP. Right-click the file > **Open** > **Open**. On
-  newer macOS, instead open System Settings > Privacy & Security and click
-  **Open Anyway** under the message. To clear it for the whole folder at
-  once, paste in Terminal:
-  `xattr -dr com.apple.quarantine ~/project-8-rust-engine`
-  (A `git clone` never has this problem.)
+  from a downloaded zip and step 2 was skipped. Do step 2 (it clears the
+  whole folder at once). For a single file you can also right-click it >
+  **Open** > **Open**, or on newer macOS open System Settings > Privacy &
+  Security and click **Open Anyway**.
 - **"…could not be executed because you do not have appropriate access
   privileges"**: the files lost their "can run" mark (for example after
-  copying through a USB stick). Paste in Terminal:
-  `chmod +x ~/project-8-rust-engine/*.command`
+  copying through a USB stick). In Terminal, type `chmod +x ` and drag
+  the `.command` files into the window, then press Enter.
 - **"Terminal would like to access files in your Documents / Desktop /
   Downloads folder"**: click **Allow**. The launchers only read the engine
   folder and the game folder you chose.

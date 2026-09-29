@@ -40,7 +40,13 @@ below (changed crates only) wins.
   launchers. Code changes must build on both (no platform-only APIs
   without a `cfg` for the other); the cloud can only check Linux, so
   review platform differences by hand and say which platform the user
-  should test on. Known difference: no controller rumble on macOS (gilrs
+  should test on. Downloads: every push to `main` runs
+  `.github/workflows/downloads.yml`, which checks that the game compiles on
+  Windows and macOS and then publishes `Project8-Windows.zip` (no
+  `.command`) and `Project8-macOS.zip` (no `.bat`) to the `latest` release,
+  made by `scripts/package.sh`. After pushing, check that run went green
+  and tell the user. New launchers must end in `.bat` / `.command` so they
+  land in the right zip. Known difference: no controller rumble on macOS (gilrs
   has no force feedback there; it fails silently).
 - Save usage: read only the parts of files you need; test only the crates
   you changed (never `cargo test --workspace`).

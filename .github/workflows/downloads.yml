@@ -1,0 +1,54 @@
+# On every push to main: check that the game compiles on Windows and macOS,
+# then publish Project8-Windows.zip and Project8-macOS.zip (made by
+# scripts/package.sh) to the "latest" release. Download links:
+#   https://github.com/flevz/project-8-rust-engine/releases/download/latest/Project8-Windows.zip
+#   https://github.com/flevz/project-8-rust-engine/releases/download/latest/Project8-macOS.zip
+name: Windows and macOS downloads
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: downloads
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Compiles on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The same binaries BUILD.bat / BUILD.command make.
+      - run: cargo check --locked --release -p p8-game -p p8-formats --bins
+
+  publish:
+    name: Publish the two zips
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/package.sh dist
+      - name: Update the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f latest
+          git push -f origin latest
+          NOTES="Built from ${GITHUB_SHA::7}. Windows: Project8-Windows.zip. Mac: Project8-macOS.zip. See the README for the steps."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --notes "$NOTES"
+          else
+            gh release create latest --title "Latest (Windows and macOS)" --notes "$NOTES"
+          fi
+          gh release upload latest dist/Project8-Windows.zip dist/Project8-macOS.zip --clobber

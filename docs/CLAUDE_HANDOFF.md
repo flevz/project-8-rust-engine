@@ -434,7 +434,10 @@ data on the Mac: `~/Project8Data/DATA`, copied from the PC or unpacked with
 the private repo's `backup/restore-mac.command`. No rumble on macOS (gilrs
 0.6.8 `is_ff_supported` is false there). Any launcher change goes into both
 files of the pair in one commit; checklist text only in
-`TEST_CHECKLIST.txt`.
+`TEST_CHECKLIST.txt`. The user downloads `Project8-Windows.zip` /
+`Project8-macOS.zip` from the `latest` release, rebuilt on every push to
+`main` by `.github/workflows/downloads.yml` (compile check on Windows and
+macOS first; `scripts/package.sh` makes the zips).
 
 Linux (agent):
 
