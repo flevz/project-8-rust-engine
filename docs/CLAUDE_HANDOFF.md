@@ -149,7 +149,8 @@ Grinds, manuals, flip/grab tricks and the trick system (queue, triggers,
 double taps, trick names, scoring), bails and ragdoll, wallrides and
 wallplants, walking, skitching, special meter, Nail the
 Trick, skater model, animation system (anim tree, clips), pushing (depends on
-animations), retail camera, textured level rendering, audio, menus, stats menu.
+animations), retail camera for grinds / lips / bails / wallrides (ground and
+air done, NOTES 39), textured level rendering, audio, menus, stats menu.
 
 ## 6. Important files and what they do
 
@@ -207,7 +208,8 @@ animations), retail camera, textured level rendering, audio, menus, stats menu.
 7. **Pushing deferred.** Holding Up does not push repeatedly because retail
    pushing is driven by the kick animation firing `KickBoostEvent`
    (animation-driven; user agreed to wait for animations).
-8. **Placeholder camera and visuals** until models/animations are done.
+8. **Placeholder visuals** (level as grey shapes). The camera is the retail
+   skater camera since NOTES 39 (`p8-skater/src/camera.rs`).
 
 ## 8. Original-game data used as evidence
 
@@ -438,6 +440,10 @@ cargo run --release -p p8-skater --example lip_ride  -- $P z_houses 12 [ollie]
 P8_TRACE=1 cargo run ...   # print every script command
 ```
 
+`p8-game` in the cloud: first
+`apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libasound2-dev pkg-config`,
+then `cargo check -p p8-game` works (NOTES 39).
+
 Note: `cargo test --workspace` in one go may exceed a 10-minute tool timeout
 because of the Bevy test build; run the crates separately.
 
@@ -601,6 +607,16 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Skater camera (NOTES 39): retail `820D1238` translated for ground, air and
+  vert air in `p8-skater/src/camera.rs` (`SkaterCamera`), modes from
+  `Skater_Camera_Array` (mode 2, Standard_Medium, `820CFB30`), follow frame,
+  tilt + air tilt, slerp with the turn limiter, focus lerp (`820D0F48`),
+  zoom/above (`820D02A8`), look-at and level roll. `p8-game` translated.rs
+  uses it (placeholder chase camera removed), fov from `horiz_fov`
+  (INFERRED horizontal). Not yet: grinds, wallrides, lip turn `820D0780`,
+  bail/ragdoll camera, look-around, camera collision `820BBF58`. Example
+  `camera_check` (`P8_VERT=1`). User test: `CAMERA_TEST.bat`. Not confirmed
+  in the game yet.
 - Manual pivot snap-back (NOTES 38): R2 in a manual (`Trick_Gturn` /
   `Trick_Gturn2`) turned the skater with the clip and then snapped back
   because the stance never flipped. Cause: `StructureContains` (`822ACAD0`)

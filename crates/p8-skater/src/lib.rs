@@ -13,6 +13,7 @@ pub mod air;
 pub mod anim_tree;
 pub mod balance;
 pub mod body;
+pub mod camera;
 pub mod controller;
 pub mod core_physics;
 pub mod ground;

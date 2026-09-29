@@ -11,6 +11,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use p8_formats::havok::Solid;
 use p8_formats::zone::Zone;
+use p8_skater::camera::SkaterCamera;
 use p8_skater::core_physics::{Event, Turn};
 use p8_skater::world::Level;
 use p8_skater::{Controller, CorePhysics, FlatFloor, Scripts, World, XboxPad};
@@ -49,8 +50,9 @@ impl Plugin for TranslatedPlugin {
         };
         let object = p8_skater::Skater::new(&self.scripts, ground.spawn.0, ground.spawn.1);
         let frame = Frame::of(&object.physics);
-        let eye = object.physics.body.position - object.physics.body.at() * 4.5 + Vec3::Y * 2.0;
-        let cam_dir = object.physics.body.at();
+        let mut camera = SkaterCamera::new(&self.scripts);
+        camera.update(&self.scripts, &object.physics, 1.0 / TICK_HZ as f32);
+        let view = CamFrame::of(&camera);
         app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.9)))
             .insert_resource(Skater {
@@ -61,8 +63,9 @@ impl Plugin for TranslatedPlugin {
                 current: frame,
                 controller: Controller::default(),
                 last_event: None,
-                eye,
-                cam_dir,
+                camera,
+                cam_previous: view,
+                cam_current: view,
             })
             .insert_resource(ground)
             .insert_resource(crate::balance_meter::ZonesDir(self.zones_dir.clone()))
@@ -83,10 +86,28 @@ pub(crate) struct Skater {
     /// The translated retail controller path (records and hold times).
     controller: Controller,
     last_event: Option<Event>,
-    /// Placeholder chase camera position.
-    eye: Vec3,
-    /// Placeholder camera: the flat direction of travel it stays behind.
-    cam_dir: Vec3,
+    /// The retail skater camera (`p8_skater::camera`, `820D1238`).
+    camera: SkaterCamera,
+    /// The camera at the last two ticks (smoothed in between, like the
+    /// skater; the smoothing is ours, not retail's).
+    cam_previous: CamFrame,
+    cam_current: CamFrame,
+}
+
+/// The camera's position and rotation at one tick.
+#[derive(Clone, Copy)]
+struct CamFrame {
+    position: Vec3,
+    rotation: Quat,
+}
+
+impl CamFrame {
+    fn of(c: &SkaterCamera) -> Self {
+        // The camera rows are [-right, up, -at]: as columns they are the
+        // Bevy camera's local X, Y and Z (it looks down its -Z, the at).
+        let m = Mat3::from_cols(c.matrix[0], c.matrix[1], c.matrix[2]);
+        Self { position: c.position, rotation: Quat::from_mat3(&m).normalize() }
+    }
 }
 
 /// What the skater rides on: the player's level, or a flat floor.
@@ -404,7 +425,7 @@ fn step(
             skater.object.anim.board_rig = board_rig;
         }
         skater.current = Frame::of(&skater.object.physics);
-        skater.cam_dir = skater.object.physics.body.at();
+        skater.camera = SkaterCamera::new(&skater.scripts);
     }
     skater.previous = skater.current;
     let skater = &mut *skater;
@@ -419,6 +440,9 @@ fn step(
         skater.last_event = Some(*e);
     }
     skater.current = Frame::of(&skater.object.physics);
+    skater.camera.update(&skater.scripts, &skater.object.physics, dt);
+    skater.cam_previous = skater.cam_current;
+    skater.cam_current = CamFrame::of(&skater.camera);
     // The in-between-ticks smoothing is ours, not retail's: on the tick the
     // skater turns round (the matrix is negated, `820DBAA8` / `820D9008`)
     // it would show a half spin, so that tick is not smoothed.
@@ -429,12 +453,11 @@ fn step(
 
 #[allow(clippy::type_complexity)]
 fn present(
-    mut skater: ResMut<Skater>,
+    skater: Res<Skater>,
     time: Res<Time<Fixed>>,
-    real: Res<Time>,
     mut root: Query<&mut Transform, (With<SkaterRoot>, Without<Camera3d>, Without<Rider>)>,
     mut rider: Query<&mut Transform, (With<Rider>, Without<SkaterRoot>, Without<Camera3d>)>,
-    mut camera: Query<&mut Transform, (With<Camera3d>, Without<SkaterRoot>, Without<Rider>)>,
+    mut camera: Query<(&mut Transform, &mut Projection), (With<Camera3d>, Without<SkaterRoot>, Without<Rider>)>,
 ) {
     let a = time.overstep_fraction();
     let position = skater.previous.position.lerp(skater.current.position, a);
@@ -448,21 +471,21 @@ fn present(
         t.translation.y = if crouched { 0.62 } else { 0.8 };
         t.scale = Vec3::new(1.0, if crouched { 0.75 } else { 1.0 }, 1.0);
     }
-    // Placeholder chase camera (not the retail camera): it stays behind the
-    // direction of travel, so spins and riding backwards don't swing it
-    // around. Below 1 m/s it keeps its last direction.
-    let v = skater.object.physics.body.velocity;
-    let travel = Vec3::new(v.x, 0.0, v.z);
-    if travel.length() > 1.0 {
-        let ease = 1.0 - (-4.0 * real.delta_secs()).exp();
-        skater.cam_dir = skater.cam_dir.lerp(travel.normalize(), ease).normalize_or(skater.cam_dir);
-    }
-    let flat = skater.cam_dir;
-    let goal = position - flat * 4.5 + Vec3::Y * 2.0;
-    let ease = 1.0 - (-6.0 * real.delta_secs()).exp();
-    skater.eye = skater.eye.lerp(goal, ease);
-    if let Ok(mut t) = camera.single_mut() {
-        *t = Transform::from_translation(skater.eye).looking_at(position + Vec3::Y * 1.0, Vec3::Y);
+    // The retail skater camera, updated each tick in `step`.
+    let (c0, c1) = (skater.cam_previous, skater.cam_current);
+    if let Ok((mut t, mut projection)) = camera.single_mut() {
+        t.translation = c0.position.lerp(c1.position, a);
+        t.rotation = c0.rotation.slerp(c1.rotation, a);
+        // The mode's horiz_fov (degrees; retail puts it in the camera at
+        // +192, 820D004C). Bevy's fov is vertical: converted with the
+        // window's aspect (INFERRED that retail's is horizontal, from the
+        // name).
+        if let Projection::Perspective(pp) = &mut *projection {
+            let h = skater.camera.mode.horiz_fov.to_radians();
+            if h > 0.0 && pp.aspect_ratio > 0.0 {
+                pp.fov = 2.0 * ((h * 0.5).tan() / pp.aspect_ratio).atan();
+            }
+        }
     }
 }
 
