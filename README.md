@@ -62,7 +62,7 @@ Controls (the original Project 8 layout):
 
 ## Help map the game files
 
-1. Install Project 8 with Project8Recomp from your own disc. Its launcher
+1. Install Project 8 with Project8Recomp (https://github.com/theokyr/Project8Recomp) (Thank you to theokyr) from your own disc. Its launcher
    copies the game data into its folder.
 2. Double-click `INSPECT.bat` and drag that folder into the window.
 3. Share `p8-inspect-report.txt`. It contains names, counts and sizes only.
