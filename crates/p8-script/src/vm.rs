@@ -1083,14 +1083,20 @@ impl Script {
             return Some(is);
         }
         if name == k("StructureContains") {
-            // 822ACAD0: `Structure` (a struct, or a name of a struct among
-            // the script's locals); `Name` or the first unnamed checksum;
-            // true if it has a component or a flag of that name.
+            // 822ACAD0: `Structure` (a struct, or a name: the typed getter
+            // 82212A68 -> 82212218 follows a name through the globals when
+            // the global is a struct (82212550..82212608), else the name of
+            // a struct among the script's locals); `Name` or the first
+            // unnamed checksum; true if it has a component or a flag of
+            // that name.
             let s = match params.get(k("Structure")) {
                 Some(Value::Struct(m)) => Some(Params(m.clone())),
-                Some(Value::Checksum(c)) => match self.locals.get(*c) {
-                    Some(Value::Struct(m)) => Some(Params(m.clone())),
-                    _ => None,
+                Some(Value::Checksum(c)) => match crate::params::resolve_alias(*c, &|g| host.global(g)) {
+                    Some(Value::Struct(m)) => Some(Params(m)),
+                    _ => match self.locals.get(*c) {
+                        Some(Value::Struct(m)) => Some(Params(m.clone())),
+                        _ => None,
+                    },
                 },
                 _ => None,
             };
@@ -1484,6 +1490,35 @@ mod tests {
         assert_eq!(sc.vm_command(&mut t, k("GlobalExists"), &p), Some(false));
         p.add(k("name"), Value::Checksum(k("manual_out_1")));
         assert_eq!(sc.vm_command(&mut t, k("GlobalExists"), &p), Some(false));
+    }
+
+    #[test]
+    fn structure_contains_follows_a_name_to_a_global_struct() {
+        // 822ACAD0 via the typed getter 82212218: `structure = <transition_start>`
+        // holds the name of a global struct (Manual_out_Pivot, flag `flipafter`);
+        // the manual script must see its flags. A local struct still works.
+        let k = qb_key;
+        let mut t = Test::new(&[("main", Asm::default().nl().t(ENDSCRIPT))]);
+        let mut pivot = Params::new();
+        pivot.add(k("anim"), Value::Checksum(k("x")));
+        pivot.add(0, Value::Checksum(k("flipafter")));
+        t.globals.insert(k("Manual_out_Pivot"), pivot.to_struct());
+        t.globals.insert(k("alias"), Value::Checksum(k("Manual_out_Pivot")));
+        let mut sc = run(&mut t, "main");
+        let ask = |sc: &mut Script, t: &mut Test, structure: Value, name: &str| {
+            let mut p = Params::new();
+            p.add(k("structure"), structure);
+            p.add(0, Value::Checksum(k(name)));
+            sc.vm_command(t, k("StructureContains"), &p)
+        };
+        let named = Value::Checksum(k("Manual_out_Pivot"));
+        assert_eq!(ask(&mut sc, &mut t, named.clone(), "flipafter"), Some(true));
+        assert_eq!(ask(&mut sc, &mut t, named.clone(), "anim"), Some(true));
+        assert_eq!(ask(&mut sc, &mut t, named, "boardrotate"), Some(false));
+        assert_eq!(ask(&mut sc, &mut t, Value::Checksum(k("alias")), "flipafter"), Some(true));
+        assert_eq!(ask(&mut sc, &mut t, Value::Checksum(k("nothing")), "flipafter"), Some(false));
+        sc.locals.add(k("mine"), pivot.to_struct());
+        assert_eq!(ask(&mut sc, &mut t, Value::Checksum(k("mine")), "flipafter"), Some(true));
     }
 
     #[test]

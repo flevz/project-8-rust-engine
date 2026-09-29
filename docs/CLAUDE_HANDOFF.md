@@ -601,6 +601,14 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Manual pivot snap-back (NOTES 38): R2 in a manual (`Trick_Gturn` /
+  `Trick_Gturn2`) turned the skater with the clip and then snapped back
+  because the stance never flipped. Cause: `StructureContains` (`822ACAD0`)
+  did not follow a name to a global struct (retail: typed getter
+  `82212218`, globals first, then the locals), so `flipafter` on the
+  transition data was never seen. Fixed in `p8-script` `vm.rs` with a unit
+  test. Example `pivot_check`. Not confirmed visually. Also affects
+  `use_anim_length` / `boardrotate` on transition data.
 - Revert animation (NOTES 37): `skatertimer` init (`820B3E04`) with `id` and
   `sync` starts at end * the tag (sync 0 clears it); we ignored it, so the
   ground animation after the revert's `flip` restarted at 0. Fixed in
