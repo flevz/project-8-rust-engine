@@ -607,6 +607,15 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Choppy animation (NOTES 42): `skater_model::animate` sampled the whole
+  tree (body and board) every drawn frame from the tick's state, with no
+  blending, so at ~58 fps the pose jumped two ticks every ~35 frames
+  (the user's clip: one frozen frame about every 35) while the root and
+  camera were smooth. Now `translated::step` samples once a tick after the
+  anim update and `animate` blends the last two poses by the overstep
+  (not on the turn-round tick). Not confirmed in the game yet. Open: the
+  skatertimer's `sync` read treats an unset parameter as on; the newer nodes
+  treat it as absent (INFERRED both; check 820A2870).
 - Process (NOTES 41): `CLAUDE.md` (loaded by every session) holds the
   session setup, the user's rules, the "before calling a feature done"
   checks and the known bug shapes. Branch audit:

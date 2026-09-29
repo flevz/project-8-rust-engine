@@ -9,8 +9,9 @@
 //!
 //! Animation: the skater's animation tree (`p8_skater::anim_tree`), which
 //! the player's own scripts drive (e.g. `Stopped_AnimBranch` when standing
-//! still, `OnGround_AnimBranch` when rolling), is sampled every frame and
-//! written to the joints ([`animate`]). Not used
+//! still, `OnGround_AnimBranch` when rolling), is sampled once a tick (in
+//! `translated::step`) and the last two poses are blended onto the joints
+//! each drawn frame ([`animate`]). Not used
 //! yet: normal maps, the other texture layers and
 //! the materials' blend modes (hair and eyelashes use alpha cut-outs here:
 //! APPROXIMATE).
@@ -112,19 +113,31 @@ fn load_anims(compressed: &Path, skeleton: &Skeleton, s: &Scripts, object: &mut 
 
 /// Write the tree's pose to the joints (rest pose before the scripts have
 /// added a branch). Rotations are the conjugate of the clips' (82327678).
-pub fn animate(mut skater: ResMut<crate::translated::Skater>, models: Query<&SkaterJoints>, mut joints: Query<&mut Transform>) {
-    let object = &mut skater.object;
-    let inputs = object.anim.inputs;
-    let pose = object.anim.sample(inputs);
-    let board = object.anim.sample_board();
+pub fn animate(
+    skater: Res<crate::translated::Skater>,
+    time: Res<Time<Fixed>>,
+    models: Query<&SkaterJoints>,
+    mut joints: Query<&mut Transform>,
+) {
+    // How far between the last two ticks this frame is drawn.
+    let a = time.overstep_fraction();
+    let (p0, p1) = (&skater.pose_previous, &skater.pose_current);
+    let joint = |p: &p8_skater::anim_tree::Pose, i: usize| {
+        let q = p.q[i];
+        (Vec3::from(p.t[i]), Quat::from_xyzw(-q[0], -q[1], -q[2], q[3]).normalize())
+    };
     for m in &models {
-        let pose = if m.board { &board } else { &pose };
+        let (from, to) = if m.board { (&p0.board, &p1.board) } else { (&p0.body, &p1.body) };
         for (i, &e) in m.joints.iter().enumerate() {
             let Ok(mut tf) = joints.get_mut(e) else { continue };
-            *tf = match pose {
-                Some(p) if i < p.q.len() => {
-                    let q = p.q[i];
-                    Transform { translation: Vec3::from(p.t[i]), rotation: Quat::from_xyzw(-q[0], -q[1], -q[2], q[3]).normalize(), scale: Vec3::ONE }
+            *tf = match (from, to) {
+                (Some(f), Some(t)) if i < f.q.len() && i < t.q.len() => {
+                    let ((t0, q0), (t1, q1)) = (joint(f, i), joint(t, i));
+                    Transform { translation: t0.lerp(t1, a), rotation: q0.slerp(q1, a), scale: Vec3::ONE }
+                }
+                (_, Some(t)) if i < t.q.len() => {
+                    let (t1, q1) = joint(t, i);
+                    Transform { translation: t1, rotation: q1, scale: Vec3::ONE }
                 }
                 _ => m.bind[i],
             };

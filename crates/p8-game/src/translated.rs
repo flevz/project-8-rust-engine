@@ -66,6 +66,8 @@ impl Plugin for TranslatedPlugin {
                 camera,
                 cam_previous: view,
                 cam_current: view,
+                pose_previous: Poses::default(),
+                pose_current: Poses::default(),
             })
             .insert_resource(ground)
             .insert_resource(crate::balance_meter::ZonesDir(self.zones_dir.clone()))
@@ -92,6 +94,19 @@ pub(crate) struct Skater {
     /// skater; the smoothing is ours, not retail's).
     cam_previous: CamFrame,
     cam_current: CamFrame,
+    /// The animation poses at the last two ticks. The tree is sampled once a
+    /// tick (in `step`, after its update, as retail samples once a game
+    /// frame); `skater_model::animate` blends the two for the screen, like
+    /// the skater's position and the camera (the blending is ours).
+    pub(crate) pose_previous: Poses,
+    pub(crate) pose_current: Poses,
+}
+
+/// The body and board poses sampled at one tick.
+#[derive(Clone, Default)]
+pub(crate) struct Poses {
+    pub(crate) body: Option<p8_skater::anim_tree::Pose>,
+    pub(crate) board: Option<p8_skater::anim_tree::Pose>,
 }
 
 /// The camera's position and rotation at one tick.
@@ -426,6 +441,7 @@ fn step(
         }
         skater.current = Frame::of(&skater.object.physics);
         skater.camera = SkaterCamera::new(&skater.scripts);
+        skater.pose_current = Poses::default();
     }
     skater.previous = skater.current;
     let skater = &mut *skater;
@@ -433,6 +449,12 @@ fn step(
     let events = skater.object.step(&skater.scripts, &input, ground.world());
     let inputs = skater.object.physics.anim_inputs_in(&skater.scripts, Some(ground.world()));
     skater.object.anim.update(dt, inputs);
+    let poses = Poses { body: skater.object.anim.sample(inputs), board: skater.object.anim.sample_board() };
+    skater.pose_previous = std::mem::replace(&mut skater.pose_current, poses);
+    // First tick (or after a restart): nothing to blend from.
+    if skater.pose_previous.body.is_none() {
+        skater.pose_previous = skater.pose_current.clone();
+    }
     // Animation events (the spacewalk / kick boosts) reach the scripts now.
     let mut events = events;
     events.extend(skater.object.launch_anim_events(&skater.scripts, Some(ground.world())));
@@ -448,6 +470,9 @@ fn step(
     // it would show a half spin, so that tick is not smoothed.
     if skater.previous.rotation.dot(skater.current.rotation).abs() < std::f32::consts::FRAC_1_SQRT_2 {
         skater.previous.rotation = skater.current.rotation;
+        // The pose turns round on the same tick (skaterflip): no blend
+        // either, or one frame would show the joints half turned.
+        skater.pose_previous = skater.pose_current.clone();
     }
 }
 
