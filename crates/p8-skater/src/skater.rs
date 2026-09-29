@@ -523,6 +523,16 @@ impl Ctx<'_> {
                 _ => p.object_flags & m == 0,
             });
         }
+        // Input component members (table 826E1D00, filled at start-up by
+        // 82669990): LeftPressed 82259928 = record "Left" held (input +96),
+        // RightPressed 82116A10 = record "Right" held (+128). The cess turn
+        // (`ToggleSwitchRegular`) picks its side with them.
+        if n == k("LeftPressed") {
+            return Some(p.last_input.left);
+        }
+        if n == k("RightPressed") {
+            return Some(p.last_input.right);
+        }
         if n == k("LastSpinWas") {
             // 820D5908: +2217 (the last rotation was positive) read against
             // the stance (SkaterState +40): `Frontside` is positive when

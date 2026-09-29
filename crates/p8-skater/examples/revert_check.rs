@@ -8,7 +8,8 @@
 //! landing faster than 6.35 m/s, `Land2`, else R2 is the cess turn
 //! `ToggleSwitchRegular`). P8_TAP=<frames> taps that many frames after
 //! landing (default 10; the revert window closes when `Land2` ends,
-//! `kill_extra_tricks`). P8_R1=1 spins with R1 (the other way) instead of L1. The last line sums
+//! `kill_extra_tricks`). P8_HOLD=left|right holds that direction during the
+//! tap (the cess turn's side, `LeftPressed` / `RightPressed`). P8_R1=1 spins with R1 (the other way) instead of L1. The last line sums
 //! the feet's turn over the revert (its sign is the revert's direction) with
 //! `LastSpinWas`'s input (+2217) and the stance.
 use glam::Vec3;
@@ -92,6 +93,9 @@ fn main() {
         } else {
             InputState::default()
         };
+        let hold = std::env::var("P8_HOLD").unwrap_or_default();
+        input.left |= tap && hold == "left";
+        input.right |= tap && hold == "right";
         input.r2 = tap && !l2;
         input.l2 = tap && l2;
         let events = k.step(&s, &input, &world);

@@ -616,10 +616,11 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   `CorePhysics::last_spin_positive`, written by the air spin `820E9DF8` and
   the ground turn `820ED548`) and `Obj_SetFlag/ClearFlag/FlagSet/FlagNotSet`
   (object `+44` bits, `821C8510`; command-to-case mapping LIKELY). Example
-  `revert_check` `P8_PUSH=6 P8_TAP=3 P8_SPIN=180 [P8_R1=1]`. Open: R2 when
-  slower or later is the cess turn `ToggleSwitchRegular`, whose direction
-  uses `LeftPressed`/`RightPressed` (Input component, not found yet:
-  member table filled at start-up), so it is always frontside.
+  `revert_check` `P8_PUSH=6 P8_TAP=3 P8_SPIN=180 [P8_R1=1]`. R2 when slower or
+  later is the cess turn `ToggleSwitchRegular`: its side comes from
+  `LeftPressed` / `RightPressed` (now translated: input +96 / +128 held,
+  `82259928` / `82116A10`), but the game's `BSCess_*Data` use the same
+  frontside clips as `Cess_*Data`, so it looks the same either way (retail).
 - Choppy animation (NOTES 42): `skater_model::animate` sampled the whole
   tree (body and board) every drawn frame from the tick's state, with no
   blending, so at ~58 fps the pose jumped two ticks every ~35 frames
