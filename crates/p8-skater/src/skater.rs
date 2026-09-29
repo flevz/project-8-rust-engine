@@ -335,6 +335,11 @@ impl Ctx<'_> {
             p.in_bail = true;
             return Some(true);
         }
+        if n == k("GetLastInAirVerticalVelocity") {
+            // 820D6330: `last_vert_vel` = core `+1936`.
+            script.locals.add(k("last_vert_vel"), Value::Float(p.last_in_air_vy));
+            return Some(true);
+        }
         if n == k("NotInBail") {
             p.in_bail = false; // 820D54E0: SkaterState +128
             return Some(true);
@@ -920,7 +925,12 @@ impl Ctx<'_> {
             // script running the command; INFERRED the same one); 82122E10
             // sets SkaterState +264.
             self.p.doing_trick = true;
-            script.goto(self, run.script, &std::mem::take(&mut run.params));
+            // 821230D8 / 821235C0: the command's own parameters (`FromAir`,
+            // `FromGroundGone`, ...) are passed on to the trick script, with
+            // the trick's `params` merged in (82215B88).
+            let mut args = params.clone();
+            args.merge(&std::mem::take(&mut run.params));
+            script.goto(self, run.script, &args);
             return Some(true);
         }
         None
@@ -950,6 +960,7 @@ const COMMANDS: &[&str] = &[
     "NoSpin",
     "CanSpin",
     "InBail",
+    "GetLastInAirVerticalVelocity",
     "NotInBail",
     "IsInBail",
     "BailOn",

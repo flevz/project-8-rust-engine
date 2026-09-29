@@ -422,6 +422,8 @@ impl CorePhysics {
         }
         self.body.position += mv * dt + g * (dt * dt * 0.5);
         self.body.velocity += g * dt;
+        // 820F2497: `+1936` = the velocity's y after the gravity.
+        self.last_in_air_vy = self.body.velocity.y;
         self.vert_air_update(s, world);
         // 820F3018: in vert air the normal easing runs; otherwise the
         // second matrix copy follows the matrix.

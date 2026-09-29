@@ -200,6 +200,9 @@ pub struct CorePhysics {
     pub gravity_multiplier: f32,
     /// SkaterState `+128`: in a bail (`IsInBail`).
     pub in_bail: bool,
+    /// `+1936`: the vertical velocity after the last air frame's gravity
+    /// (`GetLastInAirVerticalVelocity`, `820D6330`).
+    pub last_in_air_vy: f32,
     /// Object `+128`: the position at the start of this frame (LIKELY: the
     /// object update stores it before the physics runs).
     pub old_position: Vec3,
@@ -415,6 +418,7 @@ impl CorePhysics {
             flipping: false,
             spin_degrees: 0.0,
             in_bail: false,
+            last_in_air_vy: 0.0,
             old_position: Vec3::ZERO,
             flipped: false,
             goofy: false,
