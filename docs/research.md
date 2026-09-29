@@ -69,7 +69,7 @@ values.
 | Level data ships in `.pak.xen` containers. Scene, collision and node-array formats inside them are undocumented here | CONFIRMED (container) / UNKNOWN (contents) |
 | Restart and spawn points are named nodes (`WarpSkater nodename=…`), which implies a NodeArray-style placement table | LIKELY |
 
-Planned pipeline (see ROADMAP.md): the player's own installation, then
+Planned pipeline: the player's own installation, then
 `p8-formats` readers, then a local converted cache, then the game. The
 simulation only consumes triangles, rail segments and a spawn point, so
 converted levels need no simulation changes.

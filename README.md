@@ -4,24 +4,39 @@ An unofficial, from-scratch **Rust + Bevy** engine for **Tony Hawk's Project 8**
 gameplay, in the spirit of the Skate 3 Rust Engine. It is not affiliated with
 Activision or Neversoft.
 
-**No game content is included, and none ever will be.** Later stages read
-levels, models and animations from *your own* installed copy of the game.
+**No game content is included, and none ever will be.** The engine reads the
+scripts, levels, models and animations from *your own* installed copy of the
+game at runtime.
 
-## Status: stage 1 prototype
+The skater is a line-by-line translation of the original game code (from the
+player's own disc, decompiled), not an imitation: each translated function
+names the original address it comes from.
 
-![Prototype: ollie in the original test park](docs/images/prototype.png)
+![Kickflip on the Houses level](docs/images/kickflip.png)
 
-- A Project 8-style skater: pushing, turning, slopes, walls, ollie, spins,
-  flips, grabs, landing checks, manuals, grinds and bails. `SETUP.bat` loads
-  **original Project 8 physics values** (gravity, jump speeds, top speed,
-  turning, spin, braking) from your own copy. The movement code itself is
-  still an approximation until the original code is translated.
-- An original test park (quarter pipes, kickers, a funbox and a rail) with
-  placeholder visuals.
-- `p8-inspect`, which scans your installed game files and reports their
-  structure, so that the file formats can be worked out safely.
+| | |
+| --- | --- |
+| ![In the air on the Houses level](docs/images/air.png) | ![Riding the Houses bowl](docs/images/riding.png) |
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the stages.
+## What works
+
+- **Original scripts:** the game's own QB scripts run in a translated script
+  VM, so tricks, trick names, triggers and timings come from your copy.
+- **Skating physics:** pushing, steering, braking, ollies (with the original
+  jump speeds and tense time), nollie, boneless, no comply, air spin and
+  lean, landings, walls, vert and quarter pipes, spine transfers, acid drops
+  and bank drops.
+- **Tricks:** the trick queue and button triggers, flip and grab tricks,
+  manuals and manual tricks, lip tricks with the balance meter, stance
+  switches and reverts.
+- **Skater and animation:** the original skater model, board and animation
+  tree (5,000+ clips), including foot IK and stance mirroring.
+- **Levels:** the level's original collision and rails (shown as plain
+  shapes; the textured level is not drawn yet).
+
+Not there yet: grinds, wallrides, ragdoll bails, the score display, special
+meter, walking, sound, menus and the textured level. Commands the scripts use
+that are not translated yet are listed on screen while playing.
 
 ## Play (Windows)
 
@@ -29,23 +44,21 @@ Requires Rust (https://rustup.rs) and the Visual Studio C++ build tools.
 
 1. Double-click `BUILD.bat`. The first build takes a while.
 2. Double-click `SETUP.bat` and drag in your installed Project 8 folder. It
-   reads the original skater physics values from your own `qb.pak.xen` into
-   a local `tuning.json` (see `p8-setup-report.txt`).
+   remembers where your game files are (`scripts-location.txt`, kept on your
+   machine only).
 3. Double-click `PLAY.bat`.
 
-Controls:
+Controls (the original Project 8 layout):
 
 | Action | Controller | Keyboard |
 | --- | --- | --- |
-| Push, steer, balance | Left stick | W A S D |
-| Ollie (hold to crouch) | A | Space |
-| Flip / grab / grind | X / B / Y | J / K / L |
+| Push, steer, lean, spin in the air | Left stick | W A S D |
+| Crouch (hold) / ollie (release) | A | Space |
+| Flip / grab / grind and lip tricks | X / B / Y | Y only: F |
 | Spin | LB / RB | Q / E |
+| Nollie (hold A) / switch stance | LT / RT | Left Shift (LT) |
 | Manual | Stick up then down | W then S |
-| Reset | Back | R |
-
-Put a `tuning.json` beside the launchers to override handling values. Its
-field names are listed in `crates/p8-sim/src/tuning.rs`.
+| Restart | Back | R |
 
 ## Help map the game files
 
@@ -58,6 +71,8 @@ field names are listed in `crates/p8-sim/src/tuning.rs`.
 
 | Crate | Role |
 | --- | --- |
-| `crates/p8-sim` | Skater simulation. Engine-independent and unit-tested. |
+| `crates/p8-skater` | The translated skater: physics, tricks, animation tree, controller path. |
+| `crates/p8-script` | The translated script VM that runs the game's own scripts. |
 | `crates/p8-formats` | Readers for the game's files, plus `p8-inspect`. |
 | `crates/p8-game` | The Bevy application. |
+| `crates/p8-sim` | The first hand-tuned prototype, used only when no game files are set up. |

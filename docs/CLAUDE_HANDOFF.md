@@ -89,8 +89,8 @@ cites its retail address (e.g. `820D9830`).
 
 There are two lists.
 
-**A. The roadmap the user agreed** (from the conversation; the older
-`docs/ROADMAP.md` is stage-based and stale):
+**A. The roadmap the user agreed** (from the conversation; the old
+stage-based `docs/ROADMAP.md` was removed at the user's request):
 
 1. Riding, ollie, air, landing, ground contact, level loading: **done**.
 2. Air pieces (leveling, wall collision, step-up, late ollie): **done**.
@@ -363,8 +363,8 @@ These appear in the code with their addresses, e.g. skin distance 0.0025
   here because it looks odd in traces.
 - `CHECKLIST.md` section 2 counts are stale (see §4).
 - `crates/p8-skater/src/lib.rs` refers to `docs/translation.md`, which does
-  not exist. `README.md` and `docs/ROADMAP.md` describe the old prototype
-  stage and are out of date. `zone.rs` calls struct includes "LIKELY"; the
+  not exist. `README.md` was rewritten (no stages; screenshots from the
+  user's video, approved by the user though they show the game's model). `zone.rs` calls struct includes "LIKELY"; the
   VM reading (`82211BE0`) has since CONFIRMED lookups follow them.
 - `NOTES.md` §6 says the LZSS ring starts at 0; that was wrong and is fixed:
   the ring is filled with spaces (0x20). Code (`qb.rs::lzss`) is correct.
@@ -572,8 +572,8 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   window). Mechanism translated and matches retail as far as read (the
   TrickOllie handler lives for the whole trick, because ClearException is
   not a command in retail), but ours allows more ollies than the user
-  gets in retail. Leads in NOTES 31 (button record lock-out +28 writer;
-  frame rate). Test: `P8_FLAT=1 P8_LEDGE=8 P8_TRICK=buttslap[:<frames>]`
+  gets in retail. The button lock-out (+28) was ruled out (only menus /
+  cutscenes set it; NOTES 31); frame rate is UNKNOWN. Needs a retail video. Test: `P8_FLAT=1 P8_LEDGE=8 P8_TRICK=buttslap[:<frames>]`
   prints `jumps: N`.
   New anim_check modes: `nollie[:<mode>]`, `boneless[:<dir>]`,
   `nocomply[:<dir>]`, `buttslap[:<frames>]`; `P8_LEDGE=<m>` makes the
