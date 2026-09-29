@@ -827,6 +827,10 @@ pub struct SkaterModulate {
     first: bool,
     /// `+92` (delay_anim length)
     delay: f32,
+    /// `+60` / `+64`: `angle` and `range` of a `spin` timer (820B3058,
+    /// 820B3070; 0 when absent).
+    angle: f32,
+    range: f32,
     /// `+24`
     func: Option<BlendFn>,
     /// `+28`
@@ -1095,6 +1099,40 @@ impl SkaterModulate {
             }
             self.x = x;
             self.prev = x;
+        } else if t == k("grindlean") {
+            // 820B2890..820B28C0: 1 - min(|lean| / 3000, 1) (82000E9C =
+            // 1/3000), the balance lean (animinfo +36, 0 with no balance).
+            let lean = i.balance_lean.unwrap_or(0.0);
+            self.x = 1.0 - (lean * 0.000_333_333).abs().min(1.0);
+        } else if t == k("spin") {
+            // 820B2C20..820B2CBC: the spin (animinfo +532) wrapped into
+            // -360..360 (82001B98, 82000DB8), its shortest difference from
+            // `angle`; 1 at 0, 0 beyond `range`, 1 - d / range between.
+            // (No stance or in-air test here, unlike the spin timer.)
+            let mut a = i.spin;
+            loop {
+                if a > 360.0 {
+                    a -= 360.0;
+                } else if a < -360.0 {
+                    a += 360.0;
+                } else {
+                    break;
+                }
+            }
+            let mut d = (a - self.angle).abs();
+            if d > 360.0 {
+                d -= 360.0;
+            }
+            if d > 180.0 {
+                d = 360.0 - d;
+            }
+            self.x = if d == 0.0 {
+                1.0
+            } else if d > self.range {
+                0.0
+            } else {
+                1.0 - d / self.range
+            };
         } else if self.x < 1.0 {
             // 2BF4 (time, play, ...): rise over blendtime.
             self.x += dt / self.blendtime;
@@ -1198,6 +1236,8 @@ pub struct SkaterTimer {
     half_turn: bool,
     /// `+104`: set at init; the first vertspin update skips its rate limit.
     snap: bool,
+    /// `+92`: the `dir` param (820B3F84), read by the `turn` type.
+    dir: u32,
 }
 
 /// `820B4038` (spin, vertspin): wrap into -360..360 (constants `82000DB8`
@@ -1296,8 +1336,28 @@ impl SkaterTimer {
             if self.time < 0.0 {
                 self.time += 1.0;
             }
+        } else if t == k("turn") {
+            // 820B4418..820B4484: `dir` (Left / Right swapped when flipped,
+            // animinfo +580 -> SkaterState +40) against the last turn
+            // (animinfo +372 = core +1940): forward while they match, else
+            // backward (the clamp below stops it at 0).
+            let (l, r) = (k("Left"), k("Right"));
+            let mut d = self.dir;
+            if i.flipped {
+                if d == l {
+                    d = r;
+                } else if d == r {
+                    d = l;
+                }
+            }
+            if i.last_turn == d {
+                self.time += *dt;
+            } else {
+                self.time -= *dt;
+            }
         }
-        // Other timer types (turn, brake, grab...): not translated.
+        // Other timer types (turninit 436C, brake 4554, brakeout 4138,
+        // grab): not translated; none but grab is used by the anim data.
         // 4590: below 0 -> finished, 0; past the end -> the end and
         // finished, or 0 (not finished) for a cycle.
         if self.time < 0.0 {
@@ -2255,9 +2315,15 @@ impl Build<'_> {
             dont_flip: flag(self, "dont_flip"),
             first: true,
             delay: self.checksum(items, "delay_anim", scope).map_or(0.0, |a| self.lib.duration(a)),
+            angle: 0.0,
+            range: 0.0,
             func: None,
             strength: 0.0,
         };
+        if timertype == k("spin") {
+            m.angle = self.float(items, "angle", scope).unwrap_or(0.0);
+            m.range = self.float(items, "range", scope).unwrap_or(0.0);
+        }
         if timertype == k("vert") {
             m.x = if self.vert0 { 1.0 } else { 0.0 };
         }
@@ -2299,6 +2365,7 @@ impl Build<'_> {
             started: false,
             delay: self.checksum(items, "delay_anim", scope).map_or(0.0, |a| self.lib.duration(a)),
             angle: 0.0,
+            dir: self.checksum(items, "dir", scope).unwrap_or(0),
             // 3F1C..3F4C: the `nollie` param on a spin timer. A reference
             // to a param the branch was not given stays unresolved (APPROXIMATE:
             // retail's 820A2870 may see it differently).
@@ -2434,6 +2501,9 @@ pub struct SkaterInputs {
     pub velocity: [f32; 3],
     /// Physics `+1944` (animinfo `+380`).
     pub turn: f32,
+    /// Physics `+1940` (animinfo `+372`): the last ground turn, checksum
+    /// "Left" / "Right", 0 when none this frame.
+    pub last_turn: u32,
     /// `820D7570` (animinfo `+132`).
     pub brake_input: bool,
     /// Circle or square held (animinfo `+156`, `820B8EA0`: Input
@@ -3388,6 +3458,96 @@ mod tests {
         Pose { q: vec![q], t: vec![t], w: vec![w], strength: 1.0 }
     }
 
+    /// skatertimer `turn` (820B4418): the turn-in-place clip runs forward
+    /// while the last turn matches `dir` (swapped when flipped), back
+    /// otherwise, and stops at 0.
+    #[test]
+    fn skatertimer_turn_follows_the_last_turn() {
+        let mut lib = ClipLib { data: Vec::new(), index: HashMap::new(), std_q: Vec::new(), cache: HashMap::new() };
+        let r = rig(1);
+        let mut types = Vec::new();
+        let g = |_: u32| None;
+        let mut b = Build {
+            globals: &g,
+            lib: &mut lib,
+            rig: &r,
+            types: &mut types,
+            crouched0: false,
+            flipped0: false,
+            rotated0: false,
+            vert0: false,
+            speed0: 0.0,
+            board_rotated0: false,
+            tags: Tags::default(),
+        };
+        let k = qb_key;
+        let items = vec![
+            (k("timertype"), Value::Checksum(k("turn"))),
+            (k("dir"), Value::Checksum(k("left"))),
+            (k("length"), Value::Float(1.0)),
+            (k("cycle"), Value::Int(1)),
+        ];
+        let mut t = b.skater_timer(&items, &Params(Vec::new()));
+        let step = |t: &mut SkaterTimer, i: &SkaterInputs| {
+            let mut dt = 0.1;
+            t.update(&mut dt, i);
+        };
+        let left = SkaterInputs { last_turn: k("Left"), ..Default::default() };
+        for _ in 0..3 {
+            step(&mut t, &left);
+        }
+        assert!((t.time - 0.3).abs() < 1e-5, "{}", t.time);
+        step(&mut t, &SkaterInputs::default());
+        assert!((t.time - 0.2).abs() < 1e-5, "{}", t.time);
+        // Flipped: "left" means the Right turn.
+        let right_flipped = SkaterInputs { last_turn: k("Right"), flipped: true, ..Default::default() };
+        step(&mut t, &right_flipped);
+        assert!((t.time - 0.3).abs() < 1e-5, "{}", t.time);
+        for _ in 0..5 {
+            step(&mut t, &SkaterInputs::default());
+        }
+        assert_eq!(t.time, 0.0);
+    }
+
+    /// skatermodulate `spin` (820B2C20): the apex foot poses of
+    /// OllieApex_AnimBranch weigh by the spin's distance from their angle.
+    #[test]
+    fn skatermodulate_spin_weighs_by_angle() {
+        let mut lib = ClipLib { data: Vec::new(), index: HashMap::new(), std_q: Vec::new(), cache: HashMap::new() };
+        let r = rig(1);
+        let mut types = Vec::new();
+        let g = |_: u32| None;
+        let mut b = Build {
+            globals: &g,
+            lib: &mut lib,
+            rig: &r,
+            types: &mut types,
+            crouched0: false,
+            flipped0: false,
+            rotated0: false,
+            vert0: false,
+            speed0: 0.0,
+            board_rotated0: false,
+            tags: Tags::default(),
+        };
+        let k = qb_key;
+        let weight = |b: &mut Build, angle: i32, spin: f32| {
+            let items = vec![
+                (k("timertype"), Value::Checksum(k("spin"))),
+                (k("angle"), Value::Int(angle)),
+                (k("range"), Value::Int(90)),
+            ];
+            let mut m = b.skater_modulate(&items, &Params(Vec::new()));
+            m.update(1.0 / 60.0, &SkaterInputs { spin, ..Default::default() });
+            m.x
+        };
+        let w: Vec<f32> = [0, 90, 180, 270].iter().map(|&a| weight(&mut b, a, 45.0)).collect();
+        assert_eq!(w, vec![0.5, 0.5, 0.0, 0.0]);
+        // -90 is the 270 pose; 540 wraps to 180.
+        assert_eq!(weight(&mut b, 270, -90.0), 1.0);
+        assert_eq!(weight(&mut b, 180, 540.0), 1.0);
+    }
+
     /// `takeoffblend` / `ollielandblend` with `id` + `sync` (820B5950,
     /// 820A8050): sync 0 zeroes the tag, sync 1 starts `t` from it, and the
     /// update keeps it (a flip trick rebuilding the ollie branch mid-air
@@ -3590,6 +3750,7 @@ mod tests {
             angle: 0.0,
             half_turn,
             snap: true,
+            dir: 0,
         }
     }
 
@@ -3657,6 +3818,7 @@ mod tests {
             angle: 0.0,
             half_turn: false,
             snap: true,
+            dir: 0,
         };
         let (mut tin, mut tout) = (timer("play", "grabtrickintimer"), timer("grabout", "GrabtrickTimer"));
         let mut i = SkaterInputs { grab: false, ..Default::default() };

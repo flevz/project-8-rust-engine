@@ -695,6 +695,11 @@ impl CorePhysics {
             on_vert_ground: self.vert.on_vert_ground,
             velocity: self.body.velocity.to_array(),
             turn: self.turn_amount,
+            last_turn: match self.last_turn {
+                Some(Turn::Left) => p8_formats::qb_key("Left"),
+                Some(Turn::Right) => p8_formats::qb_key("Right"),
+                None => 0,
+            },
             brake_input,
             brake_amount: self.brake_amount,
             kick: self.kick_flag && !brake_input,
@@ -1118,6 +1123,13 @@ impl CorePhysics {
         self.set_no_acid_drop(false);
         self.transfer.retry = false;
         self.kick_flag = false;
+        // 820F6B3C: not flipping on the ground (+1542).
+        self.flipping = false;
+        // 820F6BF8 / 820F6C68: the lean (+1912) back to 0 (and the model's
+        // display rotation reset, 820DEB20, which is not drawn yet).
+        if self.lean_degrees != 0.0 {
+            self.lean_degrees = 0.0;
+        }
         let speed = self.speed();
         if speed - self.last_speed >= s.physics_float("Physics_kick_accel_threshold", self.on_bike) {
             self.kick_flag = true;
@@ -1147,8 +1159,13 @@ impl CorePhysics {
                 g.y -= s.physics_float("additional_downhill_gravity", false);
             }
         } else {
-            // With a manual active retail uses min_uphill_manual_speed.
-            let threshold = s.physics_float("min_uphill_kick_speed", false);
+            // 820F6F8C..820F6FF8: with a balance trick running (+2844 +28)
+            // of type 0, Manual, NoseManual or Flatland,
+            // min_uphill_manual_speed; else min_uphill_kick_speed.
+            let k = p8_formats::qb_key;
+            let manual = self.balance.doing
+                && [0, k("Manual"), k("NoseManual"), k("Flatland")].contains(&self.balance.kind);
+            let threshold = s.physics_float(if manual { "min_uphill_manual_speed" } else { "min_uphill_kick_speed" }, false);
             if !self.powerslide && self.crouched && self.body.at().y > 0.0 && self.speed() < threshold {
                 g.y = 0.0;
                 gravity_cancelled = true;
@@ -1624,9 +1641,11 @@ mod tests {
         p.body.position.y = 50.0;
         let input = InputState { l1: true, ..Default::default() };
         p.step(&s, &input, &crate::world::FlatFloor::default());
-        // L1 = spin input -1 -> positive angle ("Left").
+        // L1 = spin input -1 -> positive angle: +2217 set (820E9DF8); +1940
+        // stays clear in the air (820F24A4, and 820E9620 does not write it).
         assert!((heading(&p) - 7.3 / 60.0).abs() < 1e-4);
-        assert_eq!(p.last_turn, Some(Turn::Left));
+        assert!(p.last_spin_positive);
+        assert_eq!(p.last_turn, None);
     }
 
     #[test]

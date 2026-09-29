@@ -178,12 +178,14 @@ impl CorePhysics {
         } else if buttons && !self.no_spin {
             spin = -(stat(self, "Physics_Air_Rotation_stat") * spin_in);
         }
-        // 820E9AB8: the vert auto-turn replaces the spin. While the skater's
-        // at row is more than `skater_autoturn_vert_angle` from straight up
-        // it turns toward the stored facing at `skater_autoturn_speed`, and
-        // stops (clearing `+120`) once the rest of the turn fits in one
-        // frame; within that angle of up it stops at once.
-        if self.vert.in_vert_air && self.vert.auto_turn && !self.no_spin {
+        // 820E9AB8: the vert auto-turn, only on frames with no spin input
+        // (the spin rate is 0; any spin skips it, 820E9AC0 -> 820E9BBC).
+        // While the skater's at row is more than `skater_autoturn_vert_angle`
+        // from straight up it turns toward the stored facing at
+        // `skater_autoturn_speed`, and stops (clearing `+120`) once the rest
+        // of the turn fits in one frame; within that angle of up it stops at
+        // once.
+        if spin == 0.0 && self.vert.in_vert_air && self.vert.auto_turn && !self.no_spin {
             let at = self.body.at();
             let from_up = at.y.clamp(-1.0, 1.0).acos();
             // 0.017453292 is the degrees to radians constant at 82000C10.
@@ -201,7 +203,8 @@ impl CorePhysics {
         }
         if spin != 0.0 {
             let angle = self.dt * spin;
-            self.last_turn = Some(if angle > 0.0 { crate::core_physics::Turn::Left } else { crate::core_physics::Turn::Right });
+            // No +1940 here: 820E9620 does not write it and the air update
+            // clears it every frame (820F24A4).
             // 820E9DD4..820E9DF8: +2217, the spin (or vert auto-turn) sign.
             self.last_spin_positive = angle > 0.0;
             self.rotate(angle);
@@ -644,9 +647,18 @@ impl CorePhysics {
             // least `Physics_Acid_Drop_Min_Land_Speed`.
             let aimed = project_keep_length(self.transfer.target_at * v.length(), n);
             self.body.velocity = aimed;
-            self.velocity_along_board();
-            if aimed.y > 0.0 {
-                self.body.velocity = v - n * v.dot(n);
+            // 820F3C74..820F3C98: 820DB318 turns a stack copy along the
+            // board (it reads and writes only through its pointer); the copy
+            // is only tested, the velocity stays aimed.
+            let speed = aimed.length();
+            let copy = if speed <= 1e-6 {
+                aimed
+            } else {
+                let at = self.body.at();
+                at * speed * if (aimed / speed).dot(at) < 0.0 { -1.0 } else { 1.0 }
+            };
+            if copy.y > 0.0 {
+                self.body.velocity = v - n * v.dot(n); // 820F3CBC (821ED798)
             }
             let min = s.global_float("Physics_Acid_Drop_Min_Land_Speed");
             if self.body.velocity.length_squared() < min * min {
