@@ -24,7 +24,16 @@ below (changed crates only) wins.
   changing anything.
 - No game content in this public repo (the approved README screenshots are
   the only exception).
-- Plain English, few questions, `.bat` files for anything the user runs.
+- Plain English, few questions, double-click launchers for anything the
+  user runs.
+- **Two platforms, always.** The user plays on Windows and macOS. Every
+  launcher exists twice: a `.bat` and a matching `.command` (executable,
+  `cd` to its own folder first) with the same behaviour. When you add or
+  change one, change the other in the same commit. Test checklists live in
+  one shared text file both launchers print, so they cannot drift. Code
+  changes must build on both (no platform-only APIs without a `cfg` for the
+  other); the cloud can only check Linux, so review platform differences by
+  hand and say which platform the user should test on.
 - Save usage: read only the parts of files you need; test only the crates
   you changed (never `cargo test --workspace`).
 - One task per session. At the end: run the tests, commit and push, and
