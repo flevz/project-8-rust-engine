@@ -2,6 +2,9 @@
 //! Push on a flat floor, start a manual (Up then Down), keep its balance,
 //! then press Left, Right, Square (the spacewalk trick). Prints the speed,
 //! the script, the trick and the animation events launched.
+//! P8_POSE=1: hips / feet yaw per frame around the combo (a jump when the
+//! spacewalk branch starts is the NOTES 40 bug). P8_TREE=<from>,<to>: the
+//! anim tree each frame in that range.
 use glam::Vec3;
 use p8_formats::{qb_key, skeleton::Skeleton, zone};
 use p8_skater::anim_tree::{ClipLib, Rig};
@@ -27,7 +30,11 @@ fn main() {
     let lib = ClipLib::open(&root.join("PAK/perm_anims.pak.xen"), &root.join("../ANIMS/standardkeyQ.bin.xen")).expect("clips");
     let mut k = Skater::new(&s, Vec3::from(r.pos), Vec3::from(r.angles));
     let g = |c: u32| s.globals.get(&c).cloned();
-    k.anim.attach(lib, Rig::from_skeleton(&sk), &g);
+    let rig = Rig::from_skeleton(&sk);
+    let (thl, thr) = (rig.bone(qb_key("bone_thigh_l")).unwrap(), rig.bone(qb_key("bone_thigh_r")).unwrap());
+    let (al, ar) = (rig.bone(qb_key("bone_ankle_l")).unwrap(), rig.bone(qb_key("bone_ankle_r")).unwrap());
+    let pose = std::env::var_os("P8_POSE").is_some();
+    k.anim.attach(lib, rig.clone(), &g);
     k.anim.board_rig = Some(Rig::from_skeleton(&bsk));
     let mut last_script = 0;
     let mut boosts = 0;
@@ -58,6 +65,36 @@ fn main() {
         boosts += launched;
         events.extend(k.launch_anim_events(&s, Some(&world)));
         let sc = k.script_name().unwrap_or(0);
+        // P8_POSE=1: hips (thigh to thigh) and feet (ankle to ankle) yaw in
+        // the model (0 = across the board as in a normal stance).
+        if pose && (185..300).contains(&f)
+            && let Some(p) = k.anim.sample(inputs)
+        {
+            let m = p8_formats::ik::model_space(
+                &p.q.iter().zip(&p.t).map(|(q, t)| p8_formats::ik::Local { rotation: [-q[0], -q[1], -q[2], q[3]], translation: *t }).collect::<Vec<_>>(),
+                &rig.parents,
+            );
+            let yaw = |a: usize, b: usize| {
+                let d = Vec3::from(m[a].translation) - Vec3::from(m[b].translation);
+                d.x.atan2(d.z).to_degrees()
+            };
+            println!(
+                "  f{f} hips {:7.1} feet {:7.1} branches {:?}",
+                yaw(thl, thr),
+                yaw(al, ar),
+                k.anim.branches.iter().map(|b| name(*b)).collect::<Vec<_>>()
+            );
+        }
+        // P8_TREE=<from>,<to>: the anim tree each frame in that range.
+        if let Some((a, b)) = std::env::var("P8_TREE").ok().and_then(|v| v.split_once(',').map(|(a, b)| (a.parse::<i32>().unwrap_or(0), b.parse::<i32>().unwrap_or(0))))
+            && (a..=b).contains(&f)
+        {
+            let mut t = String::new();
+            if let Some(b) = &k.anim.body {
+                b.describe(0, &mut t);
+            }
+            println!("---- f{f}\n{t}");
+        }
         if launched > 0 || (sc != last_script && f >= 180) || f % 60 == 0 {
             println!(
                 "f{f} t={t:.2} speed={:.2} balance_kind={:08x} script {} {}",

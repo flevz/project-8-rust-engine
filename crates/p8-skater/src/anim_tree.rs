@@ -765,6 +765,11 @@ pub struct Modulate {
     /// `+44`
     from_start: bool,
     func: BlendFn,
+    /// `+16`: the node's `id` (0 when it has none; retail "unnamed").
+    id: u32,
+    /// The skater object's tags (`+12`), where a named node keeps its
+    /// strength.
+    tags: Tags,
 }
 
 impl Modulate {
@@ -780,6 +785,11 @@ impl Modulate {
         }
         let raw = self.func.eval(self.t);
         self.strength = if self.from_start { self.start + (1.0 - self.start) * raw } else { self.start * raw };
+        // 82381A8C: the strength as the tag named by the id, so a branch
+        // built later with `sync` starts from it (82381C18).
+        if self.id != 0 && self.id != qb_key("unnamed") {
+            self.tags.set(self.id, self.strength);
+        }
     }
 }
 
@@ -2131,8 +2141,42 @@ impl Build<'_> {
     }
 
     fn modulate(&mut self, items: &[(u32, Value)], scope: &Params) -> Modulate {
-        let strength = self.float(items, "strength", scope).unwrap_or(1.0);
-        let mut m = Modulate { strength, start: 1.0, t: 0.0, duration: 1.0, done: true, from_start: true, func: BlendFn::Linear };
+        let mut strength = self.float(items, "strength", scope).unwrap_or(1.0);
+        let id = self.checksum(items, "id", scope).unwrap_or(0);
+        // 82381C9C..82381CF8: with both `id` and `sync` params: sync 0 sets
+        // the tag named by the id to 1; otherwise the strength starts from
+        // that tag (822458F8), which the node of the same id in the branch
+        // being replaced kept writing. So a manual entry (`Skater_PlayManualAnim
+        // sync = 1`, then `Skater_PlayManualTransitionAnim`) fades the manual
+        // layers in from where the exit left them instead of snapping them
+        // back to 1 (the spacewalk's hips).
+        if id != 0 {
+            // 820A2870 reads an int: a `sync` that names a parameter the
+            // branch was not given reads as absent (INFERRED).
+            let sync = lookup(items, qb_key("sync")).and_then(|v| match self.resolve(v, scope) {
+                Value::Int(n) => Some(n != 0),
+                Value::Float(f) => Some(f != 0.0),
+                _ => None,
+            });
+            if let Some(on) = sync {
+                if on {
+                    strength = self.tags.get(id);
+                } else {
+                    self.tags.set(id, 1.0);
+                }
+            }
+        }
+        let mut m = Modulate {
+            strength,
+            start: 1.0,
+            t: 0.0,
+            duration: 1.0,
+            done: true,
+            from_start: true,
+            func: BlendFn::Linear,
+            id,
+            tags: self.tags.clone(),
+        };
         // 82381AC8 with `blendfunction`, `blendtime`, `anim`, `blendcurve`.
         if let Some(f) = self.checksum(items, "blendfunction", scope) {
             let anim = self.checksum(items, "anim", scope).unwrap_or(0);
@@ -3296,6 +3340,57 @@ mod tests {
 
     fn pose(q: [f32; 4], t: [f32; 3], w: f32) -> Pose {
         Pose { q: vec![q], t: vec![t], w: vec![w], strength: 1.0 }
+    }
+
+    /// A named `modulate` built with `sync` starts from the strength the
+    /// node of the same id left in the object's tag (82381C18), and writes
+    /// its strength there while blending (823819D8); `sync = 0` sets the tag
+    /// to 1. The manual branch's `manualbalancemod` relies on it when a
+    /// manual entry follows an exit (the spacewalk).
+    #[test]
+    fn modulate_sync_carries_the_strength_between_branches() {
+        let mut lib = ClipLib { data: Vec::new(), index: HashMap::new(), std_q: Vec::new(), cache: HashMap::new() };
+        let r = rig(1);
+        let mut types = Vec::new();
+        let tags = Tags::default();
+        let g = |_: u32| None;
+        let mut b = Build {
+            globals: &g,
+            lib: &mut lib,
+            rig: &r,
+            types: &mut types,
+            crouched0: false,
+            flipped0: false,
+            rotated0: false,
+            vert0: false,
+            speed0: 0.0,
+            board_rotated0: false,
+            tags: tags.clone(),
+        };
+        let k = qb_key;
+        let items = vec![
+            (k("strength"), Value::Float(1.0)),
+            (k("id"), Value::Checksum(k("manualbalancemod"))),
+            (k("sync"), Value::Checksum(k("sync"))),
+        ];
+        let scope = |n: i32| Params(vec![(k("sync"), Value::Int(n))]);
+        // The exit fades the old node out: [0, 1] curve, strength 1 -> 0.
+        let mut old = b.modulate(&items, &scope(0));
+        assert_eq!(tags.get(k("manualbalancemod")), 1.0);
+        let curve = Value::Array(vec![Value::Float(0.0), Value::Float(1.0)]);
+        old.func = BlendFn::new(k("curve"), Some(&curve));
+        (old.start, old.done, old.t, old.duration, old.from_start) = (old.strength, false, 0.0, 0.5, false);
+        for _ in 0..40 {
+            old.update(1.0 / 60.0);
+        }
+        let left = old.strength;
+        assert!((tags.get(k("manualbalancemod")) - left).abs() < 1e-6);
+        // The entry's branch (sync = 1) starts where the exit left it.
+        let new = b.modulate(&items, &scope(1));
+        assert!((new.strength - left).abs() < 1e-6, "{} vs {left}", new.strength);
+        // Without the `sync` param given, it keeps its own strength.
+        let own = b.modulate(&items, &Params(Vec::new()));
+        assert_eq!(own.strength, 1.0);
     }
 
     fn same_rotation(a: [f32; 4], b: [f32; 4]) -> bool {

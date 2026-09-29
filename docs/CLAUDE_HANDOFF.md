@@ -607,6 +607,16 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Spacewalk hips (NOTES 40): the hips and feet swung about 90 degrees out
+  and back as the spacewalk started. Cause: `modulate` init (`82381C18`)
+  with `id` + `sync`: sync 0 sets the tag named by the id to 1, otherwise
+  the strength starts from that tag; the update (`823819D8`, `82381AAC`)
+  writes the strength to it while blending. We ignored both, so the new
+  Manual_AnimBranch's `manualbalancemod` / `manuallandmod` /
+  `manualslopemod` started at 1 where the exit (`Manual_out_1`) had faded
+  them to 0. Fixed in `Build::modulate` / `Modulate::update`, unit test,
+  `spacewalk_check` `P8_POSE=1`. Every manual transition entry is affected
+  (pivot checked: same steps). Not confirmed in the game yet.
 - Skater camera (NOTES 39): retail `820D1238` translated for ground, air and
   vert air in `p8-skater/src/camera.rs` (`SkaterCamera`), modes from
   `Skater_Camera_Array` (mode 2, Standard_Medium, `820CFB30`), follow frame,
