@@ -2226,6 +2226,26 @@ impl Build<'_> {
                 },
             snap: true,
         };
+        // 3E04..3E5C: with both `id` and `sync` params: sync 0 sets the tag
+        // named by the id to 0; otherwise the timer starts where the timer
+        // that last wrote that tag was (time = end * tag), so a branch
+        // replaced mid-clip (the revert's `flip`, then
+        // `Skater_PlayOnGroundAnim sync = 1`) carries on instead of
+        // restarting.
+        if lookup(items, k("id")).is_some() {
+            if let Some(v) = lookup(items, k("sync")) {
+                let on = match self.resolve(v, scope) {
+                    Value::Int(n) => n != 0,
+                    Value::Float(f) => f != 0.0,
+                    _ => true,
+                };
+                if on {
+                    t.time = t.end * t.tags.get(t.id);
+                } else {
+                    t.tags.set(t.id, 0.0);
+                }
+            }
+        }
         // 3ECC: a crouch timer built while crouched starts at its end
         // unless `dont_skip`.
         if timertype == k("crouch") && t.crouched && lookup(items, k("dont_skip")).is_none() {

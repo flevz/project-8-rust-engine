@@ -601,6 +601,10 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Revert animation (NOTES 37): `skatertimer` init (`820B3E04`) with `id` and
+  `sync` starts at end * the tag (sync 0 clears it); we ignored it, so the
+  ground animation after the revert's `flip` restarted at 0. Fixed in
+  `Build::skater_timer`. Example `revert_check` (`P8_TIMERS=1`, `P8_CLIP=`).
 - Spine transfer bail (NOTES 36): every spine transfer landing bailed because
   the display matrix (`+32`, read by `PitchGreaterThan` etc.) stayed on the
   take-off wall: retail's air update (`820F3018`) eases the normal (and `+32`)
