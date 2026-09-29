@@ -202,6 +202,8 @@ impl CorePhysics {
         if spin != 0.0 {
             let angle = self.dt * spin;
             self.last_turn = Some(if angle > 0.0 { crate::core_physics::Turn::Left } else { crate::core_physics::Turn::Right });
+            // 820E9DD4..820E9DF8: +2217, the spin (or vert auto-turn) sign.
+            self.last_spin_positive = angle > 0.0;
             self.rotate(angle);
             self.spin_degrees += angle * 57.29578;
         }

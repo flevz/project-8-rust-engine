@@ -133,8 +133,19 @@ pub struct CorePhysics {
     pub lock_velocity_direction: bool,
     /// `+1944`: turn amount for animation (-1..1, scaled when sharp).
     pub turn_amount: f32,
-    /// `+1940` and `+2217`.
+    /// `+1940`: the last ground turn ("Left" / "Right"), cleared each update.
     pub last_turn: Option<Turn>,
+    /// `+2217`: the last rotation (air spin `820E9DF8`, ground turn
+    /// `820ED548`) went the positive way ("Left"). Kept until the next
+    /// rotation; read by `LastSpinWas` (`820D5908`), which picks the revert's
+    /// direction. Also written by the bike turn (`820E7A20`) and the grind
+    /// update (`820DBD40`), not translated.
+    pub last_spin_positive: bool,
+    /// Object `+44`: the object's flag bits (`Obj_SetFlag` / `Obj_ClearFlag`
+    /// / `Obj_FlagSet`, `821C8510`); bit n is the flag global whose value is
+    /// n (e.g. `FLAG_SKATER_REVERTFS` = 1). Kept on the physics for now
+    /// (the object is not modelled separately).
+    pub object_flags: u32,
     /// `+298`: terrain index under the board (from the last ground or
     /// landing hit; entry of the scripts' `terrain_types`).
     pub terrain: u8,
@@ -398,6 +409,8 @@ impl CorePhysics {
             lock_velocity_direction: false,
             turn_amount: 0.0,
             last_turn: None,
+            last_spin_positive: false,
+            object_flags: 0,
             terrain: 0,
             crouched: false,
             crouch_changed_ms: 0,
@@ -1010,6 +1023,7 @@ impl CorePhysics {
         }
         let angle = self.dt * rate;
         self.last_turn = Some(if angle > 0.0 { Turn::Left } else { Turn::Right });
+        self.last_spin_positive = angle > 0.0; // 820ED548
         if !self.lock_velocity_direction {
             // Rotation about world Y. The -1 at 827329F0 is filled at run time
             // (LIKELY -1: required for this to be a rotation).

@@ -607,6 +607,19 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Revert direction (NOTES 43): script `revert` (vert landings faster than
+  6.35 m/s, `Land2` opens the `Reverts` window until it ends) picks FS/BS
+  from the object flags `FLAG_SKATER_REVERTFS/BS` (lip inverts, some flip
+  tricks) then `LastSpinWas frontside`. Both were untranslated (answer
+  false), so it always did a FS revert: the direction depended only on the
+  stance. Now: `LastSpinWas` (`820D5908`, core `+2217` =
+  `CorePhysics::last_spin_positive`, written by the air spin `820E9DF8` and
+  the ground turn `820ED548`) and `Obj_SetFlag/ClearFlag/FlagSet/FlagNotSet`
+  (object `+44` bits, `821C8510`; command-to-case mapping LIKELY). Example
+  `revert_check` `P8_PUSH=6 P8_TAP=3 P8_SPIN=180 [P8_R1=1]`. Open: R2 when
+  slower or later is the cess turn `ToggleSwitchRegular`, whose direction
+  uses `LeftPressed`/`RightPressed` (Input component, not found yet:
+  member table filled at start-up), so it is always frontside.
 - Choppy animation (NOTES 42): `skater_model::animate` sampled the whole
   tree (body and board) every drawn frame from the tick's state, with no
   blending, so at ~58 fps the pose jumped two ticks every ~35 frames

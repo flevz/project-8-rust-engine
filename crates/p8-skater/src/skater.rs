@@ -495,6 +495,51 @@ impl Ctx<'_> {
             p.set_no_acid_drop(true); // 8211F9A8: SkaterState +200
             return Some(true);
         }
+        // Object flags (`821C8510`: set `+44 |= 1 << n`, clear `&= !(1 << n)`,
+        // test `+44 & (1 << n)`). The flag is its global's int, given as the
+        // int or as the global's name. Which of 821C8510's cases each command
+        // reaches was not read (their member table is filled at start-up):
+        // the names make it LIKELY.
+        let flag_cmd = [k("Obj_SetFlag"), k("Obj_ClearFlag"), k("Obj_FlagSet"), k("Obj_FlagNotSet")];
+        if flag_cmd.contains(&n) {
+            let bit = params.unnamed_int().or_else(|| {
+                params.unnamed_checksum().and_then(|c| match self.s.globals.get(&c) {
+                    Some(Value::Int(i)) => Some(*i),
+                    _ => None,
+                })
+            });
+            let Some(bit) = bit.filter(|b| (0..32).contains(b)) else { return Some(false) };
+            let m = 1u32 << bit;
+            return Some(match n {
+                x if x == k("Obj_SetFlag") => {
+                    p.object_flags |= m;
+                    true
+                }
+                x if x == k("Obj_ClearFlag") => {
+                    p.object_flags &= !m;
+                    true
+                }
+                x if x == k("Obj_FlagSet") => p.object_flags & m != 0,
+                _ => p.object_flags & m == 0,
+            });
+        }
+        if n == k("LastSpinWas") {
+            // 820D5908: +2217 (the last rotation was positive) read against
+            // the stance (SkaterState +40): `Frontside` is positive when
+            // flipped, negative when not; `Backside` the other way; neither
+            // param: true. Script `revert` (GroundTricks) does a FS revert
+            // when `lastspinwas frontside` is false, else a BS revert.
+            // 820D593C / 820D5948 `Backside` param, 820D5960 stance;
+            // 820D5984 / 820D5990 `Frontside`, 820D59A8 stance; neither: 1.
+            let (b, f) = (p.last_spin_positive, p.flipped);
+            if params.flag(k("Backside")) {
+                return Some(if f { !b } else { b });
+            }
+            if params.flag(k("Frontside")) {
+                return Some(if f { b } else { !b });
+            }
+            return Some(true);
+        }
         if n == k("WasLastLandingVert") {
             return Some(p.vert.last_landing_vert); // 820D5BD8: +2136
         }

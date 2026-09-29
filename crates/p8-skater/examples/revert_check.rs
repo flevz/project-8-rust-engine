@@ -4,6 +4,13 @@
 //! board yaw relative to the skater's facing (a jump is a visible snap).
 //! P8_L2=1 taps L2 instead; P8_SPIN=<deg> spins with L1 in the air first;
 //! P8_FRAMES=<from>,<to> prints only that many frames after the tap.
+//! P8_PUSH=<seconds> pushes that long (default 3; the `revert` script needs a
+//! landing faster than 6.35 m/s, `Land2`, else R2 is the cess turn
+//! `ToggleSwitchRegular`). P8_TAP=<frames> taps that many frames after
+//! landing (default 10; the revert window closes when `Land2` ends,
+//! `kill_extra_tricks`). P8_R1=1 spins with R1 (the other way) instead of L1. The last line sums
+//! the feet's turn over the revert (its sign is the revert's direction) with
+//! `LastSpinWas`'s input (+2217) and the stance.
 use glam::Vec3;
 use p8_formats::{ik, qb_key, skeleton::Skeleton, zone};
 use p8_skater::anim_tree::{ClipLib, Rig};
@@ -61,6 +68,10 @@ fn main() {
     let (from, to): (i32, i32) = std::env::var("P8_FRAMES").ok().and_then(|v| v.split_once(',').map(|(a, b)| (a.parse().unwrap_or(0), b.parse().unwrap_or(90)))).unwrap_or((-5, 90));
     let (mut air_seen, mut landed_at, mut last_script, mut last_branches) = (false, None::<i32>, 0, Vec::new());
     let mut prev: Option<(f32, f32)> = None;
+    let r1 = std::env::var_os("P8_R1").is_some();
+    let tap_at: i32 = std::env::var("P8_TAP").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+    let push: f32 = std::env::var("P8_PUSH").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
+    let (mut feet_turn, mut spin_sign) = (0.0f32, None::<bool>);
     for i in 0..60 * 14 {
         let t = i as f32 / 60.0;
         let in_air = k.physics.state == p8_skater::core_physics::State::Air;
@@ -68,13 +79,16 @@ fn main() {
         if air_seen && !in_air && landed_at.is_none() {
             landed_at = Some(i);
         }
-        let tap = landed_at.map_or(false, |a| (a + 10..a + 13).contains(&i));
-        let mut input = if t < 3.0 {
+        let tap = landed_at.is_some_and(|a| (a + tap_at..a + tap_at + 3).contains(&i));
+        if tap && spin_sign.is_none() {
+            spin_sign = Some(k.physics.last_spin_positive);
+        }
+        let mut input = if t < push {
             InputState { up: true, ..Default::default() }
-        } else if t < 3.5 {
+        } else if t < push + 0.5 {
             InputState { crouch: true, ..Default::default() }
         } else if in_air && k.physics.spin_degrees.abs() < spin_to {
-            InputState { l1: true, ..Default::default() }
+            InputState { l1: !r1, r1, ..Default::default() }
         } else {
             InputState::default()
         };
@@ -84,7 +98,7 @@ fn main() {
         let inputs = k.physics.anim_inputs_in(&s, Some(&world));
         k.anim.update(1.0 / 60.0, inputs);
         let Some(p) = k.anim.sample(inputs) else { continue };
-        let rel = landed_at.map_or(i32::MIN, |a| i - (a + 10));
+        let rel = landed_at.map_or(i32::MIN, |a| i - (a + tap_at));
         let m = ik::model_space(
             &p.q.iter().zip(&p.t).map(|(q, t)| ik::Local { rotation: [-q[0], -q[1], -q[2], q[3]], translation: *t }).collect::<Vec<_>>(),
             &rig.parents,
@@ -109,6 +123,9 @@ fn main() {
         let changed = sc != last_script || k.anim.branches != last_branches || !events.is_empty();
         if rel != i32::MIN && rel >= from && rel <= to {
             let (df, db) = prev.map_or((0.0, 0.0), |(f, b)| (((feet - f + 540.0) % 360.0) - 180.0, ((board - b + 540.0) % 360.0) - 180.0));
+            if (0..=60).contains(&rel) {
+                feet_turn += df;
+            }
             println!(
                 "f{rel:+4} spd={:5.2} feet {feet:7.1} ({df:+6.1}) board {board:7.1} ({db:+6.1}) body {body_yaw:7.1} vel {vel_yaw:7.1} flip={} rot={} {}{}{events:?}",
                 k.physics.body.velocity.length(),
@@ -134,4 +151,8 @@ fn main() {
             break;
         }
     }
+    println!(
+        "revert: feet turned {feet_turn:+.0} degrees over 60 frames; +2217 (last spin positive) at the tap = {:?}; flipped now {}",
+        spin_sign, k.physics.flipped
+    );
 }

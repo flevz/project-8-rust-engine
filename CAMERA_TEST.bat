@@ -16,6 +16,7 @@ echo  5. Standing still: the camera stays behind where the skater faces.
 echo  6. Wider view than before (81 degrees across).
 echo Spacewalk (manual, then Left, Right, Square): the hips stay lined up with the board as it starts, no swing out and back.
 echo Animation: smooth, without the small hitch about every half second.
+echo Revert after a vert spin: turns the way you were spinning.
 echo Not done yet: grinds, lip tricks, bails, wallrides, right-stick look-around, camera going through walls.
 "target\release\project8.exe"
 if errorlevel 1 pause

@@ -67,6 +67,12 @@ and tell the user the results in the final summary.
 - **Two copies of one state** (NOTES 36, 39): retail often keeps a
   component copy and an object copy (display matrix `+32` vs object matrix;
   camera `+64` vs camera object). Check which copy each read uses.
+- **Untranslated command answers false** (NOTES 43): the script VM returns
+  false for a command it does not know (`vm.rs`), so `if not <cmd>` silently
+  takes one branch every time (the revert always went frontside because
+  `LastSpinWas` was missing). When behaviour never varies, run with
+  `P8_TRACE=1` and check the skater's `untranslated` list for the commands
+  on that path.
 - **Flags taken as "clear"**: search the code for "taken as clear" and
   UNKNOWN when a symptom has no obvious cause.
 - **A script check fails for no clear reason**: suspect a name lookup gap
