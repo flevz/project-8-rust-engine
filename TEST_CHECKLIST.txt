@@ -1,0 +1,18 @@
+This test build: retail skater camera, spacewalk fix.
+Things to look for:
+ 1. Riding: camera about 2.5 m behind and a little above, following the direction you roll, not the board.
+ 2. Turning: the camera swings round smoothly and a little late.
+ 3. Ollie: the camera rises a bit while in the air and settles after landing.
+ 4. Vert air: the camera rises and looks down at the skater, then swings back behind after landing.
+ 5. Standing still: the camera stays behind where the skater faces.
+ 6. Wider view than before (81 degrees across).
+Spacewalk (manual, then Left, Right, Square): the hips stay lined up with the board as it starts, no swing out and back.
+Animation: smooth, without the small hitch about every half second.
+Revert after a vert spin: turns the way you were spinning.
+Overnight audit fixes to look at:
+ - Spin with L1/R1 right after taking off a vert ramp: it should spin at once.
+ - Spine transfer: you keep going the way you aimed, no snap to the board direction on landing.
+ - Manual uphill while crouched: you slow down as in the original.
+ - Stand still and turn: the turn-in-place animation plays.
+ - Top of an ollie: the feet pose follows how far you have spun.
+Not done yet: grinds, lip tricks, bails, wallrides, right-stick look-around, camera going through walls.

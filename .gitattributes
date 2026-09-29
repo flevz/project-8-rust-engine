@@ -1,0 +1,4 @@
+# Windows launchers keep their CRLF endings; macOS launchers must stay LF
+# (a CRLF .command fails with "bad interpreter"), even in a Windows checkout.
+*.bat -text
+*.command text eol=lf

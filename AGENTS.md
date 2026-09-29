@@ -11,4 +11,5 @@
   Bevy. `p8-game` wires them together.
 - Validate with `cargo test --workspace` and `cargo clippy --workspace`.
 - The user is not a programmer: give plain-English steps and double-clickable
-  `.bat` launchers for Windows.
+  launchers, a `.bat` for Windows and a matching `.command` for macOS
+  (see "Two platforms, always" in `CLAUDE.md`).

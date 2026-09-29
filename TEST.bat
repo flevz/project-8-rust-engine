@@ -3,9 +3,11 @@ setlocal
 cd /d "%~dp0"
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 where cargo >nul 2>nul || (echo Rust is not installed. Run INSTALL.bat for help. & pause & exit /b 1)
-echo Building Project 8 Rust Engine. The first build takes several minutes...
-cargo build --release -p p8-game -p p8-formats --bins
+echo Building the game for testing...
+cargo build --release -p p8-game --bins
 if errorlevel 1 (echo. & echo Build failed. Send the red text above to your helper. & pause & exit /b 1)
 echo.
-echo Done. Run SETUP.bat once with your installed game folder, then PLAY.bat.
-pause
+echo Starting.
+type TEST_CHECKLIST.txt
+"target\release\project8.exe"
+if errorlevel 1 pause

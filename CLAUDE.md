@@ -27,13 +27,21 @@ below (changed crates only) wins.
 - Plain English, few questions, double-click launchers for anything the
   user runs.
 - **Two platforms, always.** The user plays on Windows and macOS. Every
-  launcher exists twice: a `.bat` and a matching `.command` (executable,
-  `cd` to its own folder first) with the same behaviour. When you add or
-  change one, change the other in the same commit. Test checklists live in
-  one shared text file both launchers print, so they cannot drift. Code
-  changes must build on both (no platform-only APIs without a `cfg` for the
-  other); the cloud can only check Linux, so review platform differences by
-  hand and say which platform the user should test on.
+  launcher exists twice, a `.bat` (CRLF) and a matching `.command` (LF,
+  executable, `#!/bin/bash` that must work in macOS's bash 3.2, `cd
+  "$(dirname "$0")"` first, cargo from `~/.cargo/bin`, pauses on errors),
+  with the same behaviour and messages. The pairs today: `INSTALL`,
+  `BUILD`, `SETUP`, `PLAY`, `TEST` (was `CAMERA_TEST`) and `INSPECT`. When
+  you add or change one, change the other in the same commit; commit new
+  `.command` files with `git update-index --chmod=+x`; lint them with
+  `bash -n` and `shellcheck`. `.gitattributes` keeps the line endings.
+  The test checklist lives only in `TEST_CHECKLIST.txt`, which both `TEST`
+  launchers print: edit that file for each new test build, never the
+  launchers. Code changes must build on both (no platform-only APIs
+  without a `cfg` for the other); the cloud can only check Linux, so
+  review platform differences by hand and say which platform the user
+  should test on. Known difference: no controller rumble on macOS (gilrs
+  has no force feedback there; it fails silently).
 - Save usage: read only the parts of files you need; test only the crates
   you changed (never `cargo test --workspace`).
 - One task per session. At the end: run the tests, commit and push, and

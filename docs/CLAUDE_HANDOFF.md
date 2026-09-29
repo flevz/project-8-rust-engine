@@ -38,7 +38,8 @@ The user's standing rules (they are not a programmer):
   Do not invent features or behaviour.
 - When the user reports a discrepancy, first confirm you understand it and
   look for it in the data **before** changing code.
-- Plain English, few questions, double-clickable `.bat` files on Windows.
+- Plain English, few questions, double-clickable launchers: `.bat` on
+  Windows and a matching `.command` on macOS.
 - Never commit game content (assets, the `.xex`, generated recompiled code,
   extracted files) to the public repo. See `AGENTS.md`.
 
@@ -423,7 +424,17 @@ These appear in the code with their addresses, e.g. skin distance 0.0025
 Windows (user): `BUILD.bat` (release build of `p8-game` and `p8-formats`
 bins), `SETUP.bat` (drag the installed game folder; writes
 `scripts-location.txt` and `tuning.json`, both gitignored), `PLAY.bat`.
-`INSPECT.bat` runs `p8-inspect`.
+`INSPECT.bat` runs `p8-inspect`. `INSTALL.bat` checks for Rust and the C++
+build tools; `TEST.bat` (was `CAMERA_TEST.bat`) rebuilds, prints
+`TEST_CHECKLIST.txt` and plays.
+
+macOS (user, same steps): the `.command` twin of every launcher above
+(`INSTALL.command` checks the Xcode Command Line Tools and rustup). Game
+data on the Mac: `~/Project8Data/DATA`, copied from the PC or unpacked with
+the private repo's `backup/restore-mac.command`. No rumble on macOS (gilrs
+0.6.8 `is_ff_supported` is false there). Any launcher change goes into both
+files of the pair in one commit; checklist text only in
+`TEST_CHECKLIST.txt`.
 
 Linux (agent):
 
@@ -676,7 +687,7 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   uses it (placeholder chase camera removed), fov from `horiz_fov`
   (INFERRED horizontal). Not yet: grinds, wallrides, lip turn `820D0780`,
   bail/ragdoll camera, look-around, camera collision `820BBF58`. Example
-  `camera_check` (`P8_VERT=1`). User test: `CAMERA_TEST.bat`. Not confirmed
+  `camera_check` (`P8_VERT=1`). User test: `TEST.bat` / `TEST.command` (then named `CAMERA_TEST.bat`). Not confirmed
   in the game yet.
 - Manual pivot snap-back (NOTES 38): R2 in a manual (`Trick_Gturn` /
   `Trick_Gturn2`) turned the skater with the clip and then snapped back

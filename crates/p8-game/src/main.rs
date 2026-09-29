@@ -1,6 +1,6 @@
 //! Project 8 Rust Engine.
 //!
-//! If `SETUP.bat` has recorded where the player's `qb.pak.xen` is, the game
+//! If `SETUP.bat` / `SETUP.command` has recorded where the player's `qb.pak.xen` is, the game
 //! runs the translated skater (`p8-skater`, see `translated.rs`) with the
 //! original scripts. Otherwise it falls back to the earlier `p8-sim`
 //! prototype in an original test park.
@@ -21,13 +21,16 @@ const TICK_HZ: f64 = 60.0;
 /// Written by `p8-setup`: the path of the player's `qb.pak.xen`.
 const SCRIPTS_LOCATION: &str = "scripts-location.txt";
 
+/// The setup launcher's name on this platform (named in the on-screen hint).
+const SETUP_LAUNCHER: &str = if cfg!(target_os = "macos") { "SETUP.command" } else { "SETUP.bat" };
+
 /// The level the translated skater rides (the cul-de-sac zone).
 const ZONE: &str = "z_houses";
 
 /// The player's scripts, or why they could not be loaded.
 fn load_scripts() -> Result<(p8_skater::Scripts, String, std::path::PathBuf), String> {
     let path = std::fs::read_to_string(SCRIPTS_LOCATION)
-        .map_err(|_| "run SETUP.bat to use the original Project 8 physics".to_string())?;
+        .map_err(|_| format!("run {SETUP_LAUNCHER} to use the original Project 8 physics"))?;
     let path = std::path::PathBuf::from(path.trim());
     let (files, globals) = p8_formats::qb::load_pak_globals(&path)?;
     let note = format!("{files} scripts from {}", path.display());
