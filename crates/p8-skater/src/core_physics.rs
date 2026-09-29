@@ -324,6 +324,13 @@ pub struct Vert {
     pub eased_normal: Vec3,
     pub ease_from: Vec3,
     pub ease_left: f32,
+    /// SkaterState `+120`: the vert auto-turn is running (set by the vert
+    /// takeoff; cleared by `NoSpin`, a transfer, the auto-turn finishing,
+    /// or a held spin input).
+    pub auto_turn: bool,
+    /// `+1296`: the facing the auto-turn turns to (the at row at takeoff
+    /// with y negated).
+    pub auto_turn_dir: Vec3,
 }
 
 /// Retail `8262BE78`, cosine (its neighbour `8262BDA0` is sine: CONFIRMED by
@@ -1285,6 +1292,9 @@ mod tests {
             f("physics_ground_snap_down", 0.2),
             f("skater_first_forward_collision_height", 0.2),
             f("skater_first_forward_collision_length", 0.25),
+            f("skater_autoturn_vert_angle", 5.0),
+            f("skater_autoturn_speed", 3.0),
+            f("skater_autoturn_cancel_time", 300.0),
             f("ground_stick_angle", 30.0),
             f("ground_stick_angle_forward", 30.0),
         ]);

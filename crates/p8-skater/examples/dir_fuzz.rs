@@ -24,6 +24,9 @@ fn main() {
     let brig = Rig::from_skeleton(&bsk);
     let flip_speed = s.global_float("Skater_Flip_Speed");
     println!("Skater_Flip_Speed = {flip_speed}");
+    for n in ["skater_autoturn_vert_angle", "skater_autoturn_speed", "skater_autoturn_cancel_time"] {
+        println!("{n} = {}", s.physics_float(n, false));
+    }
     let mut bails = 0;
     for seed in 0..seeds {
         let lib = ClipLib::open(&root.join("PAK/perm_anims.pak.xen"), &root.join("../ANIMS/standardkeyQ.bin.xen")).expect("clips");

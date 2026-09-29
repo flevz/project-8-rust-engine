@@ -320,6 +320,9 @@ impl Ctx<'_> {
             // 820D5468 sets +2128 (and clears SkaterState +120) / 820D54C8
             // clears it; spinning needs +2128 clear (820E993C).
             p.no_spin = n == k("NoSpin");
+            if p.no_spin {
+                p.vert.auto_turn = false; // 820D5468 clears +120
+            }
             return Some(true);
         }
         if n == k("InBail") {

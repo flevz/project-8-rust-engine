@@ -120,8 +120,12 @@ impl CorePhysics {
         let n = flat.normalize();
         self.body.velocity = project_keep_length(self.body.velocity, n);
         self.orient_to_ground(n);
-        // Retail also stores the at row with y negated at `+1296` and sets
-        // SkaterState `+120`, both read only by untranslated code.
+        // 820DA3D0: the at row with y negated goes to `+1296`, and
+        // SkaterState `+120` is set: the vert auto-turn (`air_rotation`)
+        // turns the skater round to that facing on the way down.
+        let at = self.body.at();
+        self.vert.auto_turn_dir = Vec3::new(at.x, -at.y, at.z);
+        self.vert.auto_turn = true;
         self.body.position += n * s.global_float("Physics_Vert_Push_Out");
         self.vert.in_vert_air = true;
         self.vert.tracking = true;
@@ -327,7 +331,10 @@ mod tests {
         let f = |name: &str, v: f32| (k(name), Value::Float(v));
         Scripts::new(
             [
-                (k("skater_physics"), Value::Struct(vec![])),
+                (
+                    k("skater_physics"),
+                    Value::Struct(vec![f("skater_autoturn_vert_angle", 5.0), f("skater_autoturn_speed", 3.0), f("skater_autoturn_cancel_time", 300.0)]),
+                ),
                 f("Physics_Vert_Push_Out", 0.075),
                 f("Normal_Lerp_Speed", 0.1),
                 f("Skater_vert_push_time", 130.0),
@@ -495,5 +502,35 @@ mod tests {
         p.matrix_32.y_axis = Vec3::Y;
         p.ease_normal(&s);
         assert_eq!(p.matrix_32.y_axis, Vec3::NEG_Z, "updated although nothing eased");
+    }
+
+    #[test]
+    fn the_vert_auto_turn_turns_the_skater_to_face_down_the_wall() {
+        // 820E9620: in vert air the at row turns at skater_autoturn_speed
+        // toward the takeoff at row with y negated, then the flag clears.
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.dt = 1.0 / 60.0;
+        let at = Vec3::new(0.5, 0.866, 0.0).normalize();
+        let up = Vec3::NEG_Z;
+        p.body.matrix = glam::Mat3::from_cols(up.cross(at), up, at);
+        p.vert.in_vert_air = true;
+        p.vert.auto_turn = true;
+        p.vert.auto_turn_dir = Vec3::new(at.x, -at.y, at.z);
+        let input = InputState::default();
+        let mut frames = 0;
+        while p.vert.auto_turn && frames < 600 {
+            p.air_rotation(&s, &input);
+            frames += 1;
+        }
+        assert!(!p.vert.auto_turn, "never finished");
+        assert!(p.body.at().dot(Vec3::new(at.x, -at.y, at.z)) > 0.999, "at {:?}", p.body.at());
+        // 120 degrees at 3 rad/s (172 degrees/s) is 0.7 s.
+        assert!((frames as f32 * p.dt - 0.70).abs() < 0.05, "frames {frames}");
+        // A held spin input cancels it (skater_autoturn_cancel_time).
+        p.vert.auto_turn = true;
+        let held = InputState { l1: true, left: true, left_held_ms: 400, ..Default::default() };
+        p.air_rotation(&s, &held);
+        assert!(!p.vert.auto_turn);
     }
 }

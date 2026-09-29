@@ -76,8 +76,7 @@ impl CorePhysics {
 
     /// Retail `820E9620`: spinning and "lean" in the air.
     ///
-    /// Not translated: the vert auto-turn (needs vert air), `SmoothSpin`
-    /// (`+2752`), and the Nail the Trick checks.
+    /// Not translated: `SmoothSpin` (`+2752`) and the Nail the Trick checks.
     pub fn air_rotation(&mut self, s: &Scripts, input: &InputState) {
         if self.in_bail {
             return;
@@ -125,6 +124,11 @@ impl CorePhysics {
             lean_in = -lean_in;
         }
 
+        // 820E98CC: a transfer, a bike or `NoSpin` cancels the vert auto-turn.
+        if self.transfer.active || self.on_bike || self.no_spin {
+            self.vert.auto_turn = false;
+        }
+
         // Lean: only with L2 (Physics_Air_Lean_fast_stat), after Up/Down
         // have been held Physics_Air_No_Lean_Time, ramped over
         // Physics_Air_Ramp_Lean_Time.
@@ -156,6 +160,11 @@ impl CorePhysics {
             if spin_in != 0.0 {
                 spin = -(rate * spin_in);
                 held = if input.left { input.left_held_ms } else { input.right_held_ms } as f32;
+                // 820E99F4: a spin held longer than `skater_autoturn_cancel_time`
+                // cancels the vert auto-turn.
+                if held > pf("skater_autoturn_cancel_time") {
+                    self.vert.auto_turn = false;
+                }
             }
             if !buttons {
                 let no_rotate = pf("Physics_Air_No_Rotate_Time");
@@ -168,6 +177,27 @@ impl CorePhysics {
             }
         } else if buttons && !self.no_spin {
             spin = -(stat(self, "Physics_Air_Rotation_stat") * spin_in);
+        }
+        // 820E9AB8: the vert auto-turn replaces the spin. While the skater's
+        // at row is more than `skater_autoturn_vert_angle` from straight up
+        // it turns toward the stored facing at `skater_autoturn_speed`, and
+        // stops (clearing `+120`) once the rest of the turn fits in one
+        // frame; within that angle of up it stops at once.
+        if self.vert.in_vert_air && self.vert.auto_turn && !self.no_spin {
+            let at = self.body.at();
+            let from_up = at.y.clamp(-1.0, 1.0).acos();
+            // 0.017453292 is the degrees to radians constant at 82000C10.
+            if from_up >= pf("skater_autoturn_vert_angle") * 0.017453292 {
+                let target = crate::core_physics::signed_angle(at, self.vert.auto_turn_dir, self.body.up());
+                let sign = if target < 0.0 { -1.0 } else { 1.0 };
+                spin = sign * pf("skater_autoturn_speed");
+                if (self.dt * spin).abs() > target.abs() {
+                    spin = target / self.dt;
+                    self.vert.auto_turn = false;
+                }
+            } else {
+                self.vert.auto_turn = false;
+            }
         }
         if spin != 0.0 {
             let angle = self.dt * spin;
