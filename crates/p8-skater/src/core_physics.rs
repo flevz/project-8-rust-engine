@@ -10,6 +10,8 @@ use crate::stats::StatLevels;
 use glam::{Mat3, Vec3};
 use p8_formats::qb::Value;
 use p8_formats::qb_key;
+use p8_script::Params;
+use crate::transfer::ScriptAction;
 
 /// Events the translated code sends to scripts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1007,13 +1009,20 @@ impl CorePhysics {
         self.rotate(angle);
     }
 
-    /// Retail `820DBAA8`: rolling backwards along the board faster than
-    /// `Skater_Flip_Speed` turns the skater around (board forward and
+    /// Retail `820DBAA8(landing)`: rolling backwards along the board faster
+    /// than `Skater_Flip_Speed` turns the skater around (board forward and
     /// sideways rows negated) and toggles SkaterState `+48`. Retail then
-    /// runs `flip_landing_backwards` / `flip_skating_backwards`, which only
-    /// play animations. The manual/balance-trick branch is not translated
-    /// (no balance tricks yet). Returns whether it flipped.
-    pub fn flip_if_backwards(&mut self, s: &Scripts) -> bool {
+    /// spawns a script (via `822109A0`, INFERRED to run like `822265F8`):
+    /// `flip_manualing_backwards` when a balance trick has started (balance
+    /// `+28`), else `flip_landing_backwards` (`landing`, the call from the
+    /// landing code) or `flip_skating_backwards`. The skating one is
+    /// `Skater_PlayOnGroundAnim {no_land=1}`: it rebuilds the ground
+    /// animation with the new turned-round flag, so the skater is drawn
+    /// facing the way it now rolls. The check of the current manual trick
+    /// (balance types Manual / NoseManual / Flatland, `820DBB8C`, which
+    /// bails a manual that is not one of six tricks) is not translated.
+    /// Returns whether it flipped.
+    pub fn flip_if_backwards(&mut self, s: &Scripts, landing: bool) -> bool {
         // Retail also requires not skitching (SkaterState +160).
         if self.on_bike || self.in_bail || self.braking {
             return false;
@@ -1035,6 +1044,14 @@ impl CorePhysics {
         if s.global_float("flip_backwards_dont_blend") == 0.0 {
             self.flip_stance();
             self.rotated = !self.rotated;
+            let script = if self.balance.doing {
+                "flip_manualing_backwards" // 58F45CFE
+            } else if landing {
+                "flip_landing_backwards" // 2DD785C7
+            } else {
+                "flip_skating_backwards" // 3A8D6AB2
+            };
+            self.transfer.actions.push(ScriptAction::Run(qb_key(script), Params::new()));
         }
         true
     }
@@ -1167,7 +1184,7 @@ impl CorePhysics {
         }
         // `820DBAA8`, unless the velocity direction is locked (+2184).
         if !self.lock_velocity_direction {
-            self.flip_if_backwards(s);
+            self.flip_if_backwards(s, false);
         }
         // `820D7AB0` runs later in the ground update.
         if self.ollie_trigger(input) {
@@ -1634,11 +1651,30 @@ mod tests {
         let s = scripts();
         let mut p = CorePhysics::new(&s);
         p.body.velocity = Vec3::new(0.0, 0.0, -0.5);
-        assert!(!p.flip_if_backwards(&s));
+        assert!(!p.flip_if_backwards(&s, false));
+        assert!(p.transfer.actions.is_empty());
         p.body.velocity = Vec3::new(0.0, 0.0, -1.5);
-        assert!(p.flip_if_backwards(&s));
+        assert!(p.flip_if_backwards(&s, false));
         assert_eq!(p.body.at(), Vec3::NEG_Z);
         assert_eq!(p.body.row0(), Vec3::NEG_X);
+    }
+
+    #[test]
+    fn the_turn_around_spawns_the_script_that_rebuilds_the_ground_animation() {
+        // 820DBAA8: flip_skating_backwards on the ground, flip_landing_backwards
+        // from the landing code, flip_manualing_backwards in a balance trick.
+        let s = scripts();
+        let run = |landing: bool, doing: bool| {
+            let mut p = CorePhysics::new(&s);
+            p.balance.doing = doing;
+            p.body.velocity = Vec3::new(0.0, 0.0, -5.0);
+            assert!(p.flip_if_backwards(&s, landing));
+            p.transfer.actions.clone()
+        };
+        let one = |name: &str| vec![ScriptAction::Run(qb_key(name), Params::new())];
+        assert_eq!(run(false, false), one("flip_skating_backwards"));
+        assert_eq!(run(true, false), one("flip_landing_backwards"));
+        assert_eq!(run(false, true), one("flip_manualing_backwards"));
     }
 
     #[test]

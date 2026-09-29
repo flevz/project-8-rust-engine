@@ -582,7 +582,7 @@ impl CorePhysics {
         self.set_state(State::Ground);
         self.last_speed = self.body.velocity.length();
         // `820DBAA8(1)` runs here, before the landing velocity blend.
-        self.flip_if_backwards(s);
+        self.flip_if_backwards(s, true);
         let v = self.body.velocity;
         // 820F38A4: landing from vert air or a transfer sets +2131
         // (`LandedFromVert`) and +2135; otherwise +2135 is cleared.

@@ -580,6 +580,15 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   New anim_check modes: `nollie[:<mode>]`, `boneless[:<dir>]`,
   `nocomply[:<dir>]`, `buttslap[:<frames>]`; `P8_LEDGE=<m>` makes the
   flat floor drop 3 m that far from the start.
+- Ride direction glitch fixed (NOTES 32): after a ground backwards flip
+  (`820DBAA8`, e.g. rolling back down a ramp) retail spawns
+  `flip_skating_backwards` (= `Skater_PlayOnGroundAnim`), which rebuilds the
+  ground animation; we never ran it, so the skaterflip node kept the pose
+  turned round and the skater was drawn facing against its motion.
+  `flip_if_backwards(s, landing)` now queues the script (landing /
+  skating / manualing). Tools: examples `dir_fuzz` (random inputs, looks
+  for backwards riding) and `bail_dir` (`P8_BACK=<t>`, `P8_NOGRAB=1`,
+  `P8_SPIN=<deg>`). Known: `in_bail` (+128) is never set true.
 - Still untranslated nodes the HUD lists: overlay, walkmonitor, walkspeed
   (pass-through stand-ins), differencetoggle's "on" difference (walking
   only). Ragdoll is not translated: after a bail the skater slides on the
