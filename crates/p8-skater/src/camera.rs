@@ -84,6 +84,13 @@ impl Mode {
     /// Members missing from the struct keep the component's previous value
     /// (`r6 = 0` optional reads); `prev` holds those (the constructor's
     /// values, `820D0890`, for the first mode).
+    ///
+    /// Not translated: 820CFB5C, 820CFB68, 820CFB84, 820CFB8C, 820CFB98 (the
+    /// split-screen test), 820CFBA4, 820CFBAC, 820CFBB8 (on a bike, core
+    /// +1564) and the other arrays 820CFBC8, 820CFBF0, 820CFC04.
+    /// Translated: 820CFBDC (Skater_Camera_Array), 820CFC14 / 820CFC1C (the
+    /// entry), the member reads 820CFC20..820CFF94 (`Name`, 820CFFC0, is
+    /// not needed).
     pub fn load(s: &Scripts, index: usize, prev: &Mode) -> Option<Mode> {
         let Some(Value::Array(list)) = s.global("Skater_Camera_Array") else { return None };
         let v = match list.get(index)? {
@@ -295,7 +302,10 @@ impl SkaterCamera {
     }
 
     /// Retail `820CFB30` (`ToggleSkaterCamMode` / `SetSkaterCamMode` land
-    /// here): load mode `index`, easing behind / above over `time` seconds.
+    /// here): load mode `index`, easing behind / above over `time` seconds
+    /// (820CFFE4). Not translated: 820D0048 (split vertical halves the fov),
+    /// 820D0068 (822EFC08, the camera's own fov update: p8-game sets the fov),
+    /// 820D0074 (the look-around yaw per mode, +488 +40: 0 in modes 0..4).
     pub fn set_mode(&mut self, s: &Scripts, index: usize, time: f32) {
         let Some(m) = Mode::load(s, index, &self.mode) else { return };
         self.mode = m;
@@ -334,9 +344,10 @@ impl SkaterCamera {
     }
 
     /// Retail `820D0128`: the vert camera (look down from above): lip, or
-    /// vert air without the break window or a spine transfer. `+288` (a
-    /// SkaterState flag, UNKNOWN) is taken as clear; walking is not
-    /// translated.
+    /// vert air without the break window or a spine transfer. Translated:
+    /// 820D0148 (in bail), 820D0160 (lip), 820D0174, 820D0180, 820D018C (vert
+    /// air). Not translated: 820D0130 (no skater), 820D0154 (walking, +28),
+    /// and +288 at 820D0190 (UNKNOWN, taken as clear).
     fn vert_camera(p: &CorePhysics) -> bool {
         if p.in_bail {
             return false;
@@ -359,22 +370,26 @@ impl SkaterCamera {
     }
 
     /// Retail `820D0F48`: ease the focus point (`+48`) towards the skater.
+    /// 820D0F78 (no skater attached: returns (0, 0, 0)): not translated, the
+    /// camera always has one.
     fn update_focus(&mut self, p: &CorePhysics, dt: f32, instant: bool) -> Vec3 {
         let point = Self::skater_point(p);
-        // +284/+288/+292: a timed boost of the lerps, started elsewhere (not
-        // found); with it idle +292 = 1.
+        // 820D0FF4, 820D1004: +284/+288/+292, a timed boost of the lerps
+        // started elsewhere (not found): not translated; idle, +292 = 1.
         let boost = 1.0;
+        // 820D1030, 820D103C, 820D1048: the vert air test.
         let (kxz, ky) = if Self::in_vert_air(p) {
             (
                 blend_for_dt(self.mode.vert_air_lerp_xz * boost, dt),
                 blend_for_dt(self.mode.vert_air_lerp_y * boost, dt),
             )
         } else {
-            // SkaterState +176 (ground step snapped, UNKNOWN) would make ky
-            // 1; +184 would snap. Neither is tracked: taken as clear.
+            // 820D10BC (SkaterState +176, ground step snapped: ky = 1) and
+            // 820D10CC (+184: snap): not translated, taken as clear.
             (blend_for_dt(self.mode.lerp_xz * boost, dt), blend_for_dt(self.mode.lerp_y * boost, dt))
         };
-        // Focus mode (core +1641) is not translated.
+        // 820D10E0..820D10F4: focus mode (core +1641): not translated.
+        // 820D111C: snap when instant.
         if instant {
             self.focus = point;
         } else {
@@ -386,6 +401,14 @@ impl SkaterCamera {
     }
 
     /// Retail `820D02A8`: (above, distance) with the zooms.
+    /// Translated: 820D02DC..820D0354 (big-air latch), 820D0360, 820D0390
+    /// (lip zoom), 820D0440..820D0460 (zoom lerp), 820D04C0 (lip above),
+    /// 820D04CC..820D0554 (balance-trick above; state 4 never happens here),
+    /// 820D0580..820D0594 (above lerp).
+    /// Not translated: 820D02D0 (no skater), 820D0374, 820D0380 (grind
+    /// zoom, state 4), 820D03A4..820D0440 (focus mode and the look-around
+    /// zoom), 820D0478 (look-around pitch scale), 820D055C..820D057C (focus
+    /// mode above).
     fn zoom_and_above(&mut self, p: &CorePhysics, zoom_lerp: f32) -> (f32, f32) {
         let vert = Self::in_vert_air(p);
         if !self.big_air && vert && p.doing_trick {

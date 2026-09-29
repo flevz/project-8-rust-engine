@@ -773,7 +773,9 @@ pub struct Modulate {
 }
 
 impl Modulate {
-    /// `823819D8`.
+    /// `823819D8` (823819F8 done, 82381A20 end of blend, 82381A38 no
+    /// function: raw = t (our default `Linear`), 82381A68 from_start,
+    /// 82381AA0 unnamed).
     fn update(&mut self, dt: f32) {
         if self.done {
             return;
@@ -1498,6 +1500,10 @@ pub struct OllieLand {
     time: f32,
     /// `+68` / `+72` highdropstartblendtime / highdropendblendtime
     high_drop: Option<(f32, f32)>,
+    /// `+16` id (0: none) and the object's tags: `t` is kept in the tag
+    /// named by the id when it changes (820A7FA4..820A7FC0).
+    id: u32,
+    tags: Tags,
 }
 
 impl OllieLand {
@@ -1543,6 +1549,9 @@ impl OllieLand {
                 self.t = old - 0.1;
             }
             self.t = self.t.clamp(0.0, 1.0);
+            if self.id != 0 && self.id != qb_key("unnamed") {
+                self.tags.set(self.id, self.t);
+            }
         }
         self.w = self.func.as_ref().map_or(self.t, |f| f.eval(self.t));
         if let Some((a, b)) = self.high_drop {
@@ -1693,6 +1702,10 @@ pub enum Kind {
         blendintime: f32,
         func: Option<BlendFn>,
         w: f32,
+        /// `+16` id (0: none) and the object's tags: `t` is kept in the tag
+        /// named by the id (update 820B58D8..820B58F4).
+        id: u32,
+        tags: Tags,
     },
     OllieLand(OllieLand),
     /// `spinleftrighttimer` (init `820B53C8`, update `820B5460`): the clip
@@ -1966,11 +1979,22 @@ impl Build<'_> {
             let func = self
                 .checksum(&items, "blendfunction", scope)
                 .map(|f| BlendFn::new(f, lookup(&items, k("blendcurve")).map(|v| self.resolve(v, scope)).as_ref()));
+            let mut t = self.float(&items, "strength", scope).unwrap_or(0.0);
+            // 820B59B4..820B5A20: `id` + `sync`: sync 0 sets the tag to 0,
+            // else `t` starts from the tag (as the modulate, NOTES 40).
+            let id_sync = self.id_sync(&items, scope);
+            match id_sync {
+                Some((id, true)) => t = self.tags.get(id),
+                Some((id, false)) => self.tags.set(id, 0.0),
+                None => {}
+            }
             Kind::TakeoffBlend {
-                t: self.float(&items, "strength", scope).unwrap_or(0.0),
+                t,
                 blendintime: self.float(&items, "blendintime", scope).unwrap_or(0.0),
                 func,
                 w: 0.0,
+                id: self.checksum(&items, "id", scope).unwrap_or(0),
+                tags: self.tags.clone(),
             }
         } else if ty == k("ollielandblend") {
             let blendintime = self.float(&items, "blendintime", scope).unwrap_or(0.0);
@@ -1979,6 +2003,14 @@ impl Build<'_> {
                 .map(|f| BlendFn::new(f, lookup(&items, k("blendcurve")).map(|v| self.resolve(v, scope)).as_ref()));
             let hs = self.float(&items, "highdropstartblendtime", scope);
             let he = self.float(&items, "highdropendblendtime", scope);
+            // 820A80A8..820A8124: `id` + `sync`: sync 0 sets the tag to 0,
+            // else `t` (+60) starts from the tag.
+            let mut t0 = 0.0;
+            match self.id_sync(&items, scope) {
+                Some((id, true)) => t0 = self.tags.get(id),
+                Some((id, false)) => self.tags.set(id, 0.0),
+                None => {}
+            }
             Kind::OllieLand(OllieLand {
                 w: 0.0,
                 func,
@@ -1989,9 +2021,11 @@ impl Build<'_> {
                 hold: self.float(&items, "holdtime", scope).unwrap_or(0.0),
                 to_land: 1.0,
                 started: false,
-                t: 0.0,
+                t: t0,
                 time: 0.0,
                 high_drop: if hs.is_some() || he.is_some() { Some((hs.unwrap_or(9999.9), he.unwrap_or(9999.9))) } else { None },
+                id: self.checksum(&items, "id", scope).unwrap_or(0),
+                tags: self.tags.clone(),
             })
         } else if ty == k("spinleftrighttimer") {
             let duration = self.checksum(&items, "anim", scope).map_or(0.0, |a| self.lib.duration(a));
@@ -2140,6 +2174,21 @@ impl Build<'_> {
             .collect()
     }
 
+    /// The `id` and `sync` params some nodes read at init (820A0688 "Id",
+    /// 820A2870 "sync", an int): `Some((id, sync != 0))` when both are there.
+    /// A `sync` naming a parameter the branch was not given reads as absent
+    /// (INFERRED). Each node then does its own thing with the tag named by
+    /// the id (`822458F8` read, `82245CA8` write).
+    fn id_sync(&self, items: &[(u32, Value)], scope: &Params) -> Option<(u32, bool)> {
+        let id = self.checksum(items, "id", scope).filter(|&i| i != 0)?;
+        let sync = lookup(items, qb_key("sync")).and_then(|v| match self.resolve(v, scope) {
+            Value::Int(n) => Some(n != 0),
+            Value::Float(f) => Some(f != 0.0),
+            _ => None,
+        })?;
+        Some((id, sync))
+    }
+
     fn modulate(&mut self, items: &[(u32, Value)], scope: &Params) -> Modulate {
         let mut strength = self.float(items, "strength", scope).unwrap_or(1.0);
         let id = self.checksum(items, "id", scope).unwrap_or(0);
@@ -2150,20 +2199,11 @@ impl Build<'_> {
         // sync = 1`, then `Skater_PlayManualTransitionAnim`) fades the manual
         // layers in from where the exit left them instead of snapping them
         // back to 1 (the spacewalk's hips).
-        if id != 0 {
-            // 820A2870 reads an int: a `sync` that names a parameter the
-            // branch was not given reads as absent (INFERRED).
-            let sync = lookup(items, qb_key("sync")).and_then(|v| match self.resolve(v, scope) {
-                Value::Int(n) => Some(n != 0),
-                Value::Float(f) => Some(f != 0.0),
-                _ => None,
-            });
-            if let Some(on) = sync {
-                if on {
-                    strength = self.tags.get(id);
-                } else {
-                    self.tags.set(id, 1.0);
-                }
+        if let Some((id, on)) = self.id_sync(items, scope) {
+            if on {
+                strength = self.tags.get(id);
+            } else {
+                self.tags.set(id, 1.0);
             }
         }
         let mut m = Modulate {
@@ -2475,9 +2515,15 @@ impl Node {
                     *time = *duration;
                 }
             }
-            Kind::TakeoffBlend { t, blendintime, func, w } => {
+            // 820B5890 (820B58B4, 820B58D0 the rise to 1; 820B5900 no
+            // function: w = t).
+            Kind::TakeoffBlend { t, blendintime, func, w, id, tags } => {
                 if *t < 1.0 {
                     *t = if *blendintime > 0.0 { (*t + dt / *blendintime).min(1.0) } else { 1.0 };
+                }
+                // 820B58D8: `t` as the tag named by the id, every update.
+                if *id != 0 && *id != qb_key("unnamed") {
+                    tags.set(*id, *t);
                 }
                 *w = func.as_ref().map_or(*t, |f| f.eval(*t));
             }
@@ -3340,6 +3386,57 @@ mod tests {
 
     fn pose(q: [f32; 4], t: [f32; 3], w: f32) -> Pose {
         Pose { q: vec![q], t: vec![t], w: vec![w], strength: 1.0 }
+    }
+
+    /// `takeoffblend` / `ollielandblend` with `id` + `sync` (820B5950,
+    /// 820A8050): sync 0 zeroes the tag, sync 1 starts `t` from it, and the
+    /// update keeps it (a flip trick rebuilding the ollie branch mid-air
+    /// with `sync = 1` carries on instead of replaying the take-off).
+    #[test]
+    fn takeoff_and_land_blends_carry_t_through_the_tag() {
+        let mut lib = ClipLib { data: Vec::new(), index: HashMap::new(), std_q: Vec::new(), cache: HashMap::new() };
+        let r = rig(1);
+        let mut types = Vec::new();
+        let tags = Tags::default();
+        let g = |_: u32| None;
+        let mut b = Build {
+            globals: &g,
+            lib: &mut lib,
+            rig: &r,
+            types: &mut types,
+            crouched0: false,
+            flipped0: false,
+            rotated0: false,
+            vert0: false,
+            speed0: 0.0,
+            board_rotated0: false,
+            tags: tags.clone(),
+        };
+        let k = qb_key;
+        let node = |ty: &str, id: &str, sync: i32| {
+            Value::Struct(vec![
+                (k("type"), Value::Checksum(k(ty))),
+                (k("id"), Value::Checksum(k(id))),
+                (k("sync"), Value::Int(sync)),
+                (k("blendintime"), Value::Float(0.5)),
+            ])
+        };
+        let none = Params(Vec::new());
+        let mut take = b.node(&node("takeoffblend", "takeoffblend", 0), &none);
+        assert_eq!(tags.get(k("takeoffblend")), 0.0);
+        let i = SkaterInputs::default();
+        for _ in 0..12 {
+            take.update(1.0 / 60.0, &i);
+        }
+        let left = tags.get(k("takeoffblend"));
+        assert!((left - 0.4).abs() < 1e-4, "{left}");
+        let again = b.node(&node("takeoffblend", "takeoffblend", 1), &none);
+        assert!(matches!(again.kind, Kind::TakeoffBlend { t, .. } if (t - left).abs() < 1e-6));
+        tags.set(k("ollielandblend"), 0.7);
+        let land = b.node(&node("ollielandblend", "ollielandblend", 1), &none);
+        assert!(matches!(&land.kind, Kind::OllieLand(o) if (o.t - 0.7).abs() < 1e-6));
+        b.node(&node("ollielandblend", "ollielandblend", 0), &none);
+        assert_eq!(tags.get(k("ollielandblend")), 0.0);
     }
 
     /// A named `modulate` built with `sync` starts from the strength the

@@ -607,6 +607,21 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Process (NOTES 41): `CLAUDE.md` (loaded by every session) holds the
+  session setup, the user's rules, the "before calling a feature done"
+  checks and the known bug shapes. Branch audit:
+  `python3 /home/user/project-8-data/tools/branch_audit.py <addr> crates/<crate>/src`.
+  First audits still to do: camera update `820D1238` (97 of 250 uncited,
+  mostly the grind / lip / wallride / bail paths), modulate init
+  `82381C18` (3), takeoffblend init `820B5950` (12), ollielandblend
+  `820A8050` (18) / `820A7D88` (25). Every older function too: most cite only
+  their start address, so run the audit on a function before changing it.
+- `id` + `sync` sweep (NOTES 41): takeoffblend (`820B5950`/`820B5890`) and
+  ollielandblend (`820A8050`/`820A7D88`) also carry `t` through the tag named
+  by their id (a flip trick rebuilds the ollie branch mid-air with
+  `sync = 1`, `Skater_PlayFlipTrickAnim`). Fixed with a unit test; no
+  headless run covers that path yet. `speedtimerthreeway` (walking) has it
+  too, not translated.
 - Spacewalk hips (NOTES 40): the hips and feet swung about 90 degrees out
   and back as the spacewalk started. Cause: `modulate` init (`82381C18`)
   with `id` + `sync`: sync 0 sets the tag named by the id to 1, otherwise
