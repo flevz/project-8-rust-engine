@@ -630,6 +630,19 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   (not on the turn-round tick). Not confirmed in the game yet. Open: the
   skatertimer's `sync` read treats an unset parameter as on; the newer nodes
   treat it as absent (INFERRED both; check 820A2870).
+- Branch audit (NOTES 44, overnight): the per-frame functions 820F2310,
+  820F6978, 820E9620, 820ECEE8, 820F12C0, 820F0730, 820FC990, 820B4038,
+  820B2790 (and inits 820B2D00, 820B3D08) now cite every branch (0 uncited):
+  translated, or "not translated" with the reason. Fixed on the way: vert
+  auto-turn only with no spin input, spine / acid landing keeps the aimed
+  velocity, manual uphill threshold, ground frames clear flipping / lean, air
+  spin no longer writes +1940, skatermodulate spin + grindlean, skatertimer
+  turn. Not fixed (next sessions, need the user in the game): side collision
+  `820F2238`/`820ED630`, head / ceiling check `820EA788`, lean display and
+  force_flip_bail, level node TriggerScripts (`8228C880`). Camera update
+  820D1238 still 97 uncited. The audit tool now counts a call as cited
+  through its target only if the target is cited on a line without "not
+  translated".
 - Process (NOTES 41): `CLAUDE.md` (loaded by every session) holds the
   session setup, the user's rules, the "before calling a feature done"
   checks and the known bug shapes. Branch audit:

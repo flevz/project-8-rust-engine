@@ -92,7 +92,7 @@ impl CorePhysics {
         }
     }
 
-    /// Retail `820F3018`..`820F305C` (air update): the normal easing (and
+    /// Retail 820F3018..820F30A0 (air update): the normal easing (and
     /// with it the display matrix `+32`) runs in vert air (`+56`) only when
     /// there is no spine transfer (`+136`) (and the skaterrotate
     /// component's `+40` / `+80` are 0, never set here); otherwise the
@@ -243,7 +243,8 @@ impl CorePhysics {
     }
 
     /// The vert block of the air update (`820F2900`..`820F3014`), after the
-    /// move.
+    /// move: 820F2900..820F2A70 the break-vert window, 820F2A74..820F2AC8
+    /// the spine gate, 820F2B08..820F3014 following the wall.
     pub(crate) fn vert_air_update(&mut self, s: &Scripts, world: &dyn World) {
         let input = self.last_input;
         if self.vert.break_window {
@@ -272,6 +273,8 @@ impl CorePhysics {
             // 820F2A74: the spine gate.
             self.break_vert(s, Some(world), false);
         }
+        // 820F2ACC..820F2B00: with a movable contact (820CD810) retail
+        // skips the wall follow: not translated (no moving platforms).
         if self.vert.tracking && self.vert.in_vert_air {
             self.follow_vert_wall(s, world);
         }
@@ -315,6 +318,8 @@ impl CorePhysics {
         }
         // sqrt(|hit.n . n| over x and z); 0.02 is the constant at 82002968.
         let Some(h) = hit.filter(|h| (h.normal.x * n.x + n.z * h.normal.z).abs().sqrt() > 0.02) else {
+            // 820F2FF4..820F3014: +64 cleared (retail also stamps +68, not
+            // kept; no reader known).
             self.vert.tracking = false;
             return;
         };

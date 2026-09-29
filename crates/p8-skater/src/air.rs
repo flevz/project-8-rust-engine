@@ -76,14 +76,18 @@ impl CorePhysics {
 
     /// Retail `820E9620`: spinning and "lean" in the air.
     ///
-    /// Not translated: `SmoothSpin` (`+2752`) and the Nail the Trick checks.
+    /// Not translated: `SmoothSpin` (`+2752`) and the Nail the Trick checks;
+    /// the model's lean display, the score's trick name and the
+    /// `force_flip_bail` head check (noted at the end).
     pub fn air_rotation(&mut self, s: &Scripts, input: &InputState) {
+        // 820E9644: nothing in a bail (SkaterState +128).
         if self.in_bail {
             return;
         }
         let pf = |name: &str| s.physics_float(name, false);
         let stat = |me: &Self, name: &str| s.stat(name, me.on_bike, &me.stats, me.stat_context);
-        // Lean input (stick Y, else Up -1 / Down +1) and spin input (stick X).
+        // 820E967C..820E969C: lean input (stick Y, else Up -1 / Down +1) and
+        // spin input (stick X).
         let mut lean_in = input.stick_y;
         let mut spin_in = input.stick_x;
         if lean_in == 0.0 {
@@ -93,11 +97,12 @@ impl CorePhysics {
                 lean_in = 1.0;
             }
         }
+        // 820E96AC: +2721 clear -> no stick / D-pad input.
         if !self.analog_turning {
             spin_in = 0.0;
             lean_in = 0.0;
         }
-        // L1 / R1 spin (record R1's "held" check uses +224; "+128" is L1).
+        // 820E96C8..820E96F0: L1 / R1 spin (record R1's "held" check uses +224; "+128" is L1).
         let mut buttons = false;
         if input.l1 && !input.r1 {
             spin_in = -1.0;
@@ -107,6 +112,7 @@ impl CorePhysics {
             spin_in = 1.0;
             buttons = true;
         }
+        // 820E9700..820E9728: D-pad Right +1 / Left -1.
         if self.analog_turning && spin_in == 0.0 {
             if input.right {
                 spin_in = 1.0;
@@ -114,22 +120,24 @@ impl CorePhysics {
                 spin_in = -1.0;
             }
         }
-        // With L2 and both inputs, the pair is normalised.
+        // 820E9738..820E9748: with L2 and both inputs, the pair is
+        // normalised.
         if input.l2 && lean_in != 0.0 && spin_in != 0.0 {
             let v = glam::Vec2::new(spin_in, lean_in).normalize();
             spin_in = v.x;
             lean_in = v.y;
         }
+        // 820E97F8..820E9808: skaterstancepanel (82116500): nollie.
         if self.nollie {
             lean_in = -lean_in;
         }
 
-        // 820E98CC: a transfer, a bike or `NoSpin` cancels the vert auto-turn.
+        // 820E98CC..820E9918: a transfer, a bike or `NoSpin` cancels the vert auto-turn.
         if self.transfer.active || self.on_bike || self.no_spin {
             self.vert.auto_turn = false;
         }
 
-        // Lean: only with L2 (Physics_Air_Lean_fast_stat), after Up/Down
+        // 820E9854..820E98C4: lean only with L2 (Physics_Air_Lean_fast_stat), after Up/Down
         // have been held Physics_Air_No_Lean_Time, ramped over
         // Physics_Air_Ramp_Lean_Time.
         let no_lean = pf("Physics_Air_No_Lean_Time");
@@ -148,9 +156,14 @@ impl CorePhysics {
             lean *= (lean_held - no_lean) / ramp_lean;
         }
 
-        // Spin.
+        // Spin: 820E9938..820E9944 needs +2720 and not +2128.
+        // 820E9924..820E992C: retail also needs SkaterState +224 clear (set
+        // only by the walk-to-skate reset in the air) else the buttons-only
+        // branch: not translated (audit, NOTES 44; unreachable until walking
+        // is translated).
         let mut spin = 0.0;
         if self.turning_enabled && !self.no_spin {
+            // 820E9960..820E9998: the rate (fast with L2), the held time.
             let rate = if input.l2 {
                 stat(self, "Physics_Air_Rotation_fast_stat")
             } else {
@@ -160,12 +173,13 @@ impl CorePhysics {
             if spin_in != 0.0 {
                 spin = -(rate * spin_in);
                 held = if input.left { input.left_held_ms } else { input.right_held_ms } as f32;
-                // 820E99F4: a spin held longer than `skater_autoturn_cancel_time`
+                // 820E99CC..820E99E4: a spin held longer than `skater_autoturn_cancel_time`
                 // cancels the vert auto-turn.
                 if held > pf("skater_autoturn_cancel_time") {
                     self.vert.auto_turn = false;
                 }
             }
+            // 820E99FC..820E9A44.
             if !buttons {
                 let no_rotate = pf("Physics_Air_No_Rotate_Time");
                 let ramp_rotate = pf("Physics_Air_Ramp_Rotate_Time");
@@ -176,10 +190,13 @@ impl CorePhysics {
                 }
             }
         } else if buttons && !self.no_spin {
+            // 820E9A54..820E9A78.
             spin = -(stat(self, "Physics_Air_Rotation_stat") * spin_in);
         }
-        // 820E9AB8: the vert auto-turn, only on frames with no spin input
-        // (the spin rate is 0; any spin skips it, 820E9AC0 -> 820E9BBC).
+        // 820E9A84..820E9AB4 (IsSkaterInNailTheTrick): not translated.
+        // 820E9AB8..820E9BBC: the vert auto-turn, only on frames with no spin
+        // input (the spin rate is 0; any spin skips it for that frame,
+        // without cancelling it).
         // While the skater's at row is more than `skater_autoturn_vert_angle`
         // from straight up it turns toward the stored facing at
         // `skater_autoturn_speed`, and stops (clearing `+120`) once the rest
@@ -201,6 +218,11 @@ impl CorePhysics {
                 self.vert.auto_turn = false;
             }
         }
+        // 820E9D60..820E9DC8 (SmoothSpin, +2752..+2764, which also rescales
+        // the rate): not translated.
+        // 820E9DCC..820E9E34: the rotation, +2217 and trick +5360 (retail
+        // adds to +5360 when the spin or the lean is non-zero; with no spin
+        // it adds 0).
         if spin != 0.0 {
             let angle = self.dt * spin;
             // No +1940 here: 820E9620 does not write it and the air update
@@ -211,7 +233,8 @@ impl CorePhysics {
             self.spin_degrees += angle * 57.29578;
         }
 
-        // Lean angle (display), or ease it back to a whole turn.
+        // 820E9BBC..820E9CB4: lean angle (display), or ease it back to a
+        // whole turn.
         self.previous_lean_degrees = self.lean_degrees;
         let mut changed = false;
         if lean != 0.0 {
@@ -231,10 +254,23 @@ impl CorePhysics {
                 changed = true;
             }
         }
+        // 820E9CB8..820E9D04: when the lean changed, the Model component's
+        // display rotation (82260758, 82260550 with +2628 / +1912): not
+        // translated (audit, NOTES 44; the lean is not drawn).
+        // 820E9D08..820E9D5C: +1542 flipping.
         if changed {
             let a = (self.lean_degrees as i32 % 360).abs();
             self.flipping = (41..=319).contains(&a);
         }
+        // 820E9E38..820E9ED4: Nail the Trick (ntt_add_flipper_rotation):
+        // not translated.
+        // 820E9ED8..820E9F90: the score's trick name (8217B3D0 with the
+        // spin +5360 and the lean; in vert air only past a whole turn less
+        // `spin_count_slop`): not translated (audit, NOTES 44).
+        // 820E9F94..820EA0BC: `force_flip_bail`: with the model's up row
+        // pointing down (82260C58) and not in vert air, a feeler of
+        // `Skater_head_height_for_flips` from the position; on a hit the
+        // script bails: not translated (audit, NOTES 44).
     }
 
     /// Retail `820E4AD0`: level the board out in the air when there is
@@ -308,22 +344,36 @@ impl CorePhysics {
     /// Retail `Jump` (`820F0730`). `speed` is the script's `jump speed =
     /// ...` override; `boneless` / `no_comply` its `BonelessHeight` /
     /// `NoComply` flags (the `boneless` and `nocomply` scripts).
+    ///
+    /// Not translated: the rail state 4 paths (820F079C..820F0848 and
+    /// 820F0E04..820F0E58, `Rail_Jump_Angle`; rails are not a `State`), the
+    /// jump sounds (820F0764 `no_sound`, 82115E78 at 820F0848, 820F08F8,
+    /// 820F09DC; no audio), core +1617 = 0 (820F0A0C, bike only) and the
+    /// Natas spin script (820F0E64..820F0E70, 820F0550).
     pub fn jump(&mut self, s: &Scripts, speed: Option<f32>, boneless: bool, no_comply: bool) -> Vec<Event> {
-        // Only the ground path (820F0900) records where the jump started;
-        // the air path (820F0850, a late ollie) only plays a sound.
+        // 820F0790..820F0794: only the ground path (820F0900) records where
+        // the jump started; the air path (820F0850..820F08FC, a late ollie)
+        // only plays a sound.
+        // 820F0900..820F091C: the ground path first runs the surface node's
+        // TriggerScript, type 20 (`8228C880`), then returns at once when
+        // SkaterPhysicsControl +38 is set: not translated (audit, NOTES 44;
+        // no node TriggerScripts yet, +38 taken as clear).
         if self.state == State::Ground {
+            // 820F0924..820F093C: +2000.
             self.jump_start = self.body.position;
-            // 820F09E4: the vert takeoff, then SkaterState +80 is set.
+            // 820F09E4..820F0A08: the vert takeoff, then SkaterState +80 is set.
             self.vert_takeoff(s);
             self.set_break_window(true);
         }
+        // 820F0A1C..820F0A48.
         let max_tense = s.global_float("Skater_max_tense_time") as i64;
         self.crouch_duration_ms = self.crouch_duration_ms.min(max_tense);
-        // 820F0A4C: vert jump stats in vert air, or on the ground on a vert
+        // 820F0A4C..820F0AA0: vert jump stats in vert air, or on the ground on a vert
         // surface. 0.3 is the double at 82002AD0: board pointing up =
         // launch ramp. 820F0AC4: with `BonelessHeight`, the boneless stats.
         let vert = self.vert.in_vert_air || (self.state == State::Ground && self.vert.on_vert_ground);
         let launch = self.body.at().y > 0.3;
+        // 820F0AC4..820F0B8C.
         let (max_name, min_name) = if boneless {
             if vert {
                 ("Physics_Boneless_Vert_Jump_Speed_Stat", "Physics_Boneless_Vert_Jump_Speed_min_Stat")
@@ -341,16 +391,19 @@ impl CorePhysics {
         };
         let max = s.stat(max_name, self.on_bike, &self.stats, self.stat_context);
         let mut jump = s.stat(min_name, self.on_bike, &self.stats, self.stat_context);
+        // 820F0BB8.
         if max_tense != 0 {
             jump += self.crouch_duration_ms as f32 / max_tense as f32 * (max - jump);
         }
+        // 820F0C04 (822128C8 "Speed").
         if let Some(speed) = speed {
             jump = speed;
         }
+        // 820F0C14: SkaterState +32.
         self.uncrouch();
-        // 820F0C2C: +2544 (`LastWasJumpBoneless`) = BonelessHeight or NoComply.
+        // 820F0C2C..820F0C7C: +2544 (`LastWasJumpBoneless`) = BonelessHeight or NoComply.
         self.last_jump_boneless = boneless || no_comply;
-        // 820F0C80: moving down in vert air, jump out along the eased
+        // 820F0C80..820F0D04: moving down in vert air, jump out along the eased
         // normal `+96` and leave vert air; the upward part is then 0.
         if self.vert.in_vert_air && self.body.velocity.y < 0.0 {
             self.body.velocity += self.vert.eased_normal * jump;
@@ -359,16 +412,19 @@ impl CorePhysics {
             self.transfer.retry = false;
             jump = 0.0;
         } else if self.body.velocity.y < 0.0 {
+            // 820F0D14.
             self.body.velocity.y = 0.0;
         }
         self.body.velocity.y += jump;
-        // Upside down (-0.1 at 820029A0): jump the other way and step off.
+        // 820F0D84..820F0DF4: upside down (-0.1 at 820029A0): jump the
+        // other way and step off.
         if self.body.up().y < -0.1 {
             self.body.velocity.y += jump * -1.5;
             self.body.position += self.body.up() * 0.3;
         }
         self.set_state(State::Air);
-        // 820F0EA8: the jump time +2540.
+        // 820F0EA8..820F0EAC: the jump time +2540, and the SkaterJump
+        // broadcast.
         self.jump_ms = self.time_ms;
         vec![Event::SkaterJump]
     }
@@ -377,17 +433,27 @@ impl CorePhysics {
     /// and landing on a skatable surface.
     ///
     /// Not translated (absent): `820EEB38`
-    /// (bikes only), lip checks, bails on landing, moving platforms, and the
-    /// nose/tail landing feelers (`820E5250`, which only record contact).
+    /// (bikes only), bails on landing, moving platforms, the nose/tail
+    /// landing feelers (`820E5250`, which only record contact), the side
+    /// collision `820F2238` and the head check `820EA788` (see the end of
+    /// the update), and the landing sound and triggers.
     pub fn air_update(&mut self, s: &Scripts, world: &dyn World) -> Vec<Event> {
+        // 820F2340..820F235C (and 820F3A38..820F3A78, 820F3EA4..820F3EE4):
+        // the +1920 velocity record (read only by walking code): not kept.
+        // 820F235C..820F23A4: inline 820E53D8(0): terrain +265 = 0, the
+        // "OnSkaterTerrainChange" particles (82116930, 820DE6B8, 820BDFB0)
+        // and sounds: not translated (no physics effect).
+        // 820F23A4: 820DE490, the Nail the Trick zero-velocity hack: not
+        // translated (no Nail the Trick).
         let mut events = Vec::new();
         // Object +128: the position at the start of this frame (LIKELY: the
         // object update stores it before the physics runs).
         let old = self.old_position;
+        // 820F23B0..820F23DC: the gravity vector (820D76C0).
         let g = Vec3::new(0.0, self.air_gravity(s), 0.0);
-        // 820F2410: SkaterState +72 (on vert ground) is cleared.
+        // 820F240C..820F2420: SkaterState +72 (on vert ground) is cleared.
         self.vert.on_vert_ground = false;
-        // 820F2424: no acid drop (+200) while in vert air, a transfer, +192
+        // 820F2424..820F2478: no acid drop (+200) while in vert air, a transfer, +192
         // or a bail.
         if self.vert.in_vert_air || self.transfer.active || self.transfer.flag_192 || self.in_bail {
             self.set_no_acid_drop(true);
@@ -401,20 +467,27 @@ impl CorePhysics {
         let input = self.last_input;
         self.air_rotation(s, &input);
         self.transfer_blend();
-        // 820F24B4: the leveling is skipped in vert air, unless SkaterState
+        // 820F24B4..820F24EC: the leveling is skipped in vert air, unless SkaterState
         // +144 is set or the spine button is held.
         if self.vert.over_ground || self.spine_button(&input) || !self.vert.in_vert_air {
             self.air_recover(s, world);
         }
-        // `820D79F8` runs here (not translated). 820F2518: outside vert air
-        // and spine transfers (and the rotate component and bike state
-        // +152, not translated), the sideways uprighting.
+        // 820F24F0..820F250C: bike state +152 (820DC758) / 820EEB38: not
+        // translated (bikes). `820D79F8` runs here (not translated).
+        // 820F2518..820F2560: outside vert air and spine transfers (and the
+        // rotate component and bike state +152, not translated), the
+        // sideways uprighting.
         if !self.vert.in_vert_air && !self.transfer.active {
             self.upright_sideways(s);
         }
+        // 820F2564..820F2654: +2620 kept at its largest during an acid drop
+        // (see `TransferState::speed`): not translated.
+        // 820F2658..820F2668: 820D9F70 while +1976 != 0 (always 0 here).
+        // 820F266C..820F26D8: the +2552 wallride retry countdown
+        // (820EDAA8), only written by untranslated states: not translated.
 
         let dt = self.dt;
-        // 820F26DC: in a transfer the carry (SkaterState +272) is added to
+        // 820F26DC..820F278C: in a transfer the carry (SkaterState +272) is added to
         // the move, except when falling below +2172: then it shrinks to
         // length 0.1 (82000BF4) and is not added.
         let mut mv = self.body.velocity;
@@ -425,28 +498,46 @@ impl CorePhysics {
                 mv += self.transfer.carry;
             }
         }
+        // 820F27EC..820F2830: the movable contact (820EB448, +2546): not
+        // translated. 820F2830..820F28FC: the move.
         self.body.position += mv * dt + g * (dt * dt * 0.5);
         self.body.velocity += g * dt;
         // 820F2497: `+1936` = the velocity's y after the gravity.
         self.last_in_air_vy = self.body.velocity.y;
+        // 820F2900..820F3014 (vert.rs).
         self.vert_air_update(s, world);
+        // 820F3018..820F30A0.
         self.follow_display_matrix(s);
+        // 820F30A0..820F311C: the bike nose / tail points: not translated.
 
-        // `820EF410`: walls ahead. When it handled the frame, retail skips
-        // the landing (820F369C).
+        // `820EF410` (820F3144): walls ahead. When it handled the frame,
+        // retail skips the landing (820F369C). 820F3148..820F3160: retail
+        // returns when it changed the state to wallride / wallplant (not
+        // translated).
         let handled = self.air_forward_collision(s, old, world);
-        // The pitch-bail check (820F31E4, `Pitch_Bail_Feeler_Length` and
-        // script `Pitch_Bail_Check`) leads into bails: not translated.
+        // The pitch-bail check (820F3164..820F3580, `Pitch_Bail_Feeler_Length`
+        // and script `Pitch_Bail_Check`) leads into bails: not translated.
+        // Without a bail it also sets +96 / +112 / +128 to the hit normal
+        // and runs 820E5250 (820F3368, 820F3520): not translated either.
+        // 820F3584..820F3628: in a transfer (+136) retail extends the
+        // landing feeler 0.025 (820027D4) back and forward along the move:
+        // not translated (audit, NOTES 44).
 
-        // Landing: feeler from last position to this one, ignoring surfaces
-        // with flag 0x10 (`820E5048(16, 0)` at 820F365C).
+        // 820F3654..820F36B0: landing: feeler from last position to this
+        // one, ignoring surfaces with flag 0x10 (`820E5048(16, 0)` at
+        // 820F365C). On no hit or `handled`, retail goes to
+        // 820F4000..820F4014: the side collision `820F2238` (not in vert
+        // air; `820ED630` to each side, `Skater_side_collide_length`,
+        // pushing out of walls; the position is restored when both sides
+        // hit), then to the head check below: not translated (audit, NOTES
+        // 44).
         let Some(hit) = world.feeler(old, self.body.position, 0x10, 0) else {
             return events;
         };
         if handled {
             return events;
         }
-        // 820F36B4: a ledge to step onto instead (`820E4DB8`) wins when
+        // 820F36B4..820F3744: a ledge to step onto instead (`820E4DB8`) wins when
         // rising faster than 0.25 (82000BEC) or the hit is steep (normal.y
         // below 0.1), and 500 ms have passed since SkaterPhysicsControl
         // `+116` (UNKNOWN; nothing translated sets it, so always).
@@ -454,6 +545,8 @@ impl CorePhysics {
         if self.air_snap_up(s, old, world) && (self.body.velocity.y > 0.25 || steep) {
             return events;
         }
+        // 820F3748..820F3810 (820F3798: the "Ragdoll" component, no physics
+        // effect, not translated).
         let skatable = surface_skatable(s, &hit);
         if skatable && hit.normal.y < -0.01 {
             // Hitting a ceiling (-0.01 at 82001BA8): back off and fall.
@@ -592,8 +685,10 @@ impl CorePhysics {
         false
     }
 
-    /// `820F3EF8`: the air feeler hit a surface that can't be skated.
+    /// `820F3EF8`: the air feeler hit a surface that can't be skated
+    /// (820F3EF8..820F3FE4).
     fn air_hit_wall(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
+        // 820F3F04, 820F3FE8: in a bail, "BailCollision".
         if self.in_bail {
             events.push(Event::BailCollision);
             return;
@@ -603,19 +698,34 @@ impl CorePhysics {
         orthonormalize_keep_at(&mut self.body.matrix);
         self.matrix_32 = self.body.matrix;
         self.body.position += n * s.physics_float("Skater_Min_Distance_To_Wall", self.on_bike);
-        // 820F3FC0: no acid drop after this (+200). Retail then runs the lip
-        // and wall-ride checks (`820EA788`, `820E80D8`, ...), not translated.
+        // 820F3FC0..820F3FE4: no acid drop after this (+200). Retail then
+        // runs the head / ceiling check `820EA788` (820F4018..820F404C; not
+        // translated, see below) and, after the ollie trigger, the wallplant
+        // check `820E80D8` (not translated).
         self.set_no_acid_drop(true);
     }
 
     /// The landing path of `820F2310`.
+    ///
+    /// Not translated: the land sound (820F3914..820F39A8, 82115B58 with
+    /// |v| / `Skater_Max_Max_Speed_Stat`), the trick balance scoring
+    /// (820F39AC..820F39C0, 821248A8), and the landing node TriggerScripts
+    /// (820F39C4..820F3A10: 820BBE10, then `8228C880` type 264, and
+    /// 0x40008 in an acid drop) (audit, NOTES 44). 820F3A14..820F3A88: when
+    /// SkaterPhysicsControl +38 is set, retail sends "Landed" and returns
+    /// before the velocity code; the flag is taken as clear (UNKNOWN,
+    /// INFERRED walking; audit, NOTES 44).
     fn land(&mut self, s: &Scripts, n: Vec3, events: &mut Vec<Event>) {
+        // 820F3814: SetState(0). 820F3824: the heading history (820DE3E8,
+        // animation bookkeeping): not translated.
         self.set_state(State::Ground);
+        // 820F382C..820F38A0: +2020.
         self.last_speed = self.body.velocity.length();
-        // `820DBAA8(1)` runs here, before the landing velocity blend.
+        // `820DBAA8(1)` runs here (820F3908), before the landing velocity
+        // blend.
         self.flip_if_backwards(s, true);
         let v = self.body.velocity;
-        // 820F38A4: landing from vert air or a transfer sets +2131
+        // 820F38A4..820F38C4: landing from vert air or a transfer sets +2131
         // (`LandedFromVert`) and +2135; otherwise +2135 is cleared.
         if self.vert.in_vert_air || self.transfer.active {
             self.vert.landed_from_vert = true;
@@ -623,7 +733,7 @@ impl CorePhysics {
         } else {
             self.vert.landing_from_vert = false;
         }
-        // 820F38CC: onto a bank (+2616) sets `LandedOnBank`; otherwise
+        // 820F38CC..820F3900: onto a bank (+2616) sets `LandedOnBank`; otherwise
         // `LandedFromSpine` takes +136. Then +2616 = 0, +2133 = +1618.
         let tr = &mut self.transfer;
         if tr.bank {
@@ -635,13 +745,14 @@ impl CorePhysics {
         }
         tr.bank = false;
         tr.landed_from_tiretap = tr.auto_drop;
+        // 820F3A8C..820F3B10: still and pulled back (820D74B0).
         let still = v.x == 0.0 && v.z == 0.0 && !self.vert.landing_from_vert && !self.vert.landed_from_vert;
         let input = self.last_input;
         if still && self.stick_pulled_back(s, &input) {
             self.body.velocity.y = 0.0;
             self.body.velocity -= n * self.body.velocity.dot(n);
         } else if self.transfer.active {
-            // 820F3C44: aim along the target's at (+2448), keeping the
+            // 820F3B24, 820F3C44..820F3CBC (821EDD60): aim along the target's at (+2448), keeping the
             // speed, onto the landing plane; if pointing the board along it
             // would climb, the old velocity plainly projected instead. At
             // least `Physics_Acid_Drop_Min_Land_Speed`.
@@ -660,11 +771,13 @@ impl CorePhysics {
             if copy.y > 0.0 {
                 self.body.velocity = v - n * v.dot(n); // 820F3CBC (821ED798)
             }
+            // 820F3CC0..820F3D64.
             let min = s.global_float("Physics_Acid_Drop_Min_Land_Speed");
             if self.body.velocity.length_squared() < min * min {
                 self.body.velocity = self.body.velocity.normalize_or_zero() * min;
             }
         } else {
+            // 820F3B14..820F3C40 (820F3BEC: `landing_velocity_factor`).
             let dir = v.normalize_or_zero();
             let along = project_keep_length(v, n);
             let flat = v - n * v.dot(n);
@@ -674,12 +787,13 @@ impl CorePhysics {
             // the ground (820F3BF0..3C3C).
             self.body.velocity = along * k + flat * (1.0 - k);
         }
-        // 0.064516 = 0.254² (constant at 82002ADC).
+        // 820F3D68..820F3DD4: 0.064516 = 0.254² (constant at 82002ADC).
         if self.body.velocity.length_squared() < 0.064516 {
             self.body.velocity = Vec3::ZERO;
         }
-        // 820F3DD8: out of vert air (and +1380, 820F3E00); +96, +112 and
-        // +128 take the normal.
+        // 820F3DD8..820F3E24: out of vert air (and +1380, 820F3E00); +96,
+        // +112 and +128 take the normal. 820F3E2C..820F3EA0: up = n, +32,
+        // "Landed".
         self.vert.in_vert_air = false;
         self.transfer.retry = false;
         self.vert.eased_normal = n;
@@ -706,6 +820,25 @@ impl CorePhysics {
     /// "Ollied" runs `ollie`, which calls `Jump`; in the air it does so only
     /// while [`CorePhysics::late_ollie`] is set (see there). With the
     /// scripts, `skater.rs` delivers the events to them instead.
+    ///
+    /// Not translated from `820FC990`:
+    /// - 820FCA04..820FCA10: +164 = the frame dt, and dt == 0 returns
+    ///   before anything; there is no such guard here (audit, NOTES 44).
+    /// - 820FCA20..820FCA2C: bail state 9.
+    /// - 820FCA38..820FCA84: not in a bail, 822B5A78 false and the
+    ///   four-button chord 820D7B60 held: "ForcedBail" is sent and the whole
+    ///   frame is skipped (audit, NOTES 44).
+    /// - 820FCAB8..820FCAD8: the bike rows.
+    /// - 820FCAFC..820FCB34: SkaterState +176 and +184 cleared (both
+    ///   untranslated).
+    /// - 820FCB4C..820FCC80: `Wall_Ride_Show_Axis` debug lines.
+    /// - The other states' updates (820FCD0C..820FCD1C, 820FCD2C..820FCD6C;
+    ///   state 3, 820FCD20, is the lip), state 8's snap (820FCD88..820FCD98)
+    ///   and state 9 skipping the rest (820FCDA0).
+    /// - 820FCD7C: object +8 bit 0 set after the state update -> return
+    ///   (audit, NOTES 44).
+    /// - 820FCDD8..820FCE4C: the "SkaterEnterVertAir" / "SkaterExitVertAir"
+    ///   broadcasts when vert air (+2545) changes (audit, NOTES 44).
     pub fn step(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Vec<Event> {
         self.time_frac_ms += self.dt * 1000.0;
         let whole = self.time_frac_ms.floor();
@@ -726,26 +859,38 @@ impl CorePhysics {
         // 820FCAB4: +1237 = SkaterState +136 before the state update.
         self.transfer.was_active = self.transfer.active;
         let was_air = self.state == State::Air;
+        // 820FCC90..820FCD04: the switch on the state (820FCCFC: +1236 after
+        // an air update that landed, not kept).
         let mut events = match self.state {
             State::Ground => self.ground_update(s, input, world),
             State::Air => self.air_update(s, world),
             State::Lip => self.lip_update(s, input, world),
         };
+        // 820F4018..820F404C: every air frame that does not land first runs
+        // the head / ceiling check `820EA788` (a feeler up
+        // `Skater_default_head_height`, 0.15 just after a wallplant; on a
+        // downward-facing hit it slides the skater off it, drops the
+        // velocity into it and sets +200): not translated (audit, NOTES 44).
         // 820F4050: the air update ends with the ollie trigger `820D7AB0`
         // on every path that does not land.
         if was_air && !events.contains(&Event::Landed) {
             if self.ollie_trigger(input) {
                 events.push(Event::Ollied);
             }
-            // 820F4060: then the acid drop check.
+            // 820F4058 / 820F405C: the wallplant check `820E80D8` (not translated).
+            // 820F4060..820F40F4: then the acid drop check.
             self.air_acid_drop(s, world);
         }
-        // 820FCD8C: rails, after the state update.
+        // 820FCDB4: rails and lips (`820FAAA8(0)`, lip.rs), after the state
+        // update. Retail runs it after the speed allowance (820FCDA8); the
+        // order here is swapped (only matters when a transfer ends on the
+        // frame of a lip grab).
         self.rail_check(s, input, world);
         // 820FCDA8: the speed allowance after a transfer.
         self.post_transfer_speed(s);
-        // 820FCDD4 (after 820FAAA8, 820D7D78, 820D7E10, 820DE110, not
-        // translated): the balance meters' cheese wears off.
+        // 820FCDD4 (after the calls 820FCDBC, 820FCDC4, 820FCDCC to 820D7D78,
+        // 820D7E10, 820DE110, not translated):
+        // the balance meters' cheese wears off.
         {
             let (stats, ctx, on_bike, now) = (self.stats.clone(), self.stat_context, self.on_bike, self.time_ms);
             let mut no_random = |_: u32| 0;

@@ -20,20 +20,33 @@ impl CorePhysics {
     /// wall cut the move short, move once more along the velocity for the
     /// part of the distance that was lost.
     ///
-    /// Not translated: the skitch and bike branches, and `820E5158` (sets a
+    /// Not translated: the skitch and bike branches, and `820E5158` (calls
+    /// at 820F7CD8 and 820FCB3C; sets a
     /// box of ±3.5 x, -150..12 y around the skater; LIKELY the collision
     /// cache region, which the translated [`World`] does not need).
+    ///
+    /// 820F7818..820F7838: retail stretches the step by 1 / max(1 -
+    /// [827314F8] * K, 0.1) (82216E18 reads the global `K`) and zeroes
+    /// [827314F8]; no global `K` exists and a missing one reads 0, so the
+    /// factor is 1 and nothing is translated.
     pub(crate) fn ground_move(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut Vec<Event>) {
         let mut step = self.body.velocity * self.dt;
         let mut second = false;
         loop {
             let before = self.body.position;
             self.body.position += step;
+            // 820F7CE8: forward collision when not skitching (+160).
+            // 820F7CF4..820F7D00: retail returns when object +8 bit 0 is
+            // set after it (UNKNOWN; INFERRED dying / suspended): not
+            // translated (audit, NOTES 44).
             self.forward_collision(s, input, world, events);
+            // 820F7D10..820F7DA4 (skitch snap), 820F7DA8..820F7DE0 (bike
+            // snap 820F1BE8) and 820F7DF4..820F7E5C (the extra bike snap):
+            // not translated.
             self.ground_snap(s, input, world, events);
             let moved = (self.body.position - before).length();
             let wanted = step.length();
-            // 0.1 is f30 in 820F6978.
+            // 820F7F3C..820F8000: 0.1 is f30 in 820F6978.
             if !second && self.state == State::Ground && moved < wanted - 0.1 {
                 second = true;
                 step = self.body.velocity.normalize_or_zero() * wanted * (1.0 - moved / wanted);
@@ -175,19 +188,26 @@ impl CorePhysics {
     /// or leave the ground (off an edge).
     ///
     /// Not translated: SkaterState `+96`/`+176` bookkeeping from the surface
-    /// flags (read by animation code), `820E0A50` and trigger handling after
-    /// a snap, the display-matrix part of `820DA1A8`, and after going off an
-    /// edge the spine-transfer search (`820E1600`, `820DA7B0`).
+    /// flags (820F171C..820F1730, 820F1940..820F19E0; read by animation
+    /// code), `820E0A50` and the trigger handling after a snap
+    /// (820F1A0C..820F1A7C: node TriggerScripts 18 and 10 via `8228C880`,
+    /// each with the physicscontrol +38 early return, `820BBE10`, the
+    /// sound's terrain), the bike's at-row flip (820F14E4..820F1524), the
+    /// display-matrix part of `820DA1A8`, and the off-edge node
+    /// TriggerScript 34 (820F1BC8..820F1BD4). The off-edge acid drop search
+    /// (`820E1600`, `820DA7B0`) is translated.
     fn ground_snap(&mut self, s: &Scripts, input: &InputState, world: &dyn World, events: &mut Vec<Event>) {
         let up = self.body.up();
         let start = self.body.position + up * s.physics_float("Physics_Ground_Snap_Up", self.on_bike);
         // -5 is the constant at 82002A7C.
         let end = self.body.position + up * -5.0;
         let mut stick = false;
+        // 820F13B8: no hit -> off the ground.
         if let Some(hit) = world.feeler(start, end, 0x10, 0) {
             let n = hit.normal;
             let to_skater = self.body.position - hit.point;
             let above = up.dot(to_skater);
+            // 820F1478..820F148C.
             if !surface_skatable(s, &hit) {
                 // 0.001 is the constant at 82000D80.
                 if above < 0.001 {
@@ -199,8 +219,10 @@ impl CorePhysics {
                 let a1 = project_keep_length(at, n);
                 let a0 = project_keep_length(at, self.ground_normal);
                 let c = a1.dot(a0);
+                // 820F1588.
                 let name = if input.up { "Ground_stick_angle_forward" } else { "Ground_stick_angle" };
                 let stick_cos = (s.physics_float(name, self.on_bike) * DEG).cos();
+                // 820F15C8..820F15DC, 820F15EC..820F1614, 820F1690..820F16CC.
                 if at.dot(n) > 0.0 && c > 0.0 && c < stick_cos {
                     // The ground turns away downward too sharply: leave it.
                     stick = false;
@@ -212,12 +234,14 @@ impl CorePhysics {
                         stick = false;
                     }
                 }
+                // 820F16D8..820F16F0, 820F174C.
                 if stick {
                     // SkaterState +72 from the hit's vert flag (+1185).
                     self.vert.on_vert_ground = hit.flags & 0x8 != 0;
                     self.orient_to_ground(n);
                 }
-                // Upside down (0.0 up.y) and slower than 7.6 (82002A5C).
+                // 820F17AC..820F18CC: upside down (0.0 up.y) and slower than
+                // 7.6 (82002A5C).
                 let up = self.body.up();
                 if stick && up.y < 0.0 && self.body.velocity.length() < 7.6 {
                     // -0.8 is the constant at 82002AD8.
@@ -230,6 +254,7 @@ impl CorePhysics {
                         self.body.velocity = -self.body.velocity;
                     }
                 }
+                // 820F1900; 820F19EC, 820F19F4.
                 if stick {
                     self.body.position = hit.point + n * SKIN;
                     // `820E53D8(+298)`: the new terrain under the board.
@@ -238,11 +263,14 @@ impl CorePhysics {
                 }
             }
         }
+        // 820F1A88..820F1AC8: SetState(1), SkaterOffEdge, GroundGone, the
+        // vert takeoff.
         if !stick {
             self.set_state(State::Air);
             events.push(Event::SkaterOffEdge);
             events.push(Event::GroundGone);
             self.vert_takeoff(s);
+            // 820F1AD8..820F1B74.
             if self.vert.in_vert_air {
                 self.set_break_window(true);
                 if !self.spine_button(input) {
@@ -253,12 +281,15 @@ impl CorePhysics {
                     self.set_break_window(false);
                 }
             } else if self.spine_button(input) {
-                // 820F1B7C: off an edge, not vert, with the spine button:
+                // 820F1B7C..820F1BC4: off an edge, not vert, with the spine button:
                 // an acid drop with the pop.
                 if let Some(drop) = self.acid_drop_search(s, world, true) {
                     self.acid_drop_start(s, &drop);
                 }
             }
+            // 820F1BC8..820F1BD4: on every off-edge path retail then runs
+            // the surface node's TriggerScript, type 34 (`8228C880`): not
+            // translated (audit, NOTES 44; no node TriggerScripts yet).
         }
     }
 }

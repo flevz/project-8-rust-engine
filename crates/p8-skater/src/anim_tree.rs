@@ -33,9 +33,11 @@
 //!   command handler was not read, only the sample).
 //! - `skatermodulate` (init `820B2D00`, update `820B2790`, sample
 //!   `820B3288`, finish `820B26C0`): offwhenfinished, turn, slope, speed,
-//!   brake, vert, crouch, board, time/play. Other types (grindlean, nollie,
-//!   spin, ...) are not translated (they rise over blendtime).
-//! - The rolling nodes: `skatertimer` (crouch, jump, cycle, play), `speedblend`,
+//!   brake, vert, crouch, board, grindlean, spin, time/play. Nollie and
+//!   other types are not translated (they rise over blendtime); nor is the
+//!   `id` tag write (see the update).
+//! - The rolling nodes: `skatertimer` (crouch, jump, cycle, play, spin,
+//!   vertspin, grabout, turn; not turninit, brake, brakeout), `speedblend`,
 //!   `crouchblend`, `ubercrouchblend`, `kicktimer`/`kickcatch`,
 //!   `braketimer`/`brakecatch`, `skatertimedswitch`; and the air nodes:
 //!   `blank`, `partialswitch`, `apextimer`, `takeoffblend`,
@@ -1029,16 +1031,20 @@ impl SkaterModulate {
     /// `820B2790`.
     fn update(&mut self, dt: f32, i: &SkaterInputs) {
         let k = qb_key;
+        // 820B27B4: the delay counts down first.
         if self.delay > 0.0 {
             self.delay -= dt;
             return;
         }
+        // 820B27E8..820B2830, 820B2910, 820B2920, 820B29CC..820B29F0,
+        // 820B2BE0, 820B2BF0: the dispatch on the type (+48).
         let t = self.timertype;
         if t == k("board") || t == k("slope") || t == k("speed") {
             return; // computed when sampled (820B3288)
         }
         if t == k("offwhenfinished") {
-            // 28C4: count to the clip length, then off (on if inverted).
+            // 820B28C4..820B28E8: count to the clip length, then off (on if
+            // inverted); no finish, no tag.
             self.x += dt;
             if self.x >= self.blendtime {
                 self.strength = if self.invert { 1.0 } else { 0.0 };
@@ -1046,21 +1052,23 @@ impl SkaterModulate {
             return;
         }
         if t == k("crouch") {
-            // 2834: rises while crouched, never falls.
+            // 820B2834..820B2884: rises while crouched, never falls.
             self.x = self.prev;
             if i.crouched && self.x < 1.0 {
                 self.x = (self.x + dt / self.blendtime).min(1.0);
             }
             self.prev = self.x;
         } else if t == k("vert") {
-            // 2938: towards 1 by 0.1 a frame in vert air or on vert ground.
+            // 820B2938..820B29B4: towards 1 by 0.1 a frame in vert air or on
+            // vert ground.
             if i.in_vert_air || i.on_vert_ground {
                 self.x = (self.x + 0.1).min(1.0);
             } else {
                 self.x = (self.x - 0.1).max(0.0);
             }
         } else if t == k("brake") {
-            // 2B3C: follow the brake amount while the brake input is held.
+            // 820B2B3C..820B2BC8: follow the brake amount while the brake
+            // input is held.
             self.x = self.prev;
             if i.brake_input {
                 if self.x < i.brake_amount {
@@ -1073,8 +1081,8 @@ impl SkaterModulate {
             }
             self.prev = self.x;
         } else if t == k("turn") {
-            // 29F4: the turn amount (+1944) on this side, eased in over
-            // blendtime and out over blendtime2.
+            // 820B29F4..820B2B08: the turn amount (+1944) on this side,
+            // eased in over blendtime and out over blendtime2.
             let a = i.turn;
             let right = self.dir == k("right");
             let left = self.dir == k("left");
@@ -1134,10 +1142,16 @@ impl SkaterModulate {
                 1.0 - d / self.range
             };
         } else if self.x < 1.0 {
-            // 2BF4 (time, play, ...): rise over blendtime.
+            // 820B2BF4..820B2C1C (time, play, ...): rise over blendtime.
+            // 820B2B0C..820B2B38 nollie (strength = animinfo +172 ? 0 : 1,
+            // no finish): not translated (no node in the data uses it); it
+            // rises here too.
             self.x += dt / self.blendtime;
         }
         self.finish();
+        // 820B2CC8..820B2CE4: retail then writes the strength to the object
+        // tag named by `id` (+16) unless `unnamed`: not translated (audit,
+        // NOTES 44; no reader of those tags is known).
     }
 
     /// The part of `820B3288` that runs when sampled (slope, speed, board).
@@ -1256,8 +1270,10 @@ fn wrap_360(mut a: f32) -> f32 {
 }
 
 impl SkaterTimer {
+    /// `820B4038`.
     fn update(&mut self, dt: &mut f32, i: &SkaterInputs) {
         let k = qb_key;
+        // 820B4060: the delay counts down first (dt not scaled, no tag).
         if self.delay > 0.0 {
             self.delay -= *dt;
             return;
@@ -1265,18 +1281,21 @@ impl SkaterTimer {
         // 4084: `+24` = the time before this update.
         let prev = self.time;
         *dt *= self.speed;
+        // 820B40B0..820B40E0, 820B4194, 820B41A4, 820B4334..820B4358,
+        // 820B4494, 820B44A4: the dispatch on the type (+80).
         let t = self.timertype;
         if t == k("crouch") {
-            // 42F8: waits for the crouch, then plays.
+            // 820B42F8..820B4314: waits for the crouch, then plays.
             if self.crouched {
                 self.time += *dt;
             } else {
                 self.crouched = i.crouched;
             }
         } else if t == k("cycle") || t == k("play") {
+            // 820B435C.
             self.time += *dt;
         } else if t == k("grabout") {
-            // 40E4: plays once started (`+86`); starts when the object tag
+            // 820B40E4..820B412C: plays once started (`+86`); starts when the object tag
             // `grabtrickintimer` is at least 1 and neither circle nor
             // square is held (animinfo `+156`).
             if self.started {
@@ -1285,7 +1304,7 @@ impl SkaterTimer {
                 self.started = true;
             }
         } else if t == k("jump") {
-            // 41A8: starts when the crouch is released, runs while in the
+            // 820B41A8..820B4200: starts when the crouch is released, runs while in the
             // air (SkaterState +24 == 1).
             if self.started {
                 if i.in_air {
@@ -1299,7 +1318,7 @@ impl SkaterTimer {
                 }
             }
         } else if t == k("spin") {
-            // 44A8: while in the air (animinfo `+364` == 1) the angle is the
+            // 820B44A8..820B4550: while in the air (animinfo `+364` == 1) the angle is the
             // trick spin (animinfo `+532`), negated when flipped, plus a
             // half turn for `nollie`; the time is angle / 360 (`82000DBC`),
             // +1 when negative. Out of the air the last angle is kept.
@@ -1315,7 +1334,7 @@ impl SkaterTimer {
                 self.time += 1.0;
             }
         } else if t == k("vertspin") {
-            // 4208: in the air the angle is the one between the object's at
+            // 820B4208..820B42F4: in the air the angle is the one between the object's at
             // row (animinfo `+240`) and its velocity (`+192`), 821ED9E8. The
             // time follows angle / 360, at most 0.015 (`82001C00`) a frame
             // from the last time, except on the first update (`+104`).
@@ -1356,10 +1375,13 @@ impl SkaterTimer {
                 self.time -= *dt;
             }
         }
-        // Other timer types (turninit 436C, brake 4554, brakeout 4138,
-        // grab): not translated; none but grab is used by the anim data.
-        // 4590: below 0 -> finished, 0; past the end -> the end and
-        // finished, or 0 (not finished) for a cycle.
+        // Other timer types: turninit 820B436C..820B4414 (Left / Right
+        // swapped when flipped, +85 = animinfo +372 == dir, an early return
+        // at 820B45DC), brake 820B4554..820B4588 (+87 latch of animinfo
+        // +132), brakeout 820B4138..820B4184 (brakein tag), grab: not
+        // translated; none of them is used by the anim data.
+        // 820B4590..820B4614: below 0 -> finished, 0; past the end -> the
+        // end and finished, or 0 (not finished) for a cycle.
         if self.time < 0.0 {
             self.finished = true;
             self.time = 0.0;
@@ -1371,7 +1393,9 @@ impl SkaterTimer {
                 self.finished = true;
             }
         }
-        // 45A4: the progress (time / `+36`) as the tag named by the id.
+        // 820B45A4..820B45C8: the progress (time / `+36`) as the tag named
+        // by the id. (The `id != 0` test is Rust's: an absent id.) The anim
+        // events after it (820B45D8) are not fired.
         if self.id != 0 && self.id != k("unnamed") {
             self.tags.set(self.id, self.time / self.end);
         }
@@ -2295,10 +2319,20 @@ impl Build<'_> {
 
     /// `820B2D00`.
     fn skater_modulate(&mut self, items: &[(u32, Value)], scope: &Params) -> SkaterModulate {
+        // 820B2D24: +20 = the AnimInfo component (820A0778); the
+        // [`SkaterInputs`] stand in for it.
+        // 820B2D4C..820B2DC0: with `id` and `sync`, sync 0 sets the tag to
+        // 1, else the strength (+28) starts from the tag: not translated
+        // (audit, NOTES 44; no skatermodulate in the data has `sync`).
         let k = qb_key;
         let timertype = self.checksum(items, "timertype", scope).unwrap_or(k("play"));
         let flag = |b: &Self, n: &str| matches!(lookup(items, k(n)).map(|v| b.resolve(v, scope)), Some(Value::Int(1)));
         let dir = if timertype == k("turn") { "turn_dir" } else { "slope_dir" };
+        // 820B2E40 invert, 820B2E60 min, 820B2E74..820B2E88 speed (read for
+        // the speed type only), 820B2F30..820B2F9C slope (max_slope,
+        // slope_dir, dont_flip), 820B2FB4 turn_dir, 820B2FE8 blendtime,
+        // 820B2FF4..820B3024 mirror (retail only for turn and slope, the
+        // only types that read the flip), 820B313C delay_anim.
         let mut m = SkaterModulate {
             timertype,
             invert: flag(self, "invert"),
@@ -2320,19 +2354,23 @@ impl Build<'_> {
             func: None,
             strength: 0.0,
         };
+        // 820B3048..820B3078.
         if timertype == k("spin") {
             m.angle = self.float(items, "angle", scope).unwrap_or(0.0);
             m.range = self.float(items, "range", scope).unwrap_or(0.0);
         }
+        // 820B308C..820B30AC.
         if timertype == k("vert") {
             m.x = if self.vert0 { 1.0 } else { 0.0 };
         }
+        // 820B30C8..820B3108.
         if timertype == k("offwhenfinished") {
             m.strength = self.float(items, "start_strength", scope).unwrap_or(1.0);
             if let Some(a) = self.checksum(items, "anim", scope) {
                 m.blendtime = self.lib.duration(a);
             }
         }
+        // 820B3180..820B3274.
         if let Some(f) = self.checksum(items, "blendfunction", scope) {
             if let Some(a) = self.checksum(items, "anim", scope) {
                 m.blendtime = self.lib.duration(a);
@@ -2343,8 +2381,14 @@ impl Build<'_> {
         m
     }
 
+    /// `820B3D08`.
     fn skater_timer(&mut self, items: &[(u32, Value)], scope: &Params) -> SkaterTimer {
         let k = qb_key;
+        // 820B3D48..820B3DA0: the clip length (`anim`), else `length`;
+        // 820B3DB8 speed; 820B3EA4 cycle; 820B3F64..820B3F8C `dir` (retail
+        // reads it for turn / turninit only); 820B3FFC delay_anim.
+        // 820B3FB0..820B3FD8: `anim_events = on` (8237C178): not translated
+        // for skatertimers (their events are not fired).
         let duration = match self.checksum(items, "anim", scope) {
             Some(a) => self.lib.duration(a),
             None => self.float(items, "length", scope).unwrap_or(0.0),
@@ -2366,7 +2410,7 @@ impl Build<'_> {
             delay: self.checksum(items, "delay_anim", scope).map_or(0.0, |a| self.lib.duration(a)),
             angle: 0.0,
             dir: self.checksum(items, "dir", scope).unwrap_or(0),
-            // 3F1C..3F4C: the `nollie` param on a spin timer. A reference
+            // 820B3F1C..820B3F4C: the `nollie` param on a spin timer. A reference
             // to a param the branch was not given stays unresolved (APPROXIMATE:
             // retail's 820A2870 may see it differently).
             half_turn: timertype == k("spin")
@@ -2377,7 +2421,7 @@ impl Build<'_> {
                 },
             snap: true,
         };
-        // 3E04..3E5C: with both `id` and `sync` params: sync 0 sets the tag
+        // 820B3E04..820B3E5C: with both `id` and `sync` params: sync 0 sets the tag
         // named by the id to 0; otherwise the timer starts where the timer
         // that last wrote that tag was (time = end * tag), so a branch
         // replaced mid-clip (the revert's `flip`, then
@@ -2397,7 +2441,7 @@ impl Build<'_> {
                 }
             }
         }
-        // 3ECC: a crouch timer built while crouched starts at its end
+        // 820B3ECC..820B3F08: a crouch timer built while crouched starts at its end
         // unless `dont_skip`.
         if timertype == k("crouch") && t.crouched && lookup(items, k("dont_skip")).is_none() {
             t.time = t.end;

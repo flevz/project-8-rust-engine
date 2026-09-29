@@ -87,7 +87,9 @@ pub struct Transfer {
     pub on_object: bool,
     /// `+2616`: the target is a bank (surface flag 0x100 without 0x8).
     pub bank: bool,
-    /// `+2620`: the speed at the start of an acid drop.
+    /// `+2620`: the speed at the start of an acid drop. Retail's air update
+    /// then keeps it at max(`+2620`, |v|) while `+192` is set
+    /// (820F2564..820F2654): not translated (nothing else reads it).
     pub speed: f32,
     /// `+2768`: a copy of the acid drop's carry (read by the rail grab,
     /// not translated).
@@ -531,7 +533,7 @@ impl CorePhysics {
         self.transfer.actions.push(ScriptAction::ClearHandler(qb_key("Ollied")));
     }
 
-    /// The acid drop check at the end of the air update (820F4060):
+    /// The acid drop check at the end of the air update (820F4060..820F40F4):
     /// allowed (`+200` clear), with the spine button or `+1618`; `pop` when
     /// the air began after the last jump and less than 250 ms ago.
     pub(crate) fn air_acid_drop(&mut self, s: &Scripts, world: &dyn World) {

@@ -161,7 +161,10 @@ pub struct CorePhysics {
     pub time_ms: i64,
     /// Fractional milliseconds not yet added to `time_ms`.
     pub time_frac_ms: f32,
-    /// `+2000`: where the last jump started.
+    /// `+2000`: where the last jump started. Retail also stores the
+    /// position here every ground frame (820F6B4C; its reader is script
+    /// `GetLastGroundPos`, 820D62A8, the last ground position); that
+    /// per-frame store is not kept (audit, NOTES 44).
     pub jump_start: Vec3,
     /// SkaterState `+48`: toggled with every turn-around (the backwards
     /// flip `820DBAA8` via `820D45F0`, and `FlipAndRotate` `820D9008`). The
@@ -950,16 +953,22 @@ impl CorePhysics {
 
     /// Retail `820ECEE8` (skater path): steering on the ground.
     pub fn ground_turn(&mut self, s: &Scripts, input: &InputState) {
+        // 820ECF20: +1940 cleared; 820ECF74: upside down -> nothing.
         self.last_turn = None;
         if self.body.up().y < 0.0 {
             return;
         }
+        // 820ECF80..820ECF98: the bike path (820E7A20): not translated
+        // (bikes). 820ECFA0..820ED030: the 3D speed.
         let speed = self.speed();
         let ground_rotation = |me: &Self| s.physics_float("Physics_Ground_Rotation", me.on_bike);
         let sharp_rotation = |me: &Self| s.physics_float("Physics_Ground_Sharp_Rotation", me.on_bike);
         let mut rate = 0.0;
+        // 820ED03C.
         if s.physics_float("Use_New_Analog_Controls", false) == 0.0 {
-            // Digital controls.
+            // 820ED04C..820ED18C: digital controls. The ramp also needs
+            // physics +1565 clear (820ED0A4, 820ED14C), which only bike code
+            // sets, so it always is here.
             let (held, ms, sign) = if input.left {
                 (true, input.left_held_ms, 1.0)
             } else if input.right {
@@ -979,6 +988,7 @@ impl CorePhysics {
                 }
             }
         } else {
+            // 820ED190..820ED234: analog.
             let x = input.stick_x_raw * 0.0078125;
             let y = input.stick_back_raw * 0.0078125;
             // Dead zone 0.4, rescaled by 1/0.6 (constants 82000DFC, 82000DF8).
@@ -993,7 +1003,7 @@ impl CorePhysics {
             let ramp_time = s.physics_float("Physics_Turn_Ramp_Time", false);
             let mut ramped = false;
             if t.abs() == 0.0 {
-                // Digital fallback. Retail multiplies the ramp by t, which is 0
+                // 820ED258..820ED33C: digital fallback. Retail multiplies the ramp by t, which is 0
                 // here, so a ramped turn stays 0 (kept as found).
                 for (held, ms, full) in [(input.left, input.left_held_ms, -1.0), (input.right, input.right_held_ms, 1.0)] {
                     if held {
@@ -1007,6 +1017,7 @@ impl CorePhysics {
                     }
                 }
             }
+            // 820ED340..820ED3D8.
             if t.abs() > 0.0 {
                 let normal = ground_rotation(self);
                 let mut r = normal;
@@ -1022,13 +1033,17 @@ impl CorePhysics {
                 self.turn_amount = t;
             }
         }
-        // The bert-slide branch (+2048, `820D78B8`) is not translated.
+        // 820ED3E4..820ED520: the bert-slide branch (+2048, `820D78B8`, its
+        // early returns at 820ED500 / 820ED520) is not translated (the
+        // flag is never set).
+        // 820ED524..820ED564: rate 0 -> nothing; +2217; +1940 Left / Right.
         if rate == 0.0 {
             return;
         }
         let angle = self.dt * rate;
         self.last_turn = Some(if angle > 0.0 { Turn::Left } else { Turn::Right });
         self.last_spin_positive = angle > 0.0; // 820ED548
+        // 820ED570..820ED5FC.
         if !self.lock_velocity_direction {
             // Rotation about world Y. The -1 at 827329F0 is filled at run time
             // (LIKELY -1: required for this to be a rotation).
@@ -1102,18 +1117,26 @@ impl CorePhysics {
     /// Retail ground update `820F6978`, for a skater on the ground with no
     /// balance trick, skitch, bike or moving platform.
     ///
-    /// Not translated (absent): side and forward collision (`820EB9A0`,
-    /// `820EBD20`), ground snapping (`820F12C0`) and the re-move loop,
-    /// high-ollie checks (`820D79F8`), animation bookkeeping (`820DE230`,
-    /// heading `+2016`), and the steps after steering (`820DBEF0` onward).
-    /// The position is advanced by `velocity * dt` exactly as retail does
-    /// before collision; keeping the board on the ground is the caller's job
-    /// until ground snapping is translated.
+    /// The move, forward collision (`820EBD20`), ground snapping
+    /// (`820F12C0`) and the second move are in `ground.rs`
+    /// (`ground_move`).
+    ///
+    /// Not translated (absent): the side collision `820F2238` (`820ED630`
+    /// each side) and the wall-lean push `820E9188` after steering,
+    /// `820EB9A0` at 820F771C (reads `Skater_side_collide_height`),
+    /// high-ollie checks (`820D79F8`),
+    /// animation bookkeeping (`820DE230`, heading `+2016`), and the bike
+    /// steps (`820DBEF0`).
     pub fn ground_update(&mut self, s: &Scripts, input: &InputState, world: &dyn crate::world::World) -> Vec<Event> {
         let mut events = Vec::new();
-        // 820F6978 starts by clearing SkaterState +80, +56, +64, +136,
-        // +192, +144, +200 and physics +1380 (and +152, +208, +1616:
-        // untranslated).
+        // 820F69A8..820F6AC8: 820F6978 starts by clearing SkaterState +80,
+        // +56, +64, +136, +192, +144, +200 and physics +1380 (and +152,
+        // +208, +1616: untranslated; nor are the +60 / +68 stamps of +56 /
+        // +64).
+        // 820F6AE0..820F6B4C: also zeroed each frame: +2552, +2632, +1192,
+        // +1216, +2536, +1480, +1549, +1552, +2164 (not kept); +2000 = the
+        // position (820F6B4C, `GetLastGroundPos`): not kept (audit, NOTES
+        // 44; see `jump_start`).
         self.set_break_window(false);
         self.vert.in_vert_air = false;
         self.vert.tracking = false;
@@ -1125,35 +1148,43 @@ impl CorePhysics {
         self.kick_flag = false;
         // 820F6B3C: not flipping on the ground (+1542).
         self.flipping = false;
-        // 820F6BF8 / 820F6C68: the lean (+1912) back to 0 (and the model's
+        // 820F6BF8..820F6C6C: the lean (+1912) back to 0 (and the model's
         // display rotation reset, 820DEB20, which is not drawn yet).
         if self.lean_degrees != 0.0 {
             self.lean_degrees = 0.0;
         }
+        // 820F6BC4..820F6BE0.
         let speed = self.speed();
         if speed - self.last_speed >= s.physics_float("Physics_kick_accel_threshold", self.on_bike) {
             self.kick_flag = true;
         }
         self.last_speed = speed;
+        // 820F6C70..820F6CA8: the heading +2016 (acos, 360 - x when at.z <
+        // 0): not translated. 820F6CAC..820F6CD8: +2104 = now when on a
+        // vert surface (+1185): not translated (no reader known).
 
-        // 0.001 is the constant at 82000D80.
+        // 820F6D54: 0.001 is the constant at 82000D80.
         if speed > 0.001 {
             self.body.velocity = project_keep_length(self.body.velocity, self.ground_normal);
         }
         self.previous_normal = self.ground_normal;
+        // 820F6D84..820F6E10.
         if self.in_bail && self.ground_normal.y < s.global_float("bail_steep_ground") {
             events.push(Event::SteepGround);
         }
 
-        // Gravity along the ground.
+        // Gravity along the ground; 820F6E84..820F6E94 the OverrideLimits
+        // gravity.
         let mut g = Vec3::new(0.0, s.physics_float("Physics_Ground_Gravity", false), 0.0);
         if let Some(o) = self.override_limits
             && self.body.velocity.y > 0.0
         {
             g = Vec3::new(0.0, o.gravity, 0.0);
         }
+        // 820F6EFC.
         g -= self.ground_normal * g.dot(self.ground_normal);
         let mut gravity_cancelled = false;
+        // 820F6F30..820F6F88.
         if self.body.velocity.y < 0.0 {
             if self.crouched {
                 g.y -= s.physics_float("additional_downhill_gravity", false);
@@ -1166,11 +1197,14 @@ impl CorePhysics {
             let manual = self.balance.doing
                 && [0, k("Manual"), k("NoseManual"), k("Flatland")].contains(&self.balance.kind);
             let threshold = s.physics_float(if manual { "min_uphill_manual_speed" } else { "min_uphill_kick_speed" }, false);
+            // 820F7004..820F70D8.
             if !self.powerslide && self.crouched && self.body.at().y > 0.0 && self.speed() < threshold {
                 g.y = 0.0;
                 gravity_cancelled = true;
             }
         }
+        // 820F7108..820F7298: the bike gravity (820D74B0): not translated
+        // (bikes). 820F72A4.
         if !gravity_cancelled {
             self.body.velocity += g * self.dt;
         }
@@ -1185,13 +1219,17 @@ impl CorePhysics {
                 self.kick_flag = true;
             }
         }
-        // The `+2025` block is skipped: every retail write to `+2025` stores 0.
+        // The `+2025` block (820F72E0..820F7598) is skipped: every retail
+        // write to `+2025` stores 0.
 
-        // 75A0: by the running balance type (balance +24): none -> the
+        // 820F75A0..820F761C: by the running balance type (balance +24): none -> the
         // drive section; Manual / NoseManual / Flatland -> not braking
         // (+1980), the meter's safe sides (820E5988) and the manual meter
         // (82190F58; the trick component's balance scoring 821248A8 is not
-        // translated); Skitch (not translated) and other types -> nothing.
+        // translated); Skitch (820F7620..820F7680 with
+        // CHEAT_PERFECT_SKITCH: not translated) and other types -> nothing.
+        // 820F7684..820F76A8 Manual / NoseManual / Flatland; 820F76CC..820F76FC
+        // CHEAT_PERFECT_MANUAL: not translated (cheats).
         let kind = self.balance.kind;
         let k = qb_key;
         if kind == 0 {
@@ -1204,36 +1242,59 @@ impl CorePhysics {
             self.run_balance_meter(s, input, &mut events);
         }
         self.friction(s, gravity_cancelled);
+        // 820F7734.
         if self.body.velocity.y < 0.0 {
             self.flag_2637 = false;
         }
-        // 0.1 and 0.9 are the constants at 82000BF4 and 82002A74.
+        // 820F77B8..820F77C4: 0.1 and 0.9 are the constants at 82000BF4 and
+        // 82002A74.
         if self.speed() < 0.1 && self.ground_normal.y > 0.9 {
             events.push(Event::Stopped);
         }
 
+        // 820F7978..820F7A3C (skitch speed match) and 820F7A4C..820F7AC8
+        // (movable contact, +2852): not translated.
         // Move, collide with walls and stay on the ground.
         self.ground_move(s, input, world, &mut events);
+        // 820F8010: out of the ground state -> return.
         if self.state != State::Ground {
             return events;
         }
 
+        // 820F801C: the turn unless powerslide (+1388). Retail also skips it
+        // while skitching (820F8028, not translated) and while SkaterState
+        // +256 is set (820F8034; its setter is unknown, taken as clear: not
+        // translated, audit, NOTES 44).
         if !self.powerslide {
             self.ground_turn(s, input);
         }
+        // 820F8048: the bike step (bikes only).
+        // 820F8064..820F8070: unless +2184 or +2025.
         if !self.lock_velocity_direction {
             self.velocity_along_board();
         }
-        // `820DBAA8`, unless the velocity direction is locked (+2184).
+        // 820F808C..820F809C: when not skitching, the side collision
+        // `820F2238` (`820ED630` to each side, `Skater_side_collide_length`;
+        // position restored when both hit) and the wall-lean push `820E9188`
+        // (Skate_wall_lean_push_*): not translated (audit, NOTES 44).
+        // `820DBAA8` (820F80A8), unless the velocity direction is locked
+        // (+2184).
         if !self.lock_velocity_direction {
             self.flip_if_backwards(s, false);
         }
         // `820D7AB0` runs later in the ground update.
         if self.ollie_trigger(input) {
-            // 820F80D0: the vert takeoff runs as soon as the trigger fires.
+            // 820F80C8..820F80D0: the vert takeoff runs as soon as the
+            // trigger fires. 820F80D4..820F80E8: then SkaterState flags 6
+            // (+80, the break window, stamped only if it was clear) and 27
+            // (+248) are set: not translated (audit, NOTES 44; `jump` sets
+            // +80 later).
             self.vert_takeoff(s);
             events.push(Event::Ollied);
         }
+        // 820F80F0 (820DE030, +1476 = time the speed first hit 0) and
+        // 820F80F8 (820E4830, skitch start search): not translated.
+        // 820F8104 (8211F668, the object list): not translated.
         events
     }
 }

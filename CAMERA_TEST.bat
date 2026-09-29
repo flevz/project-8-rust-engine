@@ -17,6 +17,12 @@ echo  6. Wider view than before (81 degrees across).
 echo Spacewalk (manual, then Left, Right, Square): the hips stay lined up with the board as it starts, no swing out and back.
 echo Animation: smooth, without the small hitch about every half second.
 echo Revert after a vert spin: turns the way you were spinning.
+echo Overnight audit fixes to look at:
+echo  - Spin with L1/R1 right after taking off a vert ramp: it should spin at once.
+echo  - Spine transfer: you keep going the way you aimed, no snap to the board direction on landing.
+echo  - Manual uphill while crouched: you slow down as in the original.
+echo  - Stand still and turn: the turn-in-place animation plays.
+echo  - Top of an ollie: the feet pose follows how far you have spun.
 echo Not done yet: grinds, lip tricks, bails, wallrides, right-stick look-around, camera going through walls.
 "target\release\project8.exe"
 if errorlevel 1 pause
