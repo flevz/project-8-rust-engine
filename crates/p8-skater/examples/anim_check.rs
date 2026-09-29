@@ -9,6 +9,20 @@ use p8_skater::world::Level;
 use p8_skater::{InputState, Scripts, Skater};
 use std::collections::BTreeMap;
 
+struct Ledge {
+    h: f32,
+    start: Vec3,
+    r: f32,
+}
+
+impl p8_skater::World for Ledge {
+    fn feeler(&self, a: Vec3, b: Vec3, i1: u16, i0: u16) -> Option<p8_skater::world::Hit> {
+        let d = (a - self.start) * Vec3::new(1.0, 0.0, 1.0);
+        let height = if d.length() < self.r { self.h } else { self.h - 3.0 };
+        p8_skater::FlatFloor { height }.feeler(a, b, i1, i0)
+    }
+}
+
 fn main() {
     let root = std::path::PathBuf::from(std::env::args().nth(1).expect("DATA/COMPRESSED folder"));
     let mut names = BTreeMap::new();
@@ -25,7 +39,11 @@ fn main() {
     // P8_FLAT=1: a flat floor at the restart height instead of the level.
     let level = Level::new(&z.collision);
     let flat = p8_skater::FlatFloor { height: r.pos[1] };
-    let world: &dyn p8_skater::World = if std::env::var_os("P8_FLAT").is_some() { &flat } else { &level };
+    // P8_LEDGE=<metres>: with P8_FLAT, the floor drops 3 m that far from
+    // the start (a ledge to roll off).
+    let ledge = Ledge { h: r.pos[1], start: Vec3::from(r.pos), r: std::env::var("P8_LEDGE").ok().and_then(|v| v.parse().ok()).unwrap_or(f32::MAX) };
+    let world: &dyn p8_skater::World = if std::env::var_os("P8_FLAT").is_some() { &ledge } else { &level };
+    let _ = flat;
     let sk = Skeleton::load(&root.join("ZONES/global.pak.xen"), qb_key("Pros_Hawk_skel")).expect("skeleton");
     let rig = Rig::from_skeleton(&sk);
     let lib = ClipLib::open(&root.join("PAK/perm_anims.pak.xen"), &root.join("../ANIMS/standardkeyQ.bin.xen")).expect("clips");
@@ -183,13 +201,22 @@ fn spin_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wor
 /// direction with square (circle). Prints each change of script and
 /// animation branch, and the commands not translated.
 fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::World, which: &str, name: &dyn Fn(u32) -> String) {
+    // nollie / nollie:<mode>: L2 (ToggleNollieRegular) on the ground first.
+    let nollie = which == "nollie" || which.starts_with("nollie:");
+    let which = which.strip_prefix("nollie").map_or(which, |w| w.trim_start_matches(':'));
+    let bone = which.starts_with("boneless");
+    let nocomply = which.starts_with("nocomply");
+    let which = which.strip_prefix("boneless").or_else(|| which.strip_prefix("nocomply")).map_or(which, |w| w.trim_start_matches(':'));
     let (grab, dir) = match which.strip_prefix("grab:") {
         Some(d) => (true, d),
         None => (false, which),
     };
     // ground:r2 (stance switch) / ground:manual (up then down): no ollie.
     let ground = which.strip_prefix("ground:");
-    let mut air_frames = 0;
+    let mut air_frames: i32 = 0;
+    let mut jumps = 0;
+    let mut last_events: Vec<p8_skater::core_physics::Event> = Vec::new();
+    let events_jumps = |e: &[p8_skater::core_physics::Event]| e.iter().filter(|e| matches!(e, p8_skater::core_physics::Event::SkaterJump)).count();
     let (mut last_script, mut last_branches) = (0, Vec::new());
     for i in 0..60 * 8 {
         let t = i as f32 / 60.0;
@@ -232,6 +259,30 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         } else {
             InputState::default()
         };
+        // buttslap[:<frames>]: (with P8_LEDGE) push, hold A and roll off
+        // the ledge, flip (square + left) at air frames 3-5, then tap A
+        // (<frames> down, <frames> up; default 3) from air frame 8.
+        if let Some(b) = which.strip_prefix("buttslap") {
+            let tap: i32 = b.trim_start_matches(':').parse().unwrap_or(3);
+            input = InputState { up: t < 3.0, crouch: t >= 2.5 && air_frames == 0, ..Default::default() };
+            if in_air {
+                input.kick = (3..6).contains(&air_frames);
+                input.left = input.kick;
+                input.crouch = air_frames < 8 || ((air_frames - 8) / tap) % 2 == 0;
+            }
+            jumps += events_jumps(&last_events);
+        }
+        // boneless[:<dir>] (A held, Up tapped twice, A released within
+        // 550 ms) / nocomply[:<dir>] (A held, Up pressed, A released within
+        // 300 ms), then the trick.
+        if bone || nocomply {
+            input.crouch = (130..170).contains(&f);
+            input.up = t < 2.0 || if bone { (150..154).contains(&f) || (158..172).contains(&f) } else { (160..172).contains(&f) };
+        }
+        if nollie {
+            input.l2 = (150..153).contains(&f);
+            input.crouch |= (140..160).contains(&f);
+        }
         // spin:<degrees>: spin with L1 in the air up to that angle (a
         // landing sideways bails).
         // hold: grab (circle) from air frame 6 and hold it to the ground.
@@ -241,7 +292,7 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         }
         if let Some(d) = which.strip_prefix("spin:").and_then(|d| d.parse::<f32>().ok()) {
             input.l1 = in_air && k.physics.spin_degrees.abs() < d;
-        } else if ground.is_none() && (6..10).contains(&air_frames) {
+        } else if ground.is_none() && !which.starts_with("buttslap") && (6..10).contains(&air_frames) {
             match dir {
                 "left" => input.left = true,
                 "right" => input.right = true,
@@ -256,6 +307,7 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
             }
         }
         let events = k.step(s, &input, world);
+        last_events = events.clone();
         let inputs = k.physics.anim_inputs_in(s, Some(world));
         k.anim.update(1.0 / 60.0, inputs);
         let _ = k.anim.sample(inputs);
@@ -273,8 +325,13 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         let sc = k.script_name().unwrap_or(0);
         if sc != last_script || k.anim.branches != last_branches || !events.is_empty() || (ground.is_some() && i % 20 == 0) {
             println!(
-                "t={t:5.2} air={in_air} flipped={} lean={:.0} script {} {events:?} branches {}",
+                "t={t:5.2} pos={:.1} vy={:.2} boneless={} air={in_air} flipped={} rotated={} nollie={} lean={:.0} script {} {events:?} branches {}",
+                k.physics.body.position,
+                k.physics.body.velocity.y,
+                k.physics.last_jump_boneless,
                 k.physics.flipped,
+                k.physics.rotated,
+                k.physics.nollie,
                 k.physics.balance.manual.lean,
                 name(sc),
                 k.anim.branches.iter().map(|&b| name(b)).collect::<Vec<_>>().join(" > ")
@@ -282,6 +339,9 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
             last_script = sc;
             last_branches = k.anim.branches.clone();
         }
+    }
+    if which.starts_with("buttslap") {
+        println!("jumps: {jumps}");
     }
     println!("commands not translated: {}", k.untranslated.iter().map(|&c| name(c)).collect::<Vec<_>>().join(" "));
 }

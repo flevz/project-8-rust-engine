@@ -270,10 +270,10 @@ impl CorePhysics {
         g
     }
 
-    /// Retail `Jump` (`820F0730`), ground path, without script parameters
-    /// (the `ollie` script calls it plainly unless it passes `speed`).
-    /// `speed` is the script's `jump speed = ...` override.
-    pub fn jump(&mut self, s: &Scripts, speed: Option<f32>) -> Vec<Event> {
+    /// Retail `Jump` (`820F0730`). `speed` is the script's `jump speed =
+    /// ...` override; `boneless` / `no_comply` its `BonelessHeight` /
+    /// `NoComply` flags (the `boneless` and `nocomply` scripts).
+    pub fn jump(&mut self, s: &Scripts, speed: Option<f32>, boneless: bool, no_comply: bool) -> Vec<Event> {
         // Only the ground path (820F0900) records where the jump started;
         // the air path (820F0850, a late ollie) only plays a sound.
         if self.state == State::Ground {
@@ -286,10 +286,18 @@ impl CorePhysics {
         self.crouch_duration_ms = self.crouch_duration_ms.min(max_tense);
         // 820F0A4C: vert jump stats in vert air, or on the ground on a vert
         // surface. 0.3 is the double at 82002AD0: board pointing up =
-        // launch ramp. (The `BonelessHeight` variants are not translated.)
+        // launch ramp. 820F0AC4: with `BonelessHeight`, the boneless stats.
         let vert = self.vert.in_vert_air || (self.state == State::Ground && self.vert.on_vert_ground);
         let launch = self.body.at().y > 0.3;
-        let (max_name, min_name) = if vert {
+        let (max_name, min_name) = if boneless {
+            if vert {
+                ("Physics_Boneless_Vert_Jump_Speed_Stat", "Physics_Boneless_Vert_Jump_Speed_min_Stat")
+            } else if launch {
+                ("Physics_Boneless_Launch_Jump_Speed_Stat", "Physics_Boneless_Launch_Jump_Speed_min_Stat")
+            } else {
+                ("Physics_Boneless_Jump_Speed_Stat", "Physics_Boneless_Jump_Speed_min_Stat")
+            }
+        } else if vert {
             ("Physics_Vert_Jump_Speed_Stat", "Physics_Vert_Jump_Speed_min_Stat")
         } else if launch {
             ("Physics_Launch_Jump_Speed_Stat", "Physics_Launch_Jump_Speed_min_Stat")
@@ -305,6 +313,8 @@ impl CorePhysics {
             jump = speed;
         }
         self.uncrouch();
+        // 820F0C2C: +2544 (`LastWasJumpBoneless`) = BonelessHeight or NoComply.
+        self.last_jump_boneless = boneless || no_comply;
         // 820F0C80: moving down in vert air, jump out along the eased
         // normal `+96` and leave vert air; the upward part is then 0.
         if self.vert.in_vert_air && self.body.velocity.y < 0.0 {
@@ -713,7 +723,7 @@ impl CorePhysics {
             self.late_ollie = false;
         }
         if events.contains(&Event::Ollied) && (!was_air || self.late_ollie) {
-            events.extend(self.jump(s, None));
+            events.extend(self.jump(s, None, false, false));
             // `ollie` runs `InAirExceptions`, which drops the handler.
             self.late_ollie = false;
         }

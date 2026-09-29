@@ -230,6 +230,9 @@ pub struct CorePhysics {
     /// script's `InAirExceptions` also clears it (the air table has no
     /// "Ollied").
     pub late_ollie: bool,
+    /// `+2544`: the last `Jump` had `BonelessHeight` or `NoComply`
+    /// (`LastWasJumpBoneless`, `820D5BF0`).
+    pub last_jump_boneless: bool,
     pub stats: StatLevels,
     pub stat_context: StatContext,
     /// Vert state (see `vert.rs`).
@@ -419,6 +422,7 @@ impl CorePhysics {
             bail_on: false,
             scripted: false,
             late_ollie: false,
+            last_jump_boneless: false,
             stats: StatLevels::with_default(if default > 0.0 { default } else { 5.0 }),
             stat_context: StatContext::default(),
             // Reset (820D4700) sets +96 and +128 like +112: straight up.

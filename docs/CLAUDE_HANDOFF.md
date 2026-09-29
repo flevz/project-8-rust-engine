@@ -559,6 +559,25 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   More anim_check modes: `ground:manual:<s|c|t...>` (buttons during a
   manual), `hold` (grab held to the ground: a landing bail), `spin:<deg>`,
   `P8_TREE_AT=<frame>` / `P8_AIR_AT=<air frame>` for the tree dump.
+- Fixed next (NOTES 31): nollie popped from the tail (the VM lacked
+  `FlipAndRotate` 820FDAF0, which Skater_PlayOllieAnim runs in nollie);
+  boneless height (`Jump BonelessHeight` -> Physics_Boneless_*_Jump_Speed
+  stats); `LastWasJumpBoneless` (+2544, set by BonelessHeight or NoComply),
+  which Skater_HandleOllieModulation uses so tricks after a boneless /
+  no comply fade the ollie foot layers (feet flailed before);
+  GetScriptedStat reads a linked global struct (flip speed stat).
+  No comply has the plain ollie height in the retail code (NoComply only
+  sets +2544).
+- OPEN: buttslap (spamming A after a flip / grab started in the late-ollie
+  window). Mechanism translated and matches retail as far as read (the
+  TrickOllie handler lives for the whole trick, because ClearException is
+  not a command in retail), but ours allows more ollies than the user
+  gets in retail. Leads in NOTES 31 (button record lock-out +28 writer;
+  frame rate). Test: `P8_FLAT=1 P8_LEDGE=8 P8_TRICK=buttslap[:<frames>]`
+  prints `jumps: N`.
+  New anim_check modes: `nollie[:<mode>]`, `boneless[:<dir>]`,
+  `nocomply[:<dir>]`, `buttslap[:<frames>]`; `P8_LEDGE=<m>` makes the
+  flat floor drop 3 m that far from the start.
 - Still untranslated nodes the HUD lists: overlay, walkmonitor, walkspeed
   (pass-through stand-ins), differencetoggle's "on" difference (walking
   only). Ragdoll is not translated: after a bail the skater slides on the

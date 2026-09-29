@@ -275,8 +275,12 @@ impl Ctx<'_> {
         if n == k("Jump") {
             // 820F0FD8 -> 820F0730, with the script's `speed`.
             let speed = params.float(k("Speed"));
-            self.events.extend(p.jump(self.s, speed));
+            let (boneless, no_comply) = (params.flag(k("BonelessHeight")), params.flag(k("NoComply")));
+            self.events.extend(p.jump(self.s, speed, boneless, no_comply));
             return Some(true);
+        }
+        if n == k("LastWasJumpBoneless") {
+            return Some(p.last_jump_boneless); // 820D5BF0: +2544
         }
         if n == k("Crouched") {
             return Some(p.crouched); // 820D4AC8: SkaterState +32
@@ -739,6 +743,14 @@ impl Ctx<'_> {
             p.flip_stance(); // 820FDA80 -> 820FD8E8
             return Some(true);
         }
+        if n == k("FlipAndRotate") {
+            // 820FDAF0: 820D9008 (turn round) then 820FD8E8 (flip).
+            // Skater_PlayOllieAnim runs it in nollie, so the ollie clips
+            // play from the nose.
+            p.turn_round();
+            p.flip_stance();
+            return Some(true);
+        }
         if n == k("FlipAfter") || n == k("UnsetFlipAfter") {
             p.flip_after = n == k("FlipAfter"); // 820FD738 / 820FD750: +25
             return Some(true);
@@ -804,7 +816,16 @@ impl Ctx<'_> {
         }
         if n == k("GetScriptedStat") {
             // 8219B390 -> 82199A28 on the unnamed stat struct: `stat_value`.
-            let def = params.0.iter().find(|(key, v)| *key == 0 && matches!(v, Value::Struct(_))).map(|(_, v)| v.clone())?;
+            // Its one use, `GetScriptedStat ?Skater_Flip_Speed_Stat`, passes
+            // a link to the global (82214898), which 82212A68 finds as the
+            // unnamed struct; our VM merges a linked struct's members into
+            // the params, so those members are the struct.
+            let def = params
+                .0
+                .iter()
+                .find(|(key, v)| *key == 0 && matches!(v, Value::Struct(_)))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| Value::Struct(params.0.clone()));
             let v = self.s.stat_value_of(&def, &p.stats, p.stat_context);
             script.locals.add(k("stat_value"), Value::Float(v));
             return Some(true);
@@ -1006,6 +1027,8 @@ const COMMANDS: &[&str] = &[
     "UnsetBoardRotateAfter",
     "IsBoardRotateAfterSet",
     "HandleFlipOrBoardRotateAfter",
+    "LastWasJumpBoneless",
+    "FlipAndRotate",
     "Backwards",
     "ProfileEquals",
     "PitchGreaterThan",
