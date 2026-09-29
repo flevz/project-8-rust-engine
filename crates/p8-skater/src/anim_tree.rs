@@ -49,8 +49,9 @@
 //!
 //! Not translated (listed in `untranslated`; APPROXIMATE stand-ins): other
 //! node types; with children they pass their first child through, leaves
-//! give an empty pose. Anim events (`8237C178`/`8237C380`, e.g. the kick's
-//! `KickBoostEvent`) are not fired yet.
+//! give an empty pose. Anim events (`8237C178`/`8237C380`) are fired by the
+//! `cycle` / `play` timers with `anim_events = on` (the spacewalk boost);
+//! the `skatertimer`s' events (the kick's `KickBoostEvent`) are not fired yet.
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -658,6 +659,15 @@ impl BlendFn {
     }
 }
 
+/// One entry of a timer's event list (`822F1848`): fires when the clip's
+/// playback passes `frame` (the table's `time` x 60, truncated).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimEvent {
+    pub frame: i32,
+    pub name: u32,
+    pub params: Params,
+}
+
 /// Timer nodes (`82386028` init).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Timer {
@@ -674,27 +684,66 @@ pub struct Timer {
     pub end_frac: f32,
     /// `+44`
     pub finished: bool,
+    /// `+48`: the events of the clip (`SkaterAnimEventTable`), built when
+    /// the node has `anim_events = on` (`8237C178`).
+    pub events: Vec<AnimEvent>,
+    /// Events fired by the last updates, for [`AnimTree::fired`].
+    pub pending: Vec<(u32, Params)>,
 }
 
 impl Timer {
+    /// `8237C380`: fire the events passed while the time went from `a` to
+    /// `b` (seconds): `a <= frame < b` forwards, `b < frame <= a`
+    /// backwards; nothing when `a == b` (`822F0D58`).
+    fn fire(&mut self, a: f32, b: f32) {
+        if self.events.is_empty() || a == b {
+            return;
+        }
+        // 60 is the constant at 82001EB4.
+        let (a, b) = (a * 60.0, b * 60.0);
+        for e in &self.events {
+            let f = e.frame as f32;
+            let hit = if a < b { f >= a && f < b } else { f <= a && f > b };
+            if hit {
+                self.pending.push((e.name, e.params.clone()));
+            }
+        }
+    }
+
     /// `82386220` (cycle) / `823862E0` (play). The children get dt x speed.
+    /// The events are fired for each stretch of the clip played, in
+    /// pieces when a cycle wraps.
     fn update(&mut self, dt: &mut f32) {
+        let mut prev = self.time;
         *dt *= self.speed;
         self.time += *dt;
         if self.looping {
             if self.end > 0.0 {
-                while self.time < 0.0 {
-                    self.finished = true;
-                    self.time += self.end;
-                }
-                while self.time > self.end {
-                    self.finished = true;
-                    self.time -= self.end;
+                loop {
+                    if self.time < 0.0 {
+                        self.fire(prev, 0.0);
+                        self.finished = true;
+                        prev = self.duration;
+                        self.time += self.end;
+                    } else if self.time > self.end {
+                        self.fire(prev, self.end);
+                        self.finished = true;
+                        prev = 0.0;
+                        self.time -= self.end;
+                    } else {
+                        break;
+                    }
                 }
             }
-        } else if self.time < 0.0 || self.time > self.end {
-            self.time = self.time.clamp(0.0, self.end);
-            self.finished = true;
+            let now = self.time;
+            self.fire(prev, now);
+        } else {
+            if self.time < 0.0 || self.time > self.end {
+                self.time = self.time.clamp(0.0, self.end);
+                self.finished = true;
+            }
+            let now = self.time;
+            self.fire(prev, now);
         }
     }
 }
@@ -1992,7 +2041,29 @@ impl Build<'_> {
         let end_param = self.float(items, "end", scope);
         let end = end_param.map_or(duration, |e| duration * e);
         let end_frac = end_param.map_or(1.0, |e| e - 0.001);
-        Timer { looping, time, speed, duration, end, end_frac, finished: false }
+        // `anim_events = on` builds the event list from the clip's entry in
+        // `SkaterAnimEventTable` (`8237C178` -> `822F18C8`).
+        let events = if self.checksum(items, "anim_events", scope) == Some(qb_key("on")) { self.anim_events(anim) } else { Vec::new() };
+        Timer { looping, time, speed, duration, end, end_frac, finished: false, events, pending: Vec::new() }
+    }
+
+    /// The events of clip `anim` (`8237C178`): each entry's `time` x 60
+    /// truncated (`fctiwz`), its `event` and its `params`.
+    fn anim_events(&self, anim: u32) -> Vec<AnimEvent> {
+        let Some(Value::Struct(table)) = (self.globals)(qb_key("SkaterAnimEventTable")) else { return Vec::new() };
+        let Some(Value::Array(list)) = lookup(&table, anim) else { return Vec::new() };
+        list.iter()
+            .filter_map(|e| {
+                let Value::Struct(items) = e else { return None };
+                let time = lookup(items, qb_key("time")).and_then(Value::as_f32).unwrap_or(0.0);
+                let name = match lookup(items, qb_key("event")) {
+                    Some(Value::Checksum(c)) => *c,
+                    _ => return None,
+                };
+                let params = lookup(items, qb_key("params")).map(Params::from_struct).unwrap_or_default();
+                Some(AnimEvent { frame: (time * 60.0) as i32, name, params })
+            })
+            .collect()
     }
 
     fn modulate(&mut self, items: &[(u32, Value)], scope: &Params) -> Modulate {
@@ -2340,6 +2411,16 @@ impl Node {
             _ => {}
         }
         self.update_children(dt, i);
+    }
+
+    /// Move the events the timers fired into `out`, in tree order.
+    fn drain_events(&mut self, out: &mut Vec<(u32, Params)>) {
+        if let Kind::Timer(t) = &mut self.kind {
+            out.append(&mut t.pending);
+        }
+        for c in &mut self.children {
+            c.drain_events(out);
+        }
     }
 
     fn update_children(&mut self, dt: f32, i: &SkaterInputs) {
@@ -2832,6 +2913,9 @@ pub struct AnimTree {
     tags: Tags,
     /// The board's skeleton (`board` in global.pak), when shown.
     pub board_rig: Option<Rig>,
+    /// Animation events fired by the last update (name and params), for the
+    /// skater to launch (`822F10E8`); the owner drains it.
+    pub fired: Vec<(u32, Params)>,
 }
 
 impl AnimTree {
@@ -3070,6 +3154,7 @@ impl AnimTree {
         self.inputs = inputs;
         if let Some(b) = self.body.as_mut() {
             b.update(dt, &inputs);
+            b.drain_events(&mut self.fired);
         }
     }
 
@@ -3343,7 +3428,7 @@ mod tests {
 
     #[test]
     fn timers_loop_or_clamp() {
-        let mut t = Timer { looping: true, time: 0.9, speed: 1.0, duration: 1.0, end: 1.0, end_frac: 1.0, finished: false };
+        let mut t = Timer { looping: true, time: 0.9, speed: 1.0, duration: 1.0, end: 1.0, end_frac: 1.0, finished: false, events: Vec::new(), pending: Vec::new() };
         let mut dt = 0.2;
         t.update(&mut dt);
         assert!((t.time - 0.1).abs() < 1e-6 && t.finished);
@@ -3351,5 +3436,56 @@ mod tests {
         p.time = 0.9;
         p.update(&mut 0.2);
         assert_eq!(p.time, 1.0);
+    }
+
+    fn timer_with_events(looping: bool, end: f32, speed: f32, start: f32) -> Timer {
+        let e = |secs: f32| AnimEvent { frame: (secs * 60.0) as i32, name: qb_key("SpaceWalkBoostEvent"), params: Params::new() };
+        Timer {
+            looping,
+            time: start,
+            speed,
+            duration: end,
+            end,
+            end_frac: 1.0,
+            finished: false,
+            events: vec![e(0.2), e(1.4), e(2.4)],
+            pending: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn timer_events_fire_as_the_clip_passes_their_frame() {
+        // 8237C380 / 822F0D58: a <= frame < b, once per pass.
+        let mut t = timer_with_events(true, 3.0, 1.0, 0.0);
+        let mut fired = 0;
+        for _ in 0..(60 * 3 - 1) {
+            let mut dt = 1.0 / 60.0;
+            t.update(&mut dt);
+            fired += std::mem::take(&mut t.pending).len();
+        }
+        assert_eq!(fired, 3, "0.2 s, 1.4 s and 2.4 s in one pass");
+        // Wrapping past the end fires the events of both stretches, and
+        // the next lap fires them again.
+        for _ in 0..(60 * 3) {
+            let mut dt = 1.0 / 60.0;
+            t.update(&mut dt);
+            fired += std::mem::take(&mut t.pending).len();
+        }
+        assert_eq!(fired, 6);
+        // A single big step over two events fires both, in order.
+        let mut t = timer_with_events(true, 3.0, 1.0, 0.0);
+        let mut dt = 2.0;
+        t.update(&mut dt);
+        assert_eq!(t.pending.len(), 2);
+        // A stopped timer fires nothing (a == b), and playing backwards fires
+        // the events it passes.
+        let mut t = timer_with_events(false, 3.0, 0.0, 1.0);
+        let mut dt = 1.0;
+        t.update(&mut dt);
+        assert!(t.pending.is_empty());
+        let mut t = timer_with_events(false, 3.0, -1.0, 1.5);
+        let mut dt = 0.5;
+        t.update(&mut dt);
+        assert_eq!(t.pending.len(), 1, "1.5 -> 1.0 passes the event at 1.4");
     }
 }

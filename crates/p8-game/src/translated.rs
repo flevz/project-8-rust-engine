@@ -412,6 +412,9 @@ fn step(
     let events = skater.object.step(&skater.scripts, &input, ground.world());
     let inputs = skater.object.physics.anim_inputs_in(&skater.scripts, Some(ground.world()));
     skater.object.anim.update(dt, inputs);
+    // Animation events (the spacewalk / kick boosts) reach the scripts now.
+    let mut events = events;
+    events.extend(skater.object.launch_anim_events(&skater.scripts, Some(ground.world())));
     if let Some(e) = events.last() {
         skater.last_event = Some(*e);
     }

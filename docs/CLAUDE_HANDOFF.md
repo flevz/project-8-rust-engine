@@ -589,6 +589,18 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   skating / manualing). Tools: examples `dir_fuzz` (random inputs, looks
   for backwards riding) and `bail_dir` (`P8_BACK=<t>`, `P8_NOGRAB=1`,
   `P8_SPIN=<deg>`). Known: `in_bail` (+128) is never set true.
+- Bails / half pipe / manual / spacewalk (NOTES 33): `InBail` (820D8868)
+  sets `in_bail` (state 9 = ragdoll bone update 820EAED0 not translated);
+  the normal easing 820DA1A8 now moves the display matrix (stale upright
+  matrix made vert landings bail); the vert auto-turn (820E9620) faces the
+  skater down the wall in vert air; `DoNextTrick` / `DoNextManualTrick`
+  pass their params to the trick script (`FromAir`, so a manual after a
+  landing plays its landing) and `GetLastInAirVerticalVelocity` exists;
+  anim events fire from `cycle` / `play` timers with `anim_events = on`
+  (`AnimTree::fired`, `Skater::launch_anim_events` after `anim.update`, the
+  game calls it in translated.rs): the spacewalk boost works. Not fired yet:
+  `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
+  `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
 - Still untranslated nodes the HUD lists: overlay, walkmonitor, walkspeed
   (pass-through stand-ins), differencetoggle's "on" difference (walking
   only). Ragdoll is not translated: after a bail the skater slides on the

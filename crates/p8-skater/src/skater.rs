@@ -228,6 +228,25 @@ impl Skater {
         }
     }
 
+    /// Launch the animation events the timers fired in the last
+    /// `anim.update` (`8237C380` -> `822F10E8` -> `82225758`): each goes to
+    /// the skater's script like any event, whose handlers
+    /// (`ActualSkaterAnimHandlerExceptionTable`) run the matching script
+    /// (`SpacewalkBoost`, `HandleKickBoostEvent`, ...). Call it after
+    /// updating the animation; returns the events the scripts raised.
+    pub fn launch_anim_events(&mut self, s: &Scripts, world: Option<&dyn World>) -> Vec<Event> {
+        let fired = std::mem::take(&mut self.anim.fired);
+        let Some(script) = self.script.as_mut() else { return Vec::new() };
+        if fired.is_empty() {
+            return Vec::new();
+        }
+        let mut ctx = Ctx { p: &mut self.physics, s, seed: &mut self.seed, events: Vec::new(), world, anim: &mut self.anim };
+        for (name, params) in fired {
+            script.event(&mut ctx, name, &params);
+        }
+        ctx.events
+    }
+
     /// The running script's name.
     pub fn script_name(&self) -> Option<u32> {
         self.script.as_ref().map(|s| s.name)
