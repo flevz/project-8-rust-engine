@@ -1172,11 +1172,6 @@ impl Script {
         if name == k("Printf") {
             return Some(true);
         }
-        if name == k("ClearException") {
-            // Its checksum is nowhere in the executable: an unknown symbol,
-            // which retail answers TRUE without doing anything.
-            return Some(true);
-        }
         None
     }
 
@@ -1235,7 +1230,6 @@ fn is_vm_command(name: u32) -> bool {
         "OnExceptionRun",
         "OnExitRun",
         "Printf",
-        "ClearException",
     ]
     .iter()
     .any(|n| qb_key(n) == name)

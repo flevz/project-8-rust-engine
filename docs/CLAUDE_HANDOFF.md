@@ -568,13 +568,11 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   GetScriptedStat reads a linked global struct (flip speed stat).
   No comply has the plain ollie height in the retail code (NoComply only
   sets +2544).
-- OPEN: buttslap (spamming A after a flip / grab started in the late-ollie
-  window). Mechanism translated and matches retail as far as read (the
-  TrickOllie handler lives for the whole trick, because ClearException is
-  not a command in retail), but ours allows more ollies than the user
-  gets in retail. The button lock-out (+28) was ruled out (only menus /
-  cutscenes set it; NOTES 31); frame rate is UNKNOWN. Needs a retail video. Test: `P8_FLAT=1 P8_LEDGE=8 P8_TRICK=buttslap[:<frames>]`
-  prints `jumps: N`.
+- Buttslap fixed (NOTES 31): `ClearException` is a script in events.qb,
+  not a no-op; the VM's built-in no-op made the TrickOllie handler last the
+  whole trick. Now the extra ollies end at 333 ms of air time / 15 frames,
+  matching the user's retail clip (2 pops). Test:
+  `P8_FLAT=1 P8_LEDGE=8 P8_TRICK=buttslap[:<frames>]` prints `jumps: N`.
   New anim_check modes: `nollie[:<mode>]`, `boneless[:<dir>]`,
   `nocomply[:<dir>]`, `buttslap[:<frames>]`; `P8_LEDGE=<m>` makes the
   flat floor drop 3 m that far from the start.
