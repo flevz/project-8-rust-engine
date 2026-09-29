@@ -68,6 +68,7 @@ fn main() {
             let sc = k.script.as_ref().map_or(0, |x| x.name);
             let in_bail_script = [qb_key("Bail_WaitAnim"), qb_key("Baildone"), qb_key("Bail_WaitAnimFinished")].contains(&sc);
             if in_bail_script && !was_bail {
+                println!("BAIL START seed {seed} frame {i} speed {:.1} spin {:.0} landed_from_vert={} state={:?}", v.length(), p.spin_degrees, p.vert.landed_from_vert, p.state);
                 bails += 1;
             }
             was_bail = in_bail_script;

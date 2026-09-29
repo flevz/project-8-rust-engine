@@ -322,6 +322,16 @@ impl Ctx<'_> {
             p.no_spin = n == k("NoSpin");
             return Some(true);
         }
+        if n == k("InBail") {
+            // 820D8868: SkaterState `+128` = 1 (its time `+132`, now plus a
+            // constant, is not read anywhere yet) and `+2784` cleared. Without
+            // `RunOut` retail then goes to state 9, whose update `820EAED0`
+            // drives the skater from the ragdoll bones: not translated, so
+            // the skater keeps the ground / air physics with the flag set
+            // (APPROXIMATE; `RunOut` bails, which keep the state, are exact).
+            p.in_bail = true;
+            return Some(true);
+        }
         if n == k("NotInBail") {
             p.in_bail = false; // 820D54E0: SkaterState +128
             return Some(true);
@@ -936,6 +946,7 @@ const COMMANDS: &[&str] = &[
     "RestoreAutoKick",
     "NoSpin",
     "CanSpin",
+    "InBail",
     "NotInBail",
     "IsInBail",
     "BailOn",

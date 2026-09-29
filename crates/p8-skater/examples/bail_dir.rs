@@ -48,7 +48,7 @@ fn main() {
         let inputs = k.physics.anim_inputs_in(&s, Some(&world));
         k.anim.update(1.0 / 60.0, inputs);
         let _ = k.anim.sample(inputs);
-        if i % 12 == 0 && t > 3.4 && t < 8.0 {
+        if i % 12 == 0 && t > 3.4 && t < 12.0 {
             let p = &k.physics;
             let v = p.body.velocity;
             let mut tree = String::new();

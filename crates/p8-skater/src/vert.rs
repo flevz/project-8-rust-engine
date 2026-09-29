@@ -51,10 +51,17 @@ impl CorePhysics {
         }
     }
 
-    /// Retail `820DA1A8`, its normal easing: `+96` eases from `+128` to the
-    /// ground normal `+112` as `+160` runs from 1 to 0 at
-    /// `Normal_Lerp_Speed` (x1.5 when the normal points down). The rest of
-    /// it (the display matrix `+32`, and a camera value) is not translated.
+    /// Retail `820DA1A8`: `+96` eases from `+128` to the ground normal
+    /// `+112` as `+160` runs from 1 to 0 at `Normal_Lerp_Speed` (x1.5 when
+    /// the normal points down). Then, whether or not it eased this frame,
+    /// the display matrix `+32` follows: when `+96` differs from its up
+    /// (`+48`), up takes `+96`, the matrix is rebuilt around it
+    /// (`821E9B58`, row 1) and its x and z rows are then overwritten with
+    /// the object's (`+144`, `+176`). The skater matrix queries
+    /// (`PitchGreaterThan`, `RollGreaterThan`, ...) read that display
+    /// matrix, so without this a skater in vert air keeps a stale matrix
+    /// while the landing normal is steep. A camera value (the global at
+    /// `+5372`, stored to `+5368`) is not translated.
     pub(crate) fn ease_normal(&mut self, s: &Scripts) {
         let target = self.ground_normal;
         let mut speed = s.global_float("Normal_Lerp_Speed");
@@ -63,20 +70,25 @@ impl CorePhysics {
             speed *= 1.5;
         }
         let v = &mut self.vert;
-        if v.ease_left == 0.0 {
-            return;
+        if v.ease_left != 0.0 {
+            if v.ease_from == target {
+                v.ease_left = 0.0;
+            } else {
+                // 60 is the constant at 82001EB4.
+                v.ease_left -= self.dt * speed * 60.0;
+                if v.ease_left <= 0.0 {
+                    v.ease_left = 0.0;
+                    v.eased_normal = target;
+                } else {
+                    v.eased_normal = (target + (v.ease_from - target) * v.ease_left).normalize_or_zero();
+                }
+            }
         }
-        if v.ease_from == target {
-            v.ease_left = 0.0;
-            return;
-        }
-        // 60 is the constant at 82001EB4.
-        v.ease_left -= self.dt * speed * 60.0;
-        if v.ease_left <= 0.0 {
-            v.ease_left = 0.0;
-            v.eased_normal = target;
-        } else {
-            v.eased_normal = (target + (v.ease_from - target) * v.ease_left).normalize_or_zero();
+        if self.vert.eased_normal != self.matrix_32.y_axis {
+            self.matrix_32.y_axis = self.vert.eased_normal;
+            crate::air::orthonormalize_keep_up(&mut self.matrix_32);
+            self.matrix_32.x_axis = self.body.matrix.x_axis;
+            self.matrix_32.z_axis = self.body.matrix.z_axis;
         }
     }
 
@@ -463,5 +475,25 @@ mod tests {
         p.ease_normal(&s);
         p.ease_normal(&s);
         assert_eq!(p.vert.eased_normal, Vec3::NEG_Z);
+    }
+
+    #[test]
+    fn display_matrix_follows_the_eased_normal_with_the_object_rows() {
+        // 820DA1A8: the display matrix's up takes the eased normal and its
+        // x / z rows are then the object's, even on a frame with no easing.
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.orient_to_ground(Vec3::NEG_Z);
+        p.ease_normal(&s);
+        assert_eq!(p.matrix_32.y_axis, p.vert.eased_normal);
+        assert_eq!(p.matrix_32.x_axis, p.body.matrix.x_axis);
+        assert_eq!(p.matrix_32.z_axis, p.body.matrix.z_axis);
+        for _ in 0..12 {
+            p.ease_normal(&s);
+        }
+        assert_eq!(p.matrix_32.y_axis, Vec3::NEG_Z);
+        p.matrix_32.y_axis = Vec3::Y;
+        p.ease_normal(&s);
+        assert_eq!(p.matrix_32.y_axis, Vec3::NEG_Z, "updated although nothing eased");
     }
 }
