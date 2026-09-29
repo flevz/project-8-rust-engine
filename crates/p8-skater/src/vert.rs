@@ -92,6 +92,22 @@ impl CorePhysics {
         }
     }
 
+    /// Retail `820F3018`..`820F305C` (air update): the normal easing (and
+    /// with it the display matrix `+32`) runs in vert air (`+56`) only when
+    /// there is no spine transfer (`+136`) (and the skaterrotate
+    /// component's `+40` / `+80` are 0, never set here); otherwise the
+    /// display matrix is a copy of the object's. In a transfer the eased
+    /// normal stays the take-off wall's, so easing would keep the matrix the
+    /// landing checks read on the wall while the object turns to the landing
+    /// slope (every spine transfer landing bailed).
+    pub(crate) fn follow_display_matrix(&mut self, s: &Scripts) {
+        if self.vert.in_vert_air && !self.transfer.active {
+            self.ease_normal(s);
+        } else {
+            self.matrix_32 = self.body.matrix;
+        }
+    }
+
     /// Retail `820DA3D0`: leaving the ground. On a vert wall, keep only the
     /// speed along the wall, face the skater's up out from the wall, push
     /// out by `Physics_Vert_Push_Out` and enter vert air.
@@ -502,6 +518,22 @@ mod tests {
         p.matrix_32.y_axis = Vec3::Y;
         p.ease_normal(&s);
         assert_eq!(p.matrix_32.y_axis, Vec3::NEG_Z, "updated although nothing eased");
+    }
+
+    #[test]
+    fn a_spine_transfer_keeps_the_display_matrix_on_the_object() {
+        // 820F3018: no normal easing while +136 is set, so the display
+        // matrix (read by the landing bail checks) is the object's.
+        let s = scripts();
+        let mut p = CorePhysics::new(&s);
+        p.vert.in_vert_air = true;
+        p.vert.eased_normal = Vec3::NEG_X;
+        p.body.matrix.y_axis = Vec3::Y;
+        p.follow_display_matrix(&s);
+        assert_eq!(p.matrix_32.y_axis, Vec3::NEG_X, "vert air without a transfer eases");
+        p.transfer.active = true;
+        p.follow_display_matrix(&s);
+        assert_eq!(p.matrix_32, p.body.matrix);
     }
 
     #[test]

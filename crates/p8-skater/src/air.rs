@@ -425,13 +425,7 @@ impl CorePhysics {
         // 820F2497: `+1936` = the velocity's y after the gravity.
         self.last_in_air_vy = self.body.velocity.y;
         self.vert_air_update(s, world);
-        // 820F3018: in vert air the normal easing runs; otherwise the
-        // second matrix copy follows the matrix.
-        if self.vert.in_vert_air {
-            self.ease_normal(s);
-        } else {
-            self.matrix_32 = self.body.matrix;
-        }
+        self.follow_display_matrix(s);
 
         // `820EF410`: walls ahead. When it handled the frame, retail skips
         // the landing (820F369C).

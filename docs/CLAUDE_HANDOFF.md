@@ -601,6 +601,12 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Spine transfer bail (NOTES 36): every spine transfer landing bailed because
+  the display matrix (`+32`, read by `PitchGreaterThan` etc.) stayed on the
+  take-off wall: retail's air update (`820F3018`) eases the normal (and `+32`)
+  in vert air only when there is no spine transfer (`+136`); else `+32` is
+  the object matrix. `follow_display_matrix` has the term. Example
+  `spine_bail` (real scripts, prints the land checks) is the regression run.
 - Spin timers (NOTES 35): `skatertimer` `spin` (44A8) and `vertspin`
   (4208) of `820B4038` are translated (`SkaterTimer::update`; angle from the
   trick spin / from `821ED9E8` between the at row and the velocity, time =
