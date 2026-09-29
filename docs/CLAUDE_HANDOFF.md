@@ -573,6 +573,10 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   whole trick. Now the extra ollies end at 333 ms of air time / 15 frames,
   matching the user's retail clip (2 pops). Test:
   `P8_FLAT=1 P8_LEDGE=8 P8_TRICK=buttslap[:<frames>]` prints `jumps: N`.
+- Stats: the skater now uses the profile's stat levels (821984C8; Hawk:
+  air 11, spin 11, speed 10, ...) instead of 5 for all. This made the
+  boneless FS 360 match retail and changes every stat-scaled value
+  (speeds, spin, balance, switch factor) to Hawk's.
   New anim_check modes: `nollie[:<mode>]`, `boneless[:<dir>]`,
   `nocomply[:<dir>]`, `buttslap[:<frames>]`; `P8_LEDGE=<m>` makes the
   flat floor drop 3 m that far from the start.

@@ -325,7 +325,8 @@ fn trick_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wo
         let sc = k.script_name().unwrap_or(0);
         if sc != last_script || k.anim.branches != last_branches || !events.is_empty() || (ground.is_some() && i % 20 == 0) {
             println!(
-                "t={t:5.2} pos={:.1} vy={:.2} boneless={} air={in_air} flipped={} rotated={} nollie={} lean={:.0} script {} {events:?} branches {}",
+                "t={t:5.2} spin={:.0} pos={:.1} vy={:.2} boneless={} air={in_air} flipped={} rotated={} nollie={} lean={:.0} script {} {events:?} branches {}",
+                k.physics.spin_degrees,
                 k.physics.body.position,
                 k.physics.body.velocity.y,
                 k.physics.last_jump_boneless,

@@ -459,6 +459,7 @@ impl CorePhysics {
         let mut p = Self::new(scripts);
         p.goofy = profile_is_goofy(scripts, PLAYER_SKATER);
         p.flipped = p.goofy;
+        p.stats.levels = profile_stats(scripts, PLAYER_SKATER);
         p.body.position = pos;
         p.old_position = pos;
         rotate_about_up(&mut p.body.matrix, angles.y);
@@ -1194,6 +1195,31 @@ pub fn profile_is_goofy(s: &Scripts, name: &str) -> bool {
         Some(Value::Array(list)) => list.iter().any(|e| is(e.get_named("name"), name) && is(e.get_named("stance"), "goofy")),
         _ => false,
     }
+}
+
+/// `821984C8` (not career: `is_career` takes the career copy `821A20D8`,
+/// not read): each of the profile's stat fields (`8219D540`, integers) into
+/// the skater's stat array at `+760` (`82198268`), in `STATS_*` order. Only a
+/// split-screen game clamps them to 0..10, so Hawk's 11s stay 11. A missing
+/// field leaves the stat unset.
+pub fn profile_stats(s: &Scripts, name: &str) -> [Option<f32>; 12] {
+    const FIELDS: [&str; 12] = [
+        "air", "run", "ollie", "speed", "spin", "flip_speed", "switch", "rail_balance", "lip_balance", "manual_balance", "wall", "special",
+    ];
+    let mut out = [None; 12];
+    let is_name = |v: Option<&Value>| match v {
+        Some(Value::Checksum(k)) => *k == qb_key(name),
+        Some(Value::String(t)) => t.eq_ignore_ascii_case(name),
+        _ => false,
+    };
+    if let Some(Value::Array(list)) = s.global("master_skater_list")
+        && let Some(e) = list.iter().find(|e| is_name(e.get_named("name")))
+    {
+        for (slot, field) in out.iter_mut().zip(FIELDS) {
+            *slot = e.get_named(field).and_then(Value::as_f32);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
