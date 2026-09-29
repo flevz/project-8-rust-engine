@@ -247,9 +247,11 @@ impl ClipLib {
         clip
     }
 
-    /// A clip's length in seconds (`822448D0`), 0 when missing.
+    /// A clip's length in seconds (`822448D0`); 1.0 when the clip is not
+    /// found (8224492C..82244934, constant `82000C14`). `spinbase_anim` is
+    /// such a name: no pak holds a clip for it, so the spin timers run 0..1.
     pub fn duration(&mut self, key: u32) -> f32 {
-        self.get(key).map_or(0.0, |c| c.duration)
+        self.get(key).map_or(1.0, |c| c.duration)
     }
 }
 
@@ -1177,6 +1179,28 @@ pub struct SkaterTimer {
     started: bool,
     /// `+100`
     delay: f32,
+    /// `+88`: the last spin / vertspin angle in degrees (kept while not in
+    /// the air).
+    angle: f32,
+    /// `+96` (spin): the `nollie` param was given; adds a half turn.
+    half_turn: bool,
+    /// `+104`: set at init; the first vertspin update skips its rate limit.
+    snap: bool,
+}
+
+/// `820B4038` (spin, vertspin): wrap into -360..360 (constants `82000DB8`
+/// = 360 and `82001B98` = -360).
+fn wrap_360(mut a: f32) -> f32 {
+    if !a.is_finite() {
+        return a;
+    }
+    while a > 360.0 {
+        a -= 360.0;
+    }
+    while a < -360.0 {
+        a += 360.0;
+    }
+    a
 }
 
 impl SkaterTimer {
@@ -1186,6 +1210,8 @@ impl SkaterTimer {
             self.delay -= *dt;
             return;
         }
+        // 4084: `+24` = the time before this update.
+        let prev = self.time;
         *dt *= self.speed;
         let t = self.timertype;
         if t == k("crouch") {
@@ -1220,8 +1246,46 @@ impl SkaterTimer {
                     self.started = true;
                 }
             }
+        } else if t == k("spin") {
+            // 44A8: while in the air (animinfo `+364` == 1) the angle is the
+            // trick spin (animinfo `+532`), negated when flipped, plus a
+            // half turn for `nollie`; the time is angle / 360 (`82000DBC`),
+            // +1 when negative. Out of the air the last angle is kept.
+            if i.in_air {
+                let mut a = if i.flipped { -i.spin } else { i.spin };
+                if self.half_turn {
+                    a += 180.0;
+                }
+                self.angle = wrap_360(a);
+            }
+            self.time = self.angle * f32::from_bits(0x3B36_0B61);
+            if self.time < 0.0 {
+                self.time += 1.0;
+            }
+        } else if t == k("vertspin") {
+            // 4208: in the air the angle is the one between the object's at
+            // row (animinfo `+240`) and its velocity (`+192`), 821ED9E8. The
+            // time follows angle / 360, at most 0.015 (`82001C00`) a frame
+            // from the last time, except on the first update (`+104`).
+            if i.in_air {
+                self.angle = wrap_360(angle_deg(i.at, i.velocity));
+            }
+            self.time = self.angle * f32::from_bits(0x3B36_0B61);
+            if self.snap {
+                self.snap = false;
+            } else {
+                let d = self.time - prev;
+                if d > 0.015 {
+                    self.time = prev + 0.015;
+                } else if d < -0.015 {
+                    self.time = prev - 0.015;
+                }
+            }
+            if self.time < 0.0 {
+                self.time += 1.0;
+            }
         }
-        // Other timer types (turn, spin, brake, grab...): not translated.
+        // Other timer types (turn, brake, grab...): not translated.
         // 4590: below 0 -> finished, 0; past the end -> the end and
         // finished, or 0 (not finished) for a cycle.
         if self.time < 0.0 {
@@ -2150,6 +2214,17 @@ impl Build<'_> {
             crouched: self.crouched0,
             started: false,
             delay: self.checksum(items, "delay_anim", scope).map_or(0.0, |a| self.lib.duration(a)),
+            angle: 0.0,
+            // 3F1C..3F4C: the `nollie` param on a spin timer. A reference
+            // to a param the branch was not given stays unresolved (APPROXIMATE:
+            // retail's 820A2870 may see it differently).
+            half_turn: timertype == k("spin")
+                && match lookup(items, k("nollie")).map(|v| self.resolve(v, scope)) {
+                    None => false,
+                    Some(Value::Checksum(c)) => c != k("nollie"),
+                    Some(_) => true,
+                },
+            snap: true,
         };
         // 3ECC: a crouch timer built while crouched starts at its end
         // unless `dont_skip`.
@@ -3285,6 +3360,70 @@ mod tests {
         }
     }
 
+    fn spin_timer(timertype: &str, half_turn: bool) -> SkaterTimer {
+        SkaterTimer {
+            timertype: qb_key(timertype),
+            id: 0,
+            tags: Tags::default(),
+            time: 0.0,
+            speed: 1.0,
+            duration: 1.0,
+            end: 1.0,
+            end_frac: 1.0,
+            finished: false,
+            cycle: false,
+            crouched: false,
+            started: false,
+            delay: 0.0,
+            angle: 0.0,
+            half_turn,
+            snap: true,
+        }
+    }
+
+    #[test]
+    fn spin_timer_follows_the_trick_spin_in_the_air_and_holds_it_on_the_ground() {
+        // 820B4038 (spin): angle / 360, +1 when negative, only while in the air.
+        let mut t = spin_timer("spin", false);
+        let step = |t: &mut SkaterTimer, i: &SkaterInputs| t.update(&mut (0.02f32), i);
+        let mut i = SkaterInputs { in_air: true, spin: 90.0, ..Default::default() };
+        step(&mut t, &i);
+        assert!((t.time - 0.25).abs() < 1e-5);
+        i.flipped = true; // negated: -90 -> 0.75
+        step(&mut t, &i);
+        assert!((t.time - 0.75).abs() < 1e-5);
+        i.spin = 450.0; // wrapped: -450 + 360 = -90
+        step(&mut t, &i);
+        assert!((t.time - 0.75).abs() < 1e-5);
+        i.in_air = false;
+        i.spin = 0.0;
+        step(&mut t, &i);
+        assert!((t.time - 0.75).abs() < 1e-5, "the last angle is kept on the ground");
+        let mut n = spin_timer("spin", true); // nollie: +180
+        i.in_air = true;
+        i.flipped = false;
+        i.spin = 0.0;
+        step(&mut n, &i);
+        assert!((n.time - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn vertspin_timer_follows_the_angle_to_the_velocity_at_a_limited_rate() {
+        // 820B4038 (vertspin): the first update jumps; then 0.015 a frame.
+        let mut t = spin_timer("vertspin", false);
+        let step = |t: &mut SkaterTimer, i: &SkaterInputs| t.update(&mut (0.02f32), i);
+        let i = SkaterInputs { in_air: true, at: [0.0, 0.0, 1.0], velocity: [1.0, 0.0, 0.0], ..Default::default() };
+        step(&mut t, &i); // 90 degrees
+        assert!((t.time - 0.25).abs() < 1e-4);
+        let j = SkaterInputs { velocity: [0.0, 0.0, 1.0], ..i.clone() }; // 0 degrees
+        step(&mut t, &j);
+        assert!((t.time - (0.25 - 0.015)).abs() < 1e-4, "limited to 0.015 a frame, got {}", t.time);
+        for _ in 0..40 {
+            step(&mut t, &j);
+        }
+        assert!(t.time.abs() < 1e-4);
+    }
+
     #[test]
     fn grab_out_timer_starts_once_the_in_timer_is_done_and_the_grab_is_let_go() {
         // 820B4038 (grabout) with the tag the in timer writes (45A4).
@@ -3303,6 +3442,9 @@ mod tests {
             crouched: false,
             started: false,
             delay: 0.0,
+            angle: 0.0,
+            half_turn: false,
+            snap: true,
         };
         let (mut tin, mut tout) = (timer("play", "grabtrickintimer"), timer("grabout", "GrabtrickTimer"));
         let mut i = SkaterInputs { grab: false, ..Default::default() };

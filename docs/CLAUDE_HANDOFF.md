@@ -601,6 +601,14 @@ grinds, flip tricks, grab tricks, wallrides. Stats wait.
   game calls it in translated.rs): the spacewalk boost works. Not fired yet:
   `skatertimer` events (KickBoostEvent). Tools: `dir_fuzz`, `bail_dir`,
   `manual_snap`, `spacewalk_check`, `dump_global`, `find_ref` examples.
+- Spin timers (NOTES 35): `skatertimer` `spin` (44A8) and `vertspin`
+  (4208) of `820B4038` are translated (`SkaterTimer::update`; angle from the
+  trick spin / from `821ED9E8` between the at row and the velocity, time =
+  angle / 360, vertspin limited to 0.015 a frame). Root cause of "stuck at
+  t=0": `ClipLib::duration` returned 0 for a missing clip; retail `822448D0`
+  returns 1.0. Fixed. Tool: `P8_TIMERS=1` with `P8_SPIN=1` in `anim_check`.
+  `spin`'s `nollie` half turn is APPROXIMATE. Timer types turn, brake, grab
+  still not translated.
 - Still untranslated nodes the HUD lists: overlay, walkmonitor, walkspeed
   (pass-through stand-ins), differencetoggle's "on" difference (walking
   only). Ragdoll is not translated: after a bail the skater slides on the

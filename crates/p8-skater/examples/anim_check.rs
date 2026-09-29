@@ -152,6 +152,16 @@ fn spin_check(s: &p8_skater::Scripts, k: &mut Skater, world: &dyn p8_skater::Wor
         k.step(s, &input, world);
         let inputs = k.physics.anim_inputs_in(s, Some(world));
         k.anim.update(1.0 / 60.0, inputs);
+        // P8_TIMERS=1: the skatertimers' times every 6th frame in the air
+        // (spin / vertspin, NOTES 35).
+        if std::env::var_os("P8_TIMERS").is_some() && in_air && i % 6 == 0 {
+            let mut t = String::new();
+            if let Some(b) = &k.anim.body {
+                b.describe(0, &mut t);
+            }
+            let v: Vec<&str> = t.lines().filter(|l| l.contains("skatertimer")).map(|l| l.trim()).collect();
+            println!("t={:.2} spin={:.0} {}", i as f32 / 60.0, k.physics.spin_degrees, v.join(" | "));
+        }
         let Some(p) = k.anim.sample(inputs) else { continue };
         let locals: Vec<ik::Local> =
             p.q.iter().zip(&p.t).map(|(q, t)| ik::Local { rotation: [-q[0], -q[1], -q[2], q[3]], translation: *t }).collect();
