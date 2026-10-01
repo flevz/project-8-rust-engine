@@ -22,6 +22,10 @@ below (changed crates only) wins.
   anything unproven INFERRED, APPROXIMATE or UNKNOWN.
 - When the user reports a problem, find the cause in the data before
   changing anything.
+- **Known issues go in `docs/KNOWN_ISSUES.md`, not fixed.** Any problem you
+  find or the user reports that is not part of the current task: add an entry
+  there (what the user sees, cause with addresses if known, where in the
+  code, CONFIRMED / INFERRED / UNKNOWN). Only fix it if the user asks.
 - No game content in this public repo (the approved README screenshots are
   the only exception).
 - Plain English, few questions, double-click launchers for anything the

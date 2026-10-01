@@ -349,6 +349,9 @@ These appear in the code with their addresses, e.g. skin distance 0.0025
 
 ## 11. Known bugs / incorrect behaviour
 
+The live list is now `docs/KNOWN_ISSUES.md` (seeded from this section on
+2026-10-01). Add new issues there, not here.
+
 - **Every lip trick is the Invert**: the trick queue is not translated.
 - **Falling off the "bail" side of the lip meter** goes to `LipBail` → bail
   scripts, and bails are not translated; behaviour there is undefined-looking.
@@ -544,6 +547,16 @@ After that, in the user's order: grinds (rail grab's grind set-up
 `820F8120`, grind update `820F4DE8`, rail update `820F8CF0`; the balance
 meter's grind parts), manuals (`82190F58` manual meter is shared), then bails.
 The user may instead ask for models and animations; pushing depends on them.
+
+**User's order after grinds (2026-10-01):**
+
+1. The flip mechanic: hold LT in the air and flip (find it in the scripts
+   and the skater code; nothing read yet).
+2. The whole bail system, not only the ragdoll: A to get up instantly and
+   every other bail mechanic in retail (bail scripts, `LipBail`, the
+   get-up).
+
+Parked problems are in `docs/KNOWN_ISSUES.md`; don't fix them unless asked.
 
 ## 17-tricks. Trick system (done this session; the user's priority now)
 
