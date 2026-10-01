@@ -83,6 +83,8 @@ fn main() {
             State::Air if p.vert.in_vert_air => "vert",
             State::Air => "air",
             State::Lip => "lip",
+            State::Rail => "rail",
+            State::Stall => "stall",
         };
         println!(
             "f{i:4} {state:6} spd {:5.2} skater ({:7.2} {:6.2} {:7.2}) cam ({:7.2} {:6.2} {:7.2}) target ({:7.2} {:6.2} {:7.2}) back {:5.2} up {:5.2} yaw {:6.1} tilt {:4.2} blend {:3.1}",

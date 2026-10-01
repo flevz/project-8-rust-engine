@@ -845,10 +845,13 @@ impl Script {
                 NAME if expect_operand => {
                     // A command is called with the rest as parameters and
                     // gives its result; a global gives its value; else the
-                    // checksum itself (8220BBD0).
+                    // checksum itself (8220BBD0). A script is not called: by
+                    // the symbol-type table at 8220BCE0, type 7 (script)
+                    // goes to 8220BE98 and the operand stays the name (so
+                    // `(<type> = grind)` compares with the checksum `grind`,
+                    // which is also a script's name).
                     let name = u32_at(&code, p + 1);
-                    let global = host.global(name);
-                    if is_vm_command(name) || host.is_command(name) || matches!(global, Some(Value::Script(_))) {
+                    if is_vm_command(name) || host.is_command(name) {
                         let (params, end) = self.parse_params(host, p + 5, Some(&locals));
                         let r = self.call(host, name, &params).unwrap_or(false);
                         values.push(Value::Int(r as i32));
@@ -1063,6 +1066,11 @@ impl Script {
             self.locals.add(k("appended_id"), Value::Checksum(p8_formats::checksum::qb_key_extend(base, &suffix)));
             return Some(true);
         }
+        if name == k("ChecksumEquals") {
+            // 822A7678 (822A76B0..822A76FC): checksums `A` and `B` (missing
+            // = 0) are equal.
+            return Some(params.checksum(k("A")).unwrap_or(0) == params.checksum(k("B")).unwrap_or(0));
+        }
         if name == k("GlobalExists") {
             // 822A8648: a global named `name` exists and, when `type` is
             // given, is of that type (structure/struct, array, string,
@@ -1225,6 +1233,7 @@ fn is_vm_command(name: u32) -> bool {
         "FormatText",
         "AppendSuffixToChecksum",
         "GlobalExists",
+        "ChecksumEquals",
         "Goto",
         "GotoRandomScript",
         "SetException",

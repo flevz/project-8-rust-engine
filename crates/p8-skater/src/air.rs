@@ -65,6 +65,14 @@ impl CorePhysics {
         if state != State::Lip {
             self.lip_pos = Vec3::ZERO;
         }
+        // Leaving the air clears SkaterState +240 (820D73C0..820D73E0).
+        if self.state == State::Air && state != State::Air {
+            self.grind.ollied_off_rail = false;
+        }
+        // +168 when the state changes (820D7220..820D7240).
+        if self.state != state {
+            self.state_ms = self.time_ms;
+        }
         // Entering the air clears the trick component's spin count (820D7438).
         if state == State::Air && self.state != State::Air {
             self.spin_degrees = 0.0;
@@ -460,6 +468,8 @@ impl CorePhysics {
         }
         self.standing_kick_limit = 0.0;
         self.turn_amount = 0.0;
+        // 820F2488: +1548 (on a single-node rail) cleared.
+        self.grind.natas = false;
         self.flag_2637 = false;
         self.bert_slide = false;
         self.kick_flag = false;
@@ -865,6 +875,8 @@ impl CorePhysics {
             State::Ground => self.ground_update(s, input, world),
             State::Air => self.air_update(s, world),
             State::Lip => self.lip_update(s, input, world),
+            State::Rail => self.rail_update(s, input, world),
+            State::Stall => self.stall_update(s, input, world),
         };
         // 820F4018..820F404C: every air frame that does not land first runs
         // the head / ceiling check `820EA788` (a feeler up
@@ -885,7 +897,9 @@ impl CorePhysics {
         // update. Retail runs it after the speed allowance (820FCDA8); the
         // order here is swapped (only matters when a transfer ends on the
         // frame of a lip grab).
-        self.rail_check(s, input, world);
+        if let Some(e) = self.rail_check(s, input, world) {
+            events.push(e);
+        }
         // 820FCDA8: the speed allowance after a transfer.
         self.post_transfer_speed(s);
         // 820FCDD4 (after the calls 820FCDBC, 820FCDC4, 820FCDCC to 820D7D78,

@@ -18,8 +18,9 @@ Certainty labels used below:
 Code comments use `CONFIRMED` / `LIKELY` / `UNKNOWN` with the same meanings as
 the first, second and fourth labels.
 
-State as of the commit "Show the balance meter on screen (lips)"
-(engine repo, branch `main`).
+State as of the commit "Grinds, translated" (engine repo, branch `main`,
+2026-10-01). Grinds: see section 17-grinds. Parked problems:
+`docs/KNOWN_ISSUES.md`.
 
 ---
 
@@ -130,6 +131,7 @@ commands). Regenerate it before relying on the counts.
 | Controller path (XInput → PS2-style pad → input records, dead zones) | `823A6420`, `8222A320`, `82229E58`, `8222A030`, `822D6C98` | `controller.rs`, `pad.rs` |
 | Script VM (tokens, if/else, loops, switch, random, calls/returns, goto, exceptions/event handlers, wait, expressions, struct includes) | `8220F8F0`, `8220F210`, `8220A228`, `82208CE8`, `8220EF50`, `8220E258`, `8220EE00`, `82224D78`, `822A6FB8`, `8220B878`, `82204838`, `82211BE0`, `82218210`, ... | `p8-script` |
 | Stat-scaled values | `82199D00`, `82199A28` | `script.rs`, `stats.rs` |
+| Grinds: rail grab's grind set-up, rail boost, bad-ledge check, rail update (gravity, segments, corners, ends, knock-off), the rail-end search, the stall state, single-node rails and the Natas spin, rail snap easing, grind friction, the pending grind trick and the default grind lists (`GrindTrickList` / `StallTrickList`), grind meter timing, `AdjustBalance`, the grind script commands | `820F8120`, `820DD5F0`, `820EAB68`, `820F8CF0`, `820F5DC0`, `820F4DE8`, `820F4108`, `820DBD40`, `820DD070`, `820D9F70`, `82124048`, `820DDDC8`, `82190C10`, `820CEE88`, `8211FB20`, `8211FBF0`, commands `820D57B8` `820D58E8` `820D6AD8` `820D5800` `82128E30` `821169C8` | `grind.rs`, `lip.rs`, `rails.rs`, `balance.rs`, `trick.rs`, `skater.rs` |
 | Level collision (Havok boxes, cylinders, capsules, triangle meshes) and feelers | `8221BC60`, `8221B3C0`, `82201558` filter | `havok.rs`, `world.rs` |
 
 ### Partially complete
@@ -137,8 +139,8 @@ commands). Regenerate it before relying on the counts.
 | Area | What works | What is missing |
 |---|---|---|
 | **Lip tricks** | Rails loaded from the level; rail search; rail grab in the air with Y held; lip entry checks and snapping; lip state; balance meter; ollie out; falling off the meter; the `liptrick` → `InvertTrick` → `LipOut`/`OllieLipOut` scripts run for real | The **trick queue** (`SetQueueTricks`, `DoNextTrick`, button triggers) is not translated, so every lip is the default Invert (`DefaultLipTrick`); bails (`LipBail`); animations; score. |
-| Rails | Build (`82197138`, `821939F8`) and search (`821968F8`) for normal levels | Grinds (`820F8120` grind set-up, `820F4DE8`, `820F8CF0`), single-node rails (`820F4108`), moving-object rails, park-editor paths, `CreatedFromVariable`/`createdfromtod` rails |
-| Balance meter | Lip meter start/update/stop (`820CF748`, `82190C10`, `82190F58`, `820CEAE8`), cheese wear-off (`820D4A20`, `82190B10`), combo-end reset (`820CE840`, `821909A0`, from `ClearPanel_Landed/Bailed`, balance part only); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Grind-only parts (same/new rail timing, robot rail), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
+| Rails | Build (`82197138`, `821939F8`), search (`821968F8`, with the corner limit) for normal levels, grinds (see Complete) | Moving-object rails, rail node TriggerScripts (`820F0550`), park-editor paths, the same-object preference of the search (`82194940`), `CreatedFromVariable`/`createdfromtod` rails; grind camera, sparks, sounds, score (KNOWN_ISSUES 11, 13, 15, 16) |
+| Balance meter | Lip and grind meters start/update/stop (`820CF748`, `82190C10` incl. same/new rail timing, `82190F58`, `820CEAE8`, `AdjustBalance` `820CEE88`), cheese wear-off (`820D4A20`, `82190B10`), combo-end reset (`820CE840`, `821909A0`, from `ClearPanel_Landed/Bailed`, balance part only); **on-screen meter** (`82178D78` via `821795A8`/`821795B0`, layout `82175D08`, safe sides `820E5988`, the scripts `show/hide_balance_meter`, `update_balance_meter_colors`), shown for lips | Robot rail (scoring), manual use (manuals not translated), pausing (`820CE618`), cheats. Grinds and manuals will show the meter as soon as their meters update: `show_on_screen` picks the manual (vertical) layout from Up/Down buttons, and `update_balance_sides` already has the Manual/Grind branches |
 | Air update `820F2310` | See above | Wallride/wallplant (`820EDAA8`, `820E8618`, `820E80D8`), pitch bail (`820F31E4`), high ollie `820D79F8`, lip check `820EA788`, bikes, moving platforms, nose/tail contact feelers `820E5250` |
 | Air spin `820E9620` | Spin and lean | Vert auto-turn, SmoothSpin, Nail the Trick |
 | Ground update `820F6978` | See above | **Ground side collision `820EB9A0`**, manuals branch, skitching, high ollie, several animation/bookkeeping calls |
@@ -146,7 +148,7 @@ commands). Regenerate it before relying on the counts.
 
 ### Not started
 
-Grinds, manuals, flip/grab tricks and the trick system (queue, triggers,
+Manuals, flip/grab tricks and the trick system (queue, triggers,
 double taps, trick names, scoring), bails and ragdoll, wallrides and
 wallplants, walking, skitching, special meter, Nail the
 Trick, skater model, animation system (anim tree, clips), pushing (depends on
@@ -157,12 +159,13 @@ air done, NOTES 39), textured level rendering, audio, menus, stats menu.
 
 | File | Contents |
 |---|---|
-| `crates/p8-skater/src/core_physics.rs` | `CorePhysics` (all physics state, with retail offsets), `Event`, `State` (Ground/Air/Lip), `Vert`, ground update, speed limits, friction, steering, backwards flip, tests. |
+| `crates/p8-skater/src/core_physics.rs` | `CorePhysics` (all physics state, with retail offsets), `Event`, `State` (Ground/Air/Lip/Rail/Stall), `Vert`, ground update, speed limits, friction, steering, backwards flip, tests. |
 | `crates/p8-skater/src/air.rs` | `set_state` (part of `820D71B0`), Jump, air update, air leveling, wall collision, landing, and `step()` (the per-frame dispatch). |
 | `crates/p8-skater/src/ground.rs` | Ground move loop, forward collision, wall response, wall push, ground snap, `orient_to_ground` (`820D7648`). |
 | `crates/p8-skater/src/vert.rs` | Vert takeoff/air/tracking/break-vert, normal easing, uprighting, `rotate_about_row0/at`. |
 | `crates/p8-skater/src/transfer.rs` | Spine transfer, acid/bank drop, orientation blend, post-transfer speed; the `Transfer` struct (SkaterState `+136`, `+192`, `+200`, `+272`, physics `+1380`, `+2130..+2134`, `+2172`, `+2224`, `+2304..+2464`, `+2546`, `+2616`); `ScriptAction` (scripts the physics asks to run). Tests with a synthetic spine. |
 | `crates/p8-skater/src/rails.rs` | `RailManager::build` and `search`. |
+| `crates/p8-skater/src/grind.rs` | Grinds: `Grind` (physics `+1220`, `+1224`, `+1389`, `+1392`, `+1504`, `+1528`, `+1532`, `+1548`, `+1948/9`, `+2160..+2165`, `+2220`, `+2608`, `+2612`, SkaterState `+240`), `grind_entry` (rest of `820F8120`), `rail_boost`, `bad_ledge_check`, `pending_grind_trick` (`82124048`), `default_grind` (`820DDDC8`), `single_node_rail` (`820F4108`), `rail_snap_ease` (`820DD070`), `stall_update` (`820F4DE8`), `rail_update` (`820F8CF0`), `rail_end` (`820F5DC0`), `natas_spin` (`820DBD40`). |
 | `crates/p8-skater/src/lip.rs` | Rail check (`820FAAA8`), may-take-rail (`820DCBE8`), grab (`820F8120` up to the lip), lip entry (`820F44C0`), lip update (`820F49D8`), `SkateInAble` (`820E55E0`), `random()`. |
 | `crates/p8-skater/src/balance.rs` | Balance component and meters; `show_on_screen` = end of `82190F58`. |
 | `crates/p8-skater/src/meter_display.rs` | The meter on screen: `MeterLayout` (`82175D08`, `balance_meter_info`), `MeterDisplay::set` (`82178D78`), `sprites()` (what `create_panel_stuff` / `do_show_balance_meter` / `update_balance_meter_colors` leave on the four sprites). |
@@ -178,7 +181,7 @@ air done, NOTES 39), textured level rendering, audio, menus, stats menu.
 | `crates/p8-skater/src/vibration.rs` | Controller rumble component (`Vibrate`, timers, pad levels). |
 | `crates/p8-game/src/rumble.rs` | Sends the rumble levels to the connected controllers. |
 | `crates/p8-game/src/balance_meter.rs` | Loads `balancemeter_bg`, `balancemeter`, `balancemeter_2`, `balancearrow_glow` from `ZONES/global.pak.xen`; places them as UI images each frame. |
-| `crates/p8-skater/examples/*.rs` | Headless test rides on the real level: `level_ride`, `script_ride` (real scripts), `vert_ride` (a halfpipe; `up` holds Up), `lip_ride` (holds Y; `ollie` ollies out), `transfer_ride` (`spine` or `acid`, R2 held; physics only, the award scripts are printed). |
+| `crates/p8-skater/examples/*.rs` | Headless test rides on the real level: `level_ride`, `script_ride` (real scripts), `vert_ride` (a halfpipe; `up` holds Up), `lip_ride` (holds Y; `ollie` ollies out), `transfer_ride` (`spine` or `acid`, R2 held; physics only, the award scripts are printed), `grind_ride` (ollies onto a rail on z_houses; modes `ollie`, `nobalance`, `up`/`down`/`left`/`right`, `blunt`, `natas`; `P8_ANIMS` for the tree). |
 | `crates/p8-script/examples/check_scripts.rs` | Walks every script in the player's `qb.pak.xen` (currently 7626, all clean). |
 | `project-8-data/research/NOTES.md` (private) | Sections 1–19: every finding with addresses. The detailed source for everything here. |
 | `project-8-data/research/tools/` (private) | `fn.py <addr>` (disassembly from generated code), `gen.py <addr>` (with switch cases), `callers.py`, `who.py <regex>` (functions matching an instruction), `qbscript.py <file|all> <regex>` (script printer), `qbdec.py` (QB globals), `pak.py` (extract paks), `toks.py`, `mini.py`, `physcov.py`, `reach2.py`. |
@@ -363,7 +366,7 @@ The live list is now `docs/KNOWN_ISSUES.md` (seeded from this section on
   loaded yet; those are also missing.
 - **Level objects** (`LevelObject`, `GameObject`, destructibles, water) are not
   loaded; only the static `.hkc` collision is.
-- **Rails that are not lips do nothing** (grinds not translated).
+- ~~Rails that are not lips do nothing~~: grinds are translated (2026-10-01).
 - After ollieing out of a lip the position is first restored to where the lip
   was grabbed (`+1248`), then moved; this is literal retail behaviour, noted
   here because it looks odd in traces.
@@ -466,6 +469,12 @@ because of the Bevy test build; run the crates separately.
 
 ## 16. Current build status
 
+- 2026-10-01 (grinds): `cargo test -p p8-skater -p p8-script` 95 + 12
+  pass; `cargo check -p p8-game` clean; clippy clean in the changed code
+  (clippy 1.97 warns in untouched `anim_tree.rs`, `scene.rs`,
+  `pivot_check`: KNOWN_ISSUES 19). In the cloud, `apt-get update` first,
+  or `libudev-dev` 404s.
+
 - `cargo clippy -p p8-formats -p p8-skater -p p8-game --all-targets`: clean.
   p8-game now builds in the cloud container after
   `apt-get install libwayland-dev libudev-dev libasound2-dev libxkbcommon-dev`;
@@ -515,6 +524,13 @@ because of the Bevy test build; run the crates separately.
   feel right; the lip build has not been played by the user yet.
 
 ## 17. The exact next item and what I intended to do
+
+**Next, in the user's order (2026-10-01): the flip mechanic (hold LT in
+the air and flip), then the whole bail system** (see the end of this
+section). Grinds are done (section 17-grinds). The text below the line is
+older history.
+
+---
 
 The on-screen balance meter (asked for by the user) is done for lips; it
 needs no extra work for grinds and manuals beyond translating their meter
@@ -942,6 +958,56 @@ command the lip scripts run on z_houses, was checked:
   `VibrationOn/Off/IsOn` (options menu, player index), `VibrateController`
   and `Vibrate_Controller_Safe` (menus, special level objects), physics
   `+1548` in `820CF438` (UNKNOWN, taken as clear).
+
+## 17-grinds. Grinds (done 2026-10-01)
+
+Correction to the older notes: the per-frame state table (`820FCCAC`) runs
+state 4 -> `820F8CF0` (the grind) and state 6 -> `820F4DE8` (the **stall**,
+`OnStall`), not "grind update 820F4DE8 / rail update 820F8CF0". States
+(SkaterState `+24`): 0 ground, 1 air, 2 wallride (`820FB230`), 3 lip,
+4 rail, 5 `820EFE20`, 6 stall, 7 `820F01E8`, 8 `820FA7C8`, 9 `820EAED0`.
+
+- Grab (`820F8120`): `+1192` set first; single node -> `820F4108` (Natas,
+  state 4, event `PointRailSpin`); lip check; else the grind set-up:
+  feeler to the point (0.15), acid carry, flatten >2.5 m/s, direction
+  `+1220` (random when straight across), end-of-line refusal, `+1504`
+  offset, SetState(4), velocity along the rail with its height kept, the
+  rail boost (`820DD5F0`), side of the jump (`+2000`), bad-ledge check
+  (`820EAB68`), along/across the board (`Rail_Tolerance`) and backwards
+  (`+2024`), then the pending grind trick (`82124048`) or the default list
+  (`820DDDC8`: `GrindTrickList[dpad][bits]`, R2 -> `StallTrickList` = the
+  same list, `+1389`; R2 moving across -> state 6).
+- Rail update (`820F8CF0`): rerail times (`Rail_minimum_rerail_time`,
+  `Rail_jump_rerail_time` on the ollie, +240), ollie lift and two feelers
+  (`uber_frig_current_height`), grind meter, Natas spin on a lone node,
+  `Physics_Rail_Gravity` along the rail, corner limit
+  `Rail_Corner_Leave_Angle` (flat), segment change or the rail end search
+  (`820F5DC0`, the search with `cos(50)`), re-aim (matrix along the rail,
+  display eased 0.3 / 0.125, or snapped + `flip_grinding_backwards` when
+  the way changes), move + overshoot, snap easing (`820DD070`), friction
+  (`SKATE_GRIND_FRICTION`), knock-off feeler -> air + `OffRail`, and the
+  stall timer (`stall_slip_time`).
+- Fixes found on the way: the VM called a script named in an expression
+  (`(<type> = grind)` re-ran `grind` with no parameters; table 8220BCE0
+  says type 7 stays a name); `8211EA68` takes `Template` as an array (or a
+  name of one), so `grindtricks` (Nosebluntslide...) entries count;
+  `SetExtraGrindTricks` / `ClearExtraGrindTrick`, `ChecksumEquals`,
+  `OnRail` / `OnStall` and the grind commands added; `+168` (state time);
+  `+1548` now read by the rumble and cleared by the air update.
+- Checks: branch audit 0 uncited in all 26 functions translated or changed
+  except `8220B878` (70/76) and `820D71B0` (28/38), older partials touched
+  in one place each. `lip_ride` (3 modes) and `vert_ride` (2) output is
+  byte-identical to before. `cargo check -p p8-game` clean.
+- `grind_ride` results (z_houses, candidate 2): grab at 0.28 s, 14 m/s
+  after the boost, two segments, off the end with `OffRail` at 1.05 s and
+  a landing; `ollie` jumps off at 0.78 s (apex ~1.2 m above the rail);
+  directions give FS 50-50 / FS Nosegrind / FS 5-0 / BS Lipslide / BS
+  Noseslide; `blunt` (speed 5..7) gives BS Nosebluntslide; `natas` spins
+  ~760 deg/s on post 198 until the meter tips. `Grind_AnimBranch` builds
+  with no untranslated nodes (`P8_ANIMS`).
+- Not done: see `docs/KNOWN_ISSUES.md` 11 and 13..19 (camera, sparks,
+  sounds, score, bails after a fall, moving rails, TriggerScripts, the
+  same-object preference, the stall untested).
 
 ## 17b. How to check a feature is complete (the user asked for this)
 

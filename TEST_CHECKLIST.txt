@@ -1,18 +1,22 @@
-This test build: retail skater camera, spacewalk fix.
+This test build: grinds (translated from the original), plus the known-issues list.
+How to grind: roll at a rail (not a ramp's edge), ollie, and hold Y (Triangle) as you pass over it.
 Things to look for:
- 1. Riding: camera about 2.5 m behind and a little above, following the direction you roll, not the board.
- 2. Turning: the camera swings round smoothly and a little late.
- 3. Ollie: the camera rises a bit while in the air and settles after landing.
- 4. Vert air: the camera rises and looks down at the skater, then swings back behind after landing.
- 5. Standing still: the camera stays behind where the skater faces.
- 6. Wider view than before (81 degrees across).
-Spacewalk (manual, then Left, Right, Square): the hips stay lined up with the board as it starts, no swing out and back.
-Animation: smooth, without the small hitch about every half second.
-Revert after a vert spin: turns the way you were spinning.
-Overnight audit fixes to look at:
- - Spin with L1/R1 right after taking off a vert ramp: it should spin at once.
- - Spine transfer: you keep going the way you aimed, no snap to the board direction on landing.
- - Manual uphill while crouched: you slow down as in the original.
- - Stand still and turn: the turn-in-place animation plays.
- - Top of an ollie: the feet pose follows how far you have spun.
-Not done yet: grinds, lip tricks, bails, wallrides, right-stick look-around, camera going through walls.
+ 1. Grab: the skater snaps onto the rail and slides along it, a little faster than before (the rail boost).
+ 2. Which grind: the direction you hold when you land on the rail picks it, as in the original:
+      nothing = 50-50, Up = Nosegrind, Down = 5-0, Left / Right = slides (Lipslide, Noseslide ...).
+    Landing across the rail gives a boardslide or lipslide.
+ 3. Up, Up, then Y in the air just before the rail: Nosebluntslide (other combos from the original lists too).
+ 4. Balance meter: it shows on screen while grinding. Left / Right lean you back. It gets harder the
+    longer you grind. If it tips over you drop off the side (the bail after that is not done yet).
+ 5. Corners and joins: the grind carries on round gentle corners and along joined rail pieces.
+    A sharp corner (more than 50 degrees) or the end of the rail drops you off into the air.
+ 6. Ollie (release A) while grinding: you jump off the rail and land normally.
+ 7. Grinding downhill speeds you up, uphill slows you.
+ 8. Something in the way on the rail knocks you off into the air.
+ 9. Single posts that count as rails (z_houses has four, in the lower bowl area): grabbing one does a
+    Natas Spin on top of it. Hold RB (R1) as you grab it to spin the other way. Ollie to leave.
+10. RT (R2) held as you land across a rail: a stall (you stop on the rail); on a steep rail you slide off it.
+    (Not tried in the headless test; tell me what happens.)
+11. Lips (Y at the top of a vert ramp) should work exactly as before.
+Not done yet (see docs/KNOWN_ISSUES.md): the grind camera (it acts as on the ground), grind sparks and
+sounds, the score, the bail when you fall off a rail, moving rails, bails, wallrides.

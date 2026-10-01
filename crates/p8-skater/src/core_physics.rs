@@ -43,6 +43,12 @@ pub enum Event {
     /// tipped over (`82190F58`).
     OffMeterTop,
     OffMeterBottom,
+    /// Retail event "OffRail": the grind ended in the air (`820F5DC0`,
+    /// `820F8CF0`).
+    OffRail,
+    /// Retail event "PointRailSpin": a single-node rail was taken
+    /// (`820F4108`; script `pointrailspin`).
+    PointRailSpin,
 }
 
 /// SkaterState `+24` (set by `SetState`, `820D71B0`). Only the states with
@@ -55,6 +61,11 @@ pub enum State {
     Air,
     /// 3: lip update `820F49D8` (a lip trick on a coping rail).
     Lip,
+    /// 4: rail update `820F8CF0` (grinding; `OnRail`, 82128E30).
+    Rail,
+    /// 6: update `820F4DE8` (`OnStall`, 821169C8): a rail taken with R2
+    /// while moving across it, or a single-node rail (`820F4108`).
+    Stall,
 }
 
 /// Which way the last ground turn went (`+1940`: checksum "Left"/"Right").
@@ -256,6 +267,19 @@ pub struct CorePhysics {
     pub stat_context: StatContext,
     /// Vert state (see `vert.rs`).
     pub vert: Vert,
+    /// `+168`: game time of the last `SetState` (`820D71B0`).
+    pub state_ms: i64,
+    /// Grind state (`grind.rs`).
+    pub grind: crate::grind::Grind,
+    /// `+2024`: going along the rail backwards (set at the grab,
+    /// `ToggleRailBackwards` 820D58E8, toggled by every FlipAndRotate turn
+    /// 820D9008).
+    pub rail_backwards: bool,
+    /// A trick script (with parameters) the physics starts on the skater's
+    /// script now (retail does the goto and a script update in place, e.g.
+    /// the grind scripts from `820F8120`); `skater.rs` does it right after
+    /// the physics step, like `script_goto`.
+    pub trick_goto: Option<crate::grind::Goto>,
     /// `+1192`: the rail record being ridden (a lip's coping).
     pub rail: Option<usize>,
     /// `+1200`, `+1208`: when the last rail was left and how long it may
@@ -456,6 +480,10 @@ impl CorePhysics {
             stat_context: StatContext::default(),
             // Reset (820D4700) sets +96 and +128 like +112: straight up.
             vert: Vert { eased_normal: Vec3::Y, ease_from: Vec3::Y, ..Vert::default() },
+            state_ms: 0,
+            grind: Default::default(),
+            rail_backwards: false,
+            trick_goto: None,
             rail: None,
             rail_left_ms: 0,
             rail_again_ms: 0,
@@ -643,11 +671,14 @@ impl CorePhysics {
 
     /// `820D9008` (FlipAndRotate's turn): the object matrix turned round
     /// about up (x and z rows negated), copied to the display matrix, core
-    /// `+2024` (not kept here) and SkaterState `+48` toggled.
+    /// `+2024` and SkaterState `+48` toggled.
     pub fn turn_round(&mut self) {
         self.body.matrix.x_axis = -self.body.matrix.x_axis;
         self.body.matrix.z_axis = -self.body.matrix.z_axis;
         self.matrix_32 = self.body.matrix;
+        // 820D9090..820D90A0: +2024; 820D90A4..820D90D0: SkaterState +48
+        // (its time stamp +52 is not kept).
+        self.rail_backwards = !self.rail_backwards;
         self.rotated = !self.rotated;
     }
 
@@ -924,17 +955,24 @@ impl CorePhysics {
         true
     }
 
-    /// Retail `820D9F70` (not grinding).
-    fn rolling_friction(&mut self, s: &Scripts) {
-        let terrain = s.terrain_float_index(self.terrain, "SKATE_ROLL_FRICTION");
+    /// Retail `820D9F70`. Grinding (state 4) it uses `SKATE_GRIND_FRICTION`
+    /// of the rail's terrain (`rail_terrain`, record `+72`) instead of
+    /// `SKATE_ROLL_FRICTION` of the ground's (`+298`).
+    pub(crate) fn rolling_friction_on(&mut self, s: &Scripts, rail_terrain: Option<u8>) {
+        // 820D9F84..820D9FB4.
+        let terrain = match (self.state, rail_terrain) {
+            (State::Rail, Some(t)) => s.terrain_float_index(t, "SKATE_GRIND_FRICTION"),
+            _ => s.terrain_float_index(self.terrain, "SKATE_ROLL_FRICTION"),
+        };
         self.rolling_friction = self.special_friction + terrain;
-        // No balance trick is translated, so retail's "+2844 active" is false.
-        // 0.02 is the constant at 82002968.
-        if self.speed() < 0.02 {
+        // 820DA008..820DA064: while a balance trick runs (+2844 +28) the
+        // skater is not stopped; 0.02 is the constant at 82002968.
+        if !self.balance.doing && self.speed() < 0.02 {
             self.body.velocity = Vec3::ZERO;
             return;
         }
-        // 60 is the constant at 82001EB4: friction is per 1/60 s.
+        // 820DA0BC..820DA18C; 60 is the constant at 82001EB4: friction is
+        // per 1/60 s.
         self.body.velocity = slow_down(self.body.velocity, self.dt * 60.0 * self.rolling_friction);
     }
 
@@ -947,7 +985,7 @@ impl CorePhysics {
             self.air_friction(s);
         }
         if !self.slope_turn(s) && !gravity_cancelled {
-            self.rolling_friction(s);
+            self.rolling_friction_on(s, None);
         }
     }
 

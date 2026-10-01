@@ -44,6 +44,9 @@ pub struct Meter {
     pub button_b: u32,
     /// `+88`.
     pub tweak: i32,
+    /// `+92`: the node of the rail this meter last started on (grinds;
+    /// -1 = none).
+    pub last_rail: Option<u32>,
 }
 
 /// The balance component.
@@ -173,8 +176,34 @@ impl Balance {
         }
     }
 
+    /// Script command `AdjustBalance` (`820CEE88`): on the running meter,
+    /// instability time = time * `TimeMult` + `TimeAdd` (not below 0), lean
+    /// = lean * `LeanMult` + sign * `leanadd`, lean speed = speed *
+    /// `SpeedMult` + sign * `speedadd` (sign of the scaled value, 0 counts
+    /// as +). Missing multipliers are 1, missing additions 0.
+    pub fn adjust_balance(&mut self, params: &p8_script::Params) {
+        let k = qb_key;
+        let get = |name: &str, default: f32| params.float(k(name)).unwrap_or(default);
+        let (time_add, lean_add, speed_add) = (get("TimeAdd", 0.0), get("leanadd", 0.0), get("speedadd", 0.0));
+        let (time_mult, lean_mult, speed_mult) = (get("TimeMult", 1.0), get("LeanMult", 1.0), get("SpeedMult", 1.0));
+        // 820CEEAC..820CEEB4: nothing runs -> nothing to do;
+        // 820CEFB8..820CF050: the meter by type (meter_mut).
+        let kind = self.kind;
+        let Some(m) = self.meter_mut(kind) else { return };
+        // 820CF054..820CF070.
+        m.instable_time = (m.instable_time * time_mult + time_add).max(0.0);
+        // 820CF074..820CF0A8; -1 at 82056550.
+        let sign = |x: f32| if x >= 0.0 { 1.0 } else { -1.0 };
+        m.lean *= lean_mult;
+        m.lean += sign(m.lean) * lean_add;
+        // 820CF0AC..820CF0D8.
+        m.lean_speed *= speed_mult;
+        m.lean_speed += sign(m.lean_speed) * speed_add;
+    }
+
     /// Script command `DoBalanceTrick` (`820CF748`).
-    pub fn do_balance_trick(&mut self, c: &mut BalanceCtx, params: &p8_script::Params) {
+    /// `rail_node` is the node of physics `+1192`, read by the grind timing.
+    pub fn do_balance_trick(&mut self, c: &mut BalanceCtx, params: &p8_script::Params, rail_node: Option<u32>) {
         let k = qb_key;
         if let Some(p) = params.get(k("balanceparams")) {
             self.params = Some(p.clone());
@@ -206,17 +235,24 @@ impl Balance {
             m.max_time = m.time;
         }
         m.time = 0.0;
-        self.start(c, kind, a, b, tweak);
+        self.start(c, kind, a, b, tweak, rail_node);
     }
 
-    /// Retail `82190C10` (without the grind-only rail timing).
-    fn start(&mut self, c: &mut BalanceCtx, kind: u32, a: u32, b: u32, tweak: i32) {
+    /// Retail `82190C10`. Not translated: the "robot rail" part
+    /// (82190D08..82190D88: when a score value `[[+24]+24]+5452` is below
+    /// 0.5, `robot_rail_add_time` and `robot_rail_nudge`; scoring is not
+    /// translated).
+    fn start(&mut self, c: &mut BalanceCtx, kind: u32, a: u32, b: u32, tweak: i32, rail_node: Option<u32>) {
         let k = qb_key;
+        let same_add = self.param(c, "Same_Grind_Add_Time");
+        let new_sub = self.param(c, "New_Grind_Sub_Time");
         let repeat_min = self.param(c, "Repeat_Min");
         let repeat_mult = self.param(c, "Repeat_Multiplier");
         let lean_mult = self.param(c, "Lean_Repeat_Multiplier");
         let bail = self.param(c, "Lean_Bail_Angle");
         let cheese = self.param(c, "Cheese");
+        // 82190D8C..82190F4C: the repeat speed, the random first lean
+        // way, the lean repeat, the bail-angle clamp and the cheese.
         let sign = |x: f32| if x >= 0.0 { 1.0 } else { -1.0 };
         let fresh = self.meter_mut(kind).is_some_and(|m| m.lean_speed == 0.0);
         let random_flip = fresh
@@ -230,6 +266,25 @@ impl Balance {
         m.button_b = b;
         m.tweak = tweak;
         m.buttons_live = false;
+        // 82190C64..82190D10: grinds: the same rail as last time adds
+        // instability time, a new one takes some off (not below 0) and
+        // drops the cheese; the rail is remembered (+92).
+        if (kind == k("Grind") || kind == k("Slide"))
+            && let Some(node) = rail_node
+        {
+            if let Some(last) = m.last_rail {
+                if last == node {
+                    m.instable_time += same_add;
+                } else {
+                    m.instable_time -= new_sub;
+                    if m.instable_time < 0.0 {
+                        m.instable_time = 0.0;
+                    }
+                    m.cheese = 0.0;
+                }
+            }
+            m.last_rail = Some(node);
+        }
         if m.lean_speed != 0.0 {
             m.lean_speed *= repeat_mult;
             if m.lean_speed.abs() < repeat_min {
@@ -281,14 +336,14 @@ impl Balance {
     /// duration), or `None` when the lean (`820CEB80`) is 0. Percent =
     /// |lean| / 4096 (82001D5C) * 100 (82000D8C) * f + `min_balance_vibration`,
     /// clamped to 0..100; f = the object's speed (`+208`, x y z) capped at 1,
-    /// or 1 on a lip or when physics `+1548` is set (field UNKNOWN, taken as
-    /// clear).
-    pub fn rumble_percent(&self, s: &Scripts, speed: f32) -> Option<f32> {
+    /// or 1 on a lip or when physics `+1548` (`natas`: on a single-node
+    /// rail, `820F4108`; cleared by the air update) is set.
+    pub fn rumble_percent(&self, s: &Scripts, speed: f32, natas: bool) -> Option<f32> {
         let lean = self.meter_of(self.kind).map_or(0.0, |m| m.lean);
         if lean == 0.0 {
             return None;
         }
-        let f = if self.kind == qb_key("Lip") { 1.0 } else { speed.min(1.0) };
+        let f = if self.kind == qb_key("Lip") || natas { 1.0 } else { speed.min(1.0) };
         let percent = lean.abs() * (1.0 / 4096.0) * 100.0 * f + s.global_float("min_balance_vibration");
         Some(percent.clamp(0.0, 100.0))
     }
@@ -337,6 +392,7 @@ impl Balance {
             m.instable_time = 0.0;
             m.lean = 0.0;
             m.lean_speed = 0.0;
+            m.last_rail = None;
         }
         self.kind = 0;
         self.doing = false;
@@ -562,7 +618,7 @@ mod tests {
             (k("ButtonB"), Value::Checksum(k("Left"))),
             (k("Type"), Value::Checksum(k("Lip"))),
         ]);
-        bal.do_balance_trick(&mut c, &p);
+        bal.do_balance_trick(&mut c, &p, None);
     }
 
     #[test]
@@ -630,13 +686,13 @@ mod tests {
         g.insert(qb_key("min_balance_vibration"), Value::Float(10.0));
         let s = Scripts::new(g);
         let mut bal = Balance::default();
-        assert_eq!(bal.rumble_percent(&s, 0.0), None);
+        assert_eq!(bal.rumble_percent(&s, 0.0, false), None);
         bal.kind = qb_key("Lip");
         bal.lip.lean = -2048.0;
         // 2048 / 4096 * 100 + 10, speed ignored on a lip.
-        assert_eq!(bal.rumble_percent(&s, 0.0), Some(60.0));
+        assert_eq!(bal.rumble_percent(&s, 0.0, false), Some(60.0));
         bal.lip.lean = 4000.0;
-        assert_eq!(bal.rumble_percent(&s, 0.0), Some(100.0));
+        assert_eq!(bal.rumble_percent(&s, 0.0, false), Some(100.0));
     }
 
     #[test]

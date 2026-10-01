@@ -33,6 +33,8 @@ fn event_name(e: Event) -> Option<&'static str> {
         Event::FlailRight => "FlailRight",
         Event::OffMeterTop => "OffMeterTop",
         Event::OffMeterBottom => "OffMeterBottom",
+        Event::OffRail => "OffRail",
+        Event::PointRailSpin => "PointRailSpin",
         Event::SkaterJump | Event::SkaterOffEdge => return None,
     })
 }
@@ -111,6 +113,7 @@ impl Skater {
         let mut events = self.physics.step(s, input, world);
         let Some(script) = self.script.as_mut() else { return events };
         let goto = self.physics.script_goto.take();
+        let trick_goto = self.physics.trick_goto.take();
         let mut ctx = Ctx {
             p: &mut self.physics,
             s,
@@ -122,6 +125,12 @@ impl Skater {
         if let Some(name) = goto {
             // Retail goes to the script and updates it in place (820F4990).
             script.goto(&mut ctx, name, &Params::new());
+            script.update(&mut ctx);
+        }
+        if let Some(t) = trick_goto {
+            // The grind scripts from 820F8120 (82124048 / 820DDDC8: goto
+            // and a script update in place).
+            script.goto(&mut ctx, t.script, &t.params);
             script.update(&mut ctx);
         }
         // Script work the transfer code asked for (retail does it inside
@@ -164,7 +173,7 @@ impl Skater {
         // component's rumble (820CF438), then the vibration timers (8228D260).
         let p = &mut self.physics;
         let now = p.time_ms;
-        if let Some(percent) = p.balance.rumble_percent(s, p.body.velocity.length()) {
+        if let Some(percent) = p.balance.rumble_percent(s, p.body.velocity.length(), p.grind.natas) {
             p.vibration.vibrate(false, 1, percent, None, now);
             p.vibration.vibrate(false, 0, percent, None, now);
         }
@@ -571,9 +580,47 @@ impl Ctx<'_> {
         if n == k("OnLip") {
             return Some(p.state == State::Lip); // 821169B0: +24 == 3
         }
-        if n == k("OnWall") || n == k("OnRail") || n == k("OnStall") {
-            // 82116998 ...: other states, none translated, so never.
+        if n == k("OnRail") {
+            return Some(p.state == State::Rail); // 82128E30: +24 == 4
+        }
+        if n == k("OnStall") {
+            return Some(p.state == State::Stall); // 821169C8: +24 == 6
+        }
+        if n == k("OnWall") {
+            // 82116998: wallride state, not translated, so never.
             return Some(false);
+        }
+        // --- grinds (SkaterCorePhysics) ---
+        if n == k("SetGrindTweak") {
+            // 820D57B8: +2220, the unnamed integer (82212860 -> 82212218,
+            // which follows a name to its global, e.g. GRINDTAP_TWEAK).
+            p.grind.tweak = params.unnamed_int().unwrap_or_else(|| match params.unnamed_checksum().and_then(|c| self.s.globals.get(&c)) {
+                Some(Value::Int(i)) => *i,
+                _ => 0,
+            });
+            return Some(true);
+        }
+        if n == k("ToggleRailBackwards") {
+            p.rail_backwards = !p.rail_backwards; // 820D58E8: +2024
+            return Some(true);
+        }
+        if n == k("ShouldRunStallScript") {
+            return Some(p.grind.stall_script); // 820D6AD8: +1389
+        }
+        if n == k("SetBackwardsGrindValues") {
+            // 820D5800 (820D5840..820D5888): +1528 ScriptName, +1532 Anim
+            // (each only when given).
+            if let Some(c) = params.checksum(k("ScriptName")) {
+                p.grind.backwards_script = c;
+            }
+            if let Some(c) = params.checksum(k("Anim")) {
+                p.grind.backwards_anim = c;
+            }
+            return Some(true);
+        }
+        if n == k("AdjustBalance") {
+            p.balance.adjust_balance(params); // 820CEE88
+            return Some(true);
         }
         if n == k("SkateInAble") {
             // 820EB538: flags `Lip` and `Left`.
@@ -632,7 +679,10 @@ impl Ctx<'_> {
                 now_ms: now,
                 random: &mut random,
             };
-            p.balance.do_balance_trick(&mut c, params);
+            // The node of the rail being ridden (+1192 +68), for the grind
+            // timing in 82190C10.
+            let rail_node = p.rail.and_then(|r| self.world.and_then(|w| w.rails()).map(|m| m.rails[r].node));
+            p.balance.do_balance_trick(&mut c, params, rail_node);
             p.rng = rng;
             return Some(true);
         }
@@ -947,6 +997,14 @@ impl Ctx<'_> {
             p.tricks.set_extra_tricks(params, now, g);
             return Some(true);
         }
+        if n == k("SetExtraGrindTricks") {
+            p.tricks.set_extra_grind_tricks(params); // 8211FB20
+            return Some(true);
+        }
+        if n == k("ClearExtraGrindTrick") {
+            p.tricks.clear_extra_grind_trick(); // 8211FBF0
+            return Some(true);
+        }
         if n == k("KillExtraTricks") {
             p.tricks.extra_on = false;
             return Some(true);
@@ -1103,6 +1161,13 @@ const COMMANDS: &[&str] = &[
     "ClearManualTrick",
     "SetExtraTricks",
     "KillExtraTricks",
+    "SetExtraGrindTricks",
+    "ClearExtraGrindTrick",
+    "SetGrindTweak",
+    "ToggleRailBackwards",
+    "ShouldRunStallScript",
+    "SetBackwardsGrindValues",
+    "AdjustBalance",
     "UseGrindEvents",
     "ClearEventBuffer",
     "SetTrickName",

@@ -225,6 +225,24 @@ impl Default for Tricks {
 }
 
 /// Global lookups the component needs.
+/// `822D6798` (table `826E3B00`): the d-pad's direction from the Up, Down,
+/// Left and Right records: 0 none, 1 up, 2 down, 3 left, 4 right, 5 up-left,
+/// 6 up-right, 7 down-left, 8 down-right; up and down -> down, left and
+/// right -> right.
+pub fn dpad_direction(i: &InputState) -> usize {
+    match (i.up && !i.down, i.down, i.left && !i.right, i.right) {
+        (_, true, false, false) => 2,
+        (_, true, true, false) => 7,
+        (_, true, _, true) => 8,
+        (true, false, false, false) => 1,
+        (true, false, true, false) => 5,
+        (true, false, _, true) => 6,
+        (false, false, true, false) => 3,
+        (false, false, _, true) => 4,
+        _ => 0,
+    }
+}
+
 pub trait Globals {
     fn global(&self, key: u32) -> Option<&Value>;
 }
@@ -266,14 +284,14 @@ fn member<'a>(items: &'a [(u32, Value)], name: &str) -> Option<&'a Value> {
     items.iter().rev().find(|(n, _)| *n == k).map(|(_, v)| v)
 }
 
-fn struct_member<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
+pub(crate) fn struct_member<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
     match v {
         Value::Struct(items) => member(items, name),
         _ => None,
     }
 }
 
-fn checksum_of(v: Option<&Value>) -> u32 {
+pub(crate) fn checksum_of(v: Option<&Value>) -> u32 {
     match v {
         Some(Value::Checksum(c)) => *c,
         _ => 0,
@@ -353,17 +371,7 @@ impl Tricks {
     /// -> right). L3, R3, black, white, Z and the sticks' own directions are
     /// not in our pad records (never held here).
     pub fn read_buttons(&mut self, i: &InputState, now: u32) {
-        let dir = match (i.up && !i.down, i.down, i.left && !i.right, i.right) {
-            (_, true, false, false) => 2,
-            (_, true, true, false) => 7,
-            (_, true, _, true) => 8,
-            (true, false, false, false) => 1,
-            (true, false, true, false) => 5,
-            (true, false, _, true) => 6,
-            (false, false, true, false) => 3,
-            (false, false, _, true) => 4,
-            _ => 0,
-        };
+        let dir = dpad_direction(i);
         for d in 1..=8 {
             self.set_button(d, dir == d, now);
         }
@@ -670,12 +678,18 @@ impl Tricks {
 
     /// `8211EA68`: an entry with a script, or a trick slot the mapping
     /// fills.
+    // 8211EA68..8211EBB4.
     fn valid(&self, entry: &Value, g: &dyn Globals) -> bool {
         if struct_member(entry, "scr").is_some() || struct_member(entry, "scripts").is_some() {
             return true;
         }
-        if matches!(struct_member(entry, "template"), Some(Value::Struct(_))) {
-            return true;
+        // 8211EAE8..8211EB18: `Template` read as an array (82212AD0 ->
+        // 82212218 type 12, which follows a name to its global, e.g.
+        // `template = Template1` in `grindtricks`).
+        match struct_member(entry, "template") {
+            Some(Value::Array(_)) => return true,
+            Some(Value::Checksum(c)) if matches!(g.global(*c), Some(Value::Array(_))) => return true,
+            _ => {}
         }
         let slot = checksum_of(struct_member(entry, "trickslot"));
         if slot == 0 {
@@ -922,6 +936,25 @@ impl Tricks {
     pub fn set_manual_tricks(&mut self, params: &Params) {
         self.manual_lists = params.0.iter().filter_map(|(k, v)| if *k == 0 { Some(checksum_of(Some(v))) } else { None }).collect();
         self.manual_special = params.checksum(qb_key("special")).unwrap_or(0);
+    }
+
+    /// `SetExtraGrindTricks` (`8211FB20`): the unnamed checksums are the
+    /// grind lists (`+4868..`, count `+4864`), `special=` the special list
+    /// (`+4908`); both are cleared first.
+    pub fn set_extra_grind_tricks(&mut self, params: &Params) {
+        self.grind_lists = params.0.iter().filter_map(|(k, v)| match v {
+            Value::Checksum(c) if *k == 0 => Some(*c),
+            _ => None,
+        }).collect();
+        self.grind_special = params.checksum(qb_key("special")).unwrap_or(0);
+    }
+
+    /// `ClearExtraGrindTrick` (`8211FBF0`): no pending grind trick (`+4912`)
+    /// and no grind lists (`+4864`, `+4868..+4904`); the special list
+    /// (`+4908`) stays.
+    pub fn clear_extra_grind_trick(&mut self) {
+        self.grind_pending = None;
+        self.grind_lists.clear();
     }
 
     /// `SetExtraTricks` (`82124B80` -> `82123DF8`). `duration` is in frames

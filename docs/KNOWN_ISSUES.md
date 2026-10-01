@@ -92,6 +92,7 @@ this public repo.
 - **What you see**: whatever you press on a lip, you get the Invert.
 - **Cause**: the trick queue for lips was not translated when this was
   written. Check whether the trick system work (handoff 17-tricks) fixed it.
+  (The grind trick lists work since this session, `grind_ride`.)
 - **Where**: `lip.rs`, `trick.rs`.
 - **Label**: CONFIRMED when written; may be stale.
 
@@ -131,13 +132,18 @@ this public repo.
 - **Where**: level loading (`p8-game`, `p8-sim`).
 - **Label**: CONFIRMED.
 
-### 11. Rails that are not lips do nothing
+### 11. Grinds: the camera acts as on the ground
 
-- **What you see**: you can't grind.
-- **Cause**: grinds are not translated (`820F8120` rest, `820F4DE8`,
-  `820F8CF0`, `820F4108`).
-- **Where**: `rails.rs`, `lip.rs`.
-- **Label**: CONFIRMED. This session's task.
+- **What you see**: while grinding, the camera follows as if you were
+  riding on the ground: no grind zoom, no swing when the grind starts, no
+  tilt with the balance.
+- **Cause**: the skater camera's grind parts (state 4 in `820D1238`: the
+  grind-start slerp, the lean roll `+340`, and the grind zoom in
+  `820D02A8` at 820D036C..820D0384, which also depends on a local flag of
+  `820D1238` (`stack +160`) whose meaning is not read) are not translated.
+- **Where**: `crates/p8-skater/src/camera.rs` (`zoom_and_above`,
+  `update`).
+- **Label**: CONFIRMED (missing translation).
 
 ### 12. Ollie out of a lip jumps back to the grab point first
 
@@ -148,7 +154,81 @@ this public repo.
 - **Where**: `lip.rs`.
 - **Label**: CONFIRMED (not a bug).
 
-### 13. Documentation leftovers
+### 13. Grinds: no sparks, no sounds, no score
+
+- **What you see**: grinding is silent, with no sparks, and gives no points.
+- **Cause**: there is no sound system yet (`82115B58` grind sounds,
+  `SetRailSound` `820D5640`, `spawnterrainsound`), sparks
+  (`SetSparksPos`, `TurnSparksOn`) and scoring (`8217ACB0` per frame,
+  `+2220` grind tweak, the "robot rail" part of `82190C10`) are not
+  translated.
+- **Where**: `grind.rs` (`rail_tail`, `stall_update` notes), `balance.rs`
+  (`start`).
+- **Label**: CONFIRMED (missing translation).
+
+### 14. Falling off a grind meter leads into untranslated bails
+
+- **What you see**: when the grind meter tips over, the skater drops off
+  the side and then behaves oddly (it may stop dead or skid).
+- **Cause**: `SkateInOrBail` goes to `SkateIn_Left` / `SkateIn_Right` or
+  the grind bail (`FiftyFiftyFall` etc.); bails are not translated.
+- **Where**: scripts; the bail system (planned after grinds and the flip
+  mechanic).
+- **Label**: CONFIRMED.
+
+### 15. Rails on moving objects, rail TriggerScripts, created parks
+
+- **What you see**: nothing yet on z_houses; rails that move with an
+  object, and level scripts that run when a rail is taken or left, do
+  nothing.
+- **Cause**: not translated: moving contacts (820F8DDC..820F9050,
+  820F4EC0..820F5148), the rails of moving objects in the searches
+  (820F617C..820F68B4), the rail node TriggerScripts (`820F0550`, types
+  264, 8200, 8208, 20, 18, 0x1008, 0x20008, 0x20010), and the
+  created-park branches (`82194D20`, 820FA3A8..820FA4CC, 820DCC94..).
+- **Where**: `grind.rs`, `lip.rs`.
+- **Label**: CONFIRMED (missing translation).
+
+### 16. Rail search: the same-object preference is missing
+
+- **What you see**: at the end of a rail, with two other rails almost
+  equally close, the grind may carry on to a different one than the
+  original picks.
+- **Cause**: `821968F8` doubles the score of rails on another collision
+  object than the current rail (`82194940`, 82196EE0..82196F10); our level
+  collision has no object ids.
+- **Where**: `crates/p8-skater/src/rails.rs` (`search`).
+- **Label**: INFERRED (the effect; the code is CONFIRMED).
+
+### 17. The stall (RT across a rail) is untested
+
+- **What you see**: unknown; not tried in a headless run.
+- **Cause**: `820F4DE8` is translated, but no test run has entered it
+  yet.
+- **Where**: `grind.rs` (`stall_update`).
+- **Label**: UNKNOWN.
+
+### 18. Script expressions call commands that retail may not
+
+- **What you see**: nothing known yet.
+- **Cause**: in an expression `( ... )`, retail calls only C functions
+  (symbol type 8, table at 8220BCE0); member functions (type 9, most
+  skater commands) go to 8220BEA4, which was not read. Our VM calls every
+  command it knows there. Scripts were fixed this session (a script name
+  in an expression stays a name; that broke the `grind` script).
+- **Where**: `crates/p8-script/src/vm.rs` (`expression`).
+- **Label**: UNKNOWN.
+
+### 19. Branch audit leftovers
+
+- `8220B878` (script expressions) 70 of 76 and `820D71B0` (`SetState`) 28
+  of 38 branches uncited: older partial translations, only small parts
+  changed this session.
+- clippy 1.97 warns in `anim_tree.rs`, `p8-formats/src/scene.rs` and the
+  `pivot_check` example (code not touched this session).
+- **Label**: CONFIRMED.
+
+### 20. Documentation leftovers
 
 - `CHECKLIST.md` section 2 counts are stale (handoff section 4).
 - `crates/p8-skater/src/lib.rs` refers to `docs/translation.md`, which does

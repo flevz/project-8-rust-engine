@@ -2,9 +2,7 @@
 //! `820DCBE8` -> `820F8120` -> `820F44C0`), the lip state (`820F49D8`) and
 //! `SkateInAble` (`820E55E0`).
 //!
-//! Grinds are not translated: a rail grab that is not a lip (`820F8120`'s
-//! grind set-up, and `820F4108` for single-node rails) does nothing, and
-//! the rail is then not remembered as ridden (`+1192`).
+//! A rail grab that is not a lip goes on to the grind set-up (`grind.rs`).
 use crate::balance::{BalanceCtx, OffMeter};
 use crate::core_physics::{CorePhysics, Event, State};
 use crate::input::InputState;
@@ -28,63 +26,92 @@ impl CorePhysics {
     /// Retail `820FAAA8(0)`, once per frame after the state update: in the
     /// air with "Triangle" held, look for a rail crossed by this frame's move
     /// and take it.
-    pub(crate) fn rail_check(&mut self, s: &Scripts, input: &InputState, world: &dyn World) {
+    pub(crate) fn rail_check(&mut self, s: &Scripts, input: &InputState, world: &dyn World) -> Option<Event> {
         // SkaterState +208 (never set by translated code) would do instead
         // of the button.
         if self.state != State::Air || self.in_bail || self.flipping || self.no_rail_tricks || !input.triangle {
-            return;
+            return None;
         }
         let window = s.global_float("Physics_Wallplant_Disallow_Grind_Duration") as i64;
         if self.time_ms.saturating_sub(self.last_wallplant_ms) < window {
-            return;
+            return None;
         }
-        let Some(rails) = world.rails() else { return };
+        let rails = world.rails()?;
         let snap = s.global_float("Rail_Max_Snap");
-        let Some((node, point)) = rails.search(self.old_position, self.body.position, snap, None) else {
+        let Some((node, point)) = rails.search(self.old_position, self.body.position, snap, None, 1.0) else {
             // Retail then tries the rails of moving objects (not translated).
-            return;
+            return None;
         };
         if !self.may_take_rail(node, rails, false) {
-            return;
+            return None;
         }
-        self.grab_rail(s, node, point, rails);
+        self.grab_rail(s, node, point, rails, world)
     }
 
     /// Retail `820DCBE8` on a normal level.
     fn may_take_rail(&mut self, node: usize, rails: &crate::rails::RailManager, force: bool) -> bool {
         let r = &rails.rails[node];
         let same = |cur: usize| cur == node || r.next == Some(cur) || r.prev == Some(cur);
-        // In the air with SkaterState +192 and +240 (never set by translated
-        // code) the current rail and its neighbours are refused.
+        // 820DCC00..820DCC54: in the air with SkaterState +192 (acid drop)
+        // and +240 (ollied off a rail), the current rail and its neighbours
+        // are refused.
+        if self.state == State::Air
+            && self.transfer.flag_192
+            && self.grind.ollied_off_rail
+            && self.rail.is_some_and(|cur| cur == node || r.next == Some(cur) || r.prev == Some(cur))
+        {
+            return false;
+        }
+        // 820DCC58..820DCC90: no rail, or not the same line -> new rail
+        // (820DCFB0..820DCFCC); 820DCC94..820DCFAC is the created-park
+        // corner continuation, skipped on a normal level (820DCCBC, park
+        // editor OFF: not translated).
         match self.rail {
             None => self.new_rail = true,
             Some(cur) if same(cur) => {}
             Some(_) => self.new_rail = true,
         }
+        // 820DCFD0..820DCFFC.
         if !self.new_rail && self.time_ms - self.rail_left_ms <= self.rail_again_ms {
             return false;
         }
+        // 820DD000..820DD008.
         if force {
             return true;
         }
-        // State 4 (not translated) is refused too. Following a vert wall
-        // on the way down (without SkaterState +208) refuses rails.
+        // 820DD00C..820DD018: already grinding (state 4) refuses.
+        if self.state == State::Rail {
+            return false;
+        }
+        // 820DD01C..820DD048: following a vert wall on the way down
+        // (without SkaterState +208) refuses rails.
         if self.vert.tracking && self.body.velocity.y <= 0.0 {
             return false;
         }
         true
     }
 
-    /// `820F8120` up to the lip check.
-    fn grab_rail(&mut self, s: &Scripts, node: usize, point: Vec3, rails: &crate::rails::RailManager) {
+    /// `820F8120` up to the lip check, then the grind set-up.
+    fn grab_rail(&mut self, s: &Scripts, node: usize, point: Vec3, rails: &crate::rails::RailManager, world: &dyn World) -> Option<Event> {
         let r = &rails.rails[node];
+        // 820F8150..820F8164: +1192 (and +1196, the manager) are set first,
+        // so a refused grab still leaves the rail remembered; then the rail
+        // node's TriggerScript 264 (820F0550, not translated).
+        self.rail = Some(node);
+        // 820F8168..820F82B0: SkaterState +208 (never set by translated
+        // code) takes the "exit air to tail" path instead (not translated).
+        // 820F82B4..820F8304: a single-node rail.
         if r.next.is_none() && r.prev.is_none() {
-            // 820F4108: single-node rails (not translated).
-            return;
+            // Input +256 (R1).
+            return self.single_node_rail(self.last_input.r1, node, point, rails, world);
         }
-        // If this is not a lip, the grind set-up follows in retail (not
-        // translated).
-        self.lip_entry(s, node, point, r.flags, r.terrain);
+        // 820F8308..820F8334.
+        if self.lip_entry(s, node, point, r.flags, r.terrain) {
+            return None;
+        }
+        // 820F8338..
+        self.grind_entry(s, node, point, rails, world);
+        None
     }
 
     /// Retail `820F44C0`: take the rail as a lip when the skater comes up it

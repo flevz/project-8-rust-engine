@@ -129,11 +129,20 @@ impl RailManager {
         }
     }
 
-    /// Retail `821968F8` with the arguments `820FAAA8` passes (no corner
-    /// angle limit, no side preference): the rail the move from `old` to
-    /// `new` passes closest to, within `snap` (`Rail_Max_Snap`). Returns the
-    /// record and the point on it.
-    pub fn search(&self, old: Vec3, new: Vec3, snap: f32, ignore: Option<usize>) -> Option<(usize, Vec3)> {
+    /// Retail `821968F8`: the rail the move from `old` to `new` passes
+    /// closest to, within `snap` (`Rail_Max_Snap`), skipping `ignore`
+    /// (82196AE8). `corner_cos` is the angle limit (`f1`): unless it is 1
+    /// (`820FAAA8` passes 1.0), a segment more across the move than that
+    /// (|flat cos| < `corner_cos`) is refused (82196F20..82196F40). Returns
+    /// the record and the point on it.
+    ///
+    /// Not translated: the preference for rails on the same collision
+    /// object (`r10`, 82196EE0..82196F10: a rail whose `82194940` differs
+    /// has its score doubled; the rail-end search `820F5DC0` passes it, our
+    /// level has no collision objects), so with two rails at nearly equal
+    /// distance the other one may win.
+    pub fn search(&self, old: Vec3, new: Vec3, snap: f32, ignore: Option<usize>, corner_cos: f32) -> Option<(usize, Vec3)> {
+        // 82196954..821969E4: the move's bounds grown by the snap.
         let (mut lo, mut hi) = bounds(old, new);
         lo -= Vec3::splat(snap);
         hi += Vec3::splat(snap);
@@ -143,11 +152,15 @@ impl RailManager {
         // 1e7 (82001F28), 1.122 (82004EE0), 2 (82000D78), 1e-5 (82000C18).
         let mut best = 1e7f32;
         let mut found: Option<(usize, Vec3)> = None;
+        // 82196A98..82197104: every record; 82196ACC..82196AF8 the flags
+        // (climbing, manual, `ignore`, active).
         for (i, r) in self.rails.iter().enumerate() {
             if r.flags & (flag::CLIMBING | flag::MANUAL) != 0 || r.flags & flag::ACTIVE == 0 || Some(i) == ignore {
                 continue;
             }
+            // 82196AFC..82196B04: a segment, else 82196F74 (a lone node).
             if let Some(next) = r.next {
+                // 82196B14..82196B64.
                 if !overlaps(r) {
                     continue;
                 }
@@ -155,6 +168,7 @@ impl RailManager {
                 let rail = self.rails[next].pos - start;
                 let to_old = old - start;
                 let tiny = |v: Vec3| v.x.abs() < 1e-5 && v.y.abs() < 1e-5 && v.z.abs() < 1e-5;
+                // 82196BB4..82196C64: zero-length rail or move.
                 if tiny(rail) {
                     continue;
                 }
@@ -168,9 +182,11 @@ impl RailManager {
                 let c = to_old.dot(rail);
                 let f = to_old.dot(mv);
                 let denom = e * a - b * b;
+                // 82196D68.
                 if denom.abs() < 1e-5 {
                     continue;
                 }
+                // 82196CBC..82196D1C: both clamped to 0..1.
                 let t = ((b * c - a * f) / denom).clamp(0.0, 1.0);
                 let s = ((b * t + c) / a).clamp(0.0, 1.0);
                 let on_move = old + mv * t;
@@ -179,17 +195,25 @@ impl RailManager {
                 let flat_rail = Vec3::new(rail.x, 0.0, rail.z).normalize_or_zero();
                 let flat_move = Vec3::new(mv.x, 0.0, mv.z);
                 let mut k = flat_rail.dot(flat_move.normalize_or_zero()).abs();
+                // 82196EB8..82196ED0.
                 if flat_move.x == 0.0 && flat_move.z == 0.0 && k == 0.0 {
                     k = 1.0;
                 }
                 let score = (1.122 - k) * d;
                 let reach = (2.0 - k) * d;
+                // 82196F14..82196F18.
                 if score >= best {
                     continue;
                 }
+                // 1 at 82000C14.
+                if corner_cos != 1.0 && k.abs() < corner_cos {
+                    continue;
+                }
+                // 82196F44..82196F70.
                 best = score;
                 found = if reach > snap { None } else { Some((i, on_rail)) };
             } else if r.prev.is_none() {
+                // 82196F74..82196FDC.
                 if !overlaps(r) {
                     continue;
                 }
@@ -198,6 +222,7 @@ impl RailManager {
                 let to = r.pos - old;
                 let along = to.dot(dir);
                 let d = (to - dir * along).length();
+                // 821970B8..821970C4.
                 if d > snap {
                     continue;
                 }
@@ -208,6 +233,7 @@ impl RailManager {
                 found = Some((i, r.pos));
             }
         }
+        // 82197108..82197124: the point and record only when found.
         found
     }
 }
@@ -238,10 +264,10 @@ mod tests {
         assert_eq!(m.rails[1].prev, Some(0));
         assert_eq!(m.rails[0].max, Vec3::new(10.0, 1.0, 0.0));
         // Falling across it at x = 4.
-        let (i, p) = m.search(Vec3::new(4.0, 1.3, -0.2), Vec3::new(4.0, 1.1, 0.2), 1.0, None).unwrap();
+        let (i, p) = m.search(Vec3::new(4.0, 1.3, -0.2), Vec3::new(4.0, 1.1, 0.2), 1.0, None, 1.0).unwrap();
         assert_eq!(i, 0);
         assert!((p - Vec3::new(4.0, 1.0, 0.0)).length() < 1e-4);
         // Too far away.
-        assert!(m.search(Vec3::new(4.0, 5.0, -0.2), Vec3::new(4.0, 5.0, 0.2), 1.0, None).is_none());
+        assert!(m.search(Vec3::new(4.0, 5.0, -0.2), Vec3::new(4.0, 5.0, 0.2), 1.0, None, 1.0).is_none());
     }
 }
